@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: xiaoju
+      POSTGRES_PASSWORD: xiaoju
+      POSTGRES_DB: xiaoju
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xiaoju"]
+      interval: 5s
+      retries: 10
+
+  xiaoju:
+    build: .
+    env_file: .env
+    environment:
+      XIAOJU_DATABASE_URL: postgres://xiaoju:xiaoju@postgres:5432/xiaoju?sslmode=disable
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
