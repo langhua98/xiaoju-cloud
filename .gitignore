@@ -3,3 +3,4 @@
 .env
 *.test
 *.out
+__pycache__/
