@@ -104,15 +104,21 @@ func (c *Config) Validate() error {
 		if c.PartSize > MaxTelegramPartSize {
 			return fmt.Errorf("XIAOJU_PART_SIZE must be <= %d for telegram storage", int64(MaxTelegramPartSize))
 		}
-		t := c.Telegram
-		if t.AppID == 0 || t.AppHash == "" || t.BotToken == "" || t.ChannelID == 0 {
-			return errors.New("TG_APP_ID, TG_APP_HASH, TG_BOT_TOKEN and TG_CHANNEL_ID are required for telegram storage")
-		}
-		if t.Transport != "tcp" && t.Transport != "websocket" {
-			return fmt.Errorf("unknown TG_TRANSPORT %q (want tcp or websocket)", t.Transport)
-		}
+		return c.ValidateTelegram()
 	default:
 		return fmt.Errorf("unknown XIAOJU_STORAGE %q (want telegram or local)", c.Storage)
+	}
+	return nil
+}
+
+// ValidateTelegram 校验 Telegram 连接所需配置（check 命令用）。
+func (c *Config) ValidateTelegram() error {
+	t := c.Telegram
+	if t.AppID == 0 || t.AppHash == "" || t.BotToken == "" || t.ChannelID == 0 {
+		return errors.New("TG_APP_ID, TG_APP_HASH, TG_BOT_TOKEN and TG_CHANNEL_ID are required for telegram storage")
+	}
+	if t.Transport != "tcp" && t.Transport != "websocket" {
+		return fmt.Errorf("unknown TG_TRANSPORT %q (want tcp or websocket)", t.Transport)
 	}
 	return nil
 }

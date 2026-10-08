@@ -1,0 +1,66 @@
+name: Deploy to Hugging Face Space
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+concurrency:
+  group: deploy-hf
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: xiaoju
+          POSTGRES_PASSWORD: xiaoju
+          POSTGRES_DB: xiaoju
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xiaoju"
+          --health-interval 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+        env:
+          XIAOJU_TEST_DATABASE_URL: postgres://xiaoju:xiaoju@localhost:5432/xiaoju?sslmode=disable
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "huggingface_hub==0.26.2" "requests==2.32.3"
+      - name: Deploy
+        run: python deploy/huggingface/deploy.py
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+          XIAOJU_DATABASE_URL: ${{ secrets.XIAOJU_DATABASE_URL }}
+          XIAOJU_ADMIN_TOKEN: ${{ secrets.XIAOJU_ADMIN_TOKEN }}
+          XIAOJU_MASTER_KEY: ${{ secrets.XIAOJU_MASTER_KEY }}
+          TG_APP_ID: ${{ secrets.TG_APP_ID }}
+          TG_APP_HASH: ${{ secrets.TG_APP_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHANNEL_ID: ${{ secrets.TG_CHANNEL_ID }}
+          TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
+          XIAOJU_PART_SIZE: ${{ vars.XIAOJU_PART_SIZE }}

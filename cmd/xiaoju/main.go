@@ -1,7 +1,8 @@
 // xiaoju 是 xiaoju-cloud 的服务端入口。
 //
 //	xiaoju migrate [up|down]   执行 / 回滚数据库迁移
-//	xiaoju serve               启动 HTTP 服务
+//	xiaoju serve               启动 HTTP 服务（未配置数据库时进入 Telegram 连通性诊断模式）
+//	xiaoju check               只检查 Telegram 登录与频道访问
 package main
 
 import (
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -39,7 +41,7 @@ func main() {
 
 func run(ctx context.Context, args []string, log *slog.Logger) error {
 	if len(args) == 0 {
-		return errors.New("usage: xiaoju <serve|migrate [up|down]>")
+		return errors.New("usage: xiaoju <serve|migrate [up|down]|check>")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -53,7 +55,13 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 		}
 		return migrate(ctx, cfg, dir, log)
 	case "serve":
+		if cfg.DatabaseURL == "" && cfg.Storage == "telegram" {
+			// 还没配置数据库时进入诊断模式，先验证运行环境能否连上 Telegram。
+			return diagnose(ctx, cfg, log)
+		}
 		return serve(ctx, cfg, log)
+	case "check":
+		return checkTelegram(ctx, cfg, log)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -132,6 +140,65 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// checkTelegram 连接 Telegram、以 Bot 登录并解析存储频道，不需要数据库。
+func checkTelegram(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	if err := cfg.ValidateTelegram(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	t := cfg.Telegram
+	tgAPI, _, err := telegram.Start(ctx, telegram.ClientConfig{
+		AppID: t.AppID, AppHash: t.AppHash, BotToken: t.BotToken, SessionFile: t.SessionFile,
+		Transport: t.Transport,
+	}, log)
+	if err != nil {
+		return err
+	}
+	if _, err := telegram.New(ctx, tgAPI, t.ChannelID); err != nil {
+		return err
+	}
+	log.Info("telegram check passed: bot logged in and storage channel is accessible")
+	return nil
+}
+
+// diagnose 是没有数据库时的诊断模式：后台检查 Telegram 连接，同时在 HTTP 端口上展示结果，
+// 让 PaaS 平台（如 Hugging Face Spaces）认为服务已启动，方便查看日志和结果。
+func diagnose(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	log.Warn("XIAOJU_DATABASE_URL is not set: running in diagnostic mode (telegram connectivity check only)")
+	var mu sync.Mutex
+	status := "telegram check: running...\n"
+	go func() {
+		result := "telegram check: OK\n"
+		if err := checkTelegram(ctx, cfg, log); err != nil {
+			log.Error("telegram check failed", "err", err)
+			result = "telegram check: FAILED: " + err.Error() + "\n"
+		}
+		mu.Lock()
+		status = result
+		mu.Unlock()
+	}()
+
+	srv := &http.Server{
+		Addr: cfg.HTTPAddr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			fmt.Fprint(w, "xiaoju-cloud diagnostic mode (XIAOJU_DATABASE_URL not set)\n"+status)
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+	log.Info("listening (diagnostic mode)", "addr", cfg.HTTPAddr)
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // newDriver 创建存储驱动。telegram 驱动额外返回客户端退出通知；local 驱动返回 nil channel（永不触发）。
