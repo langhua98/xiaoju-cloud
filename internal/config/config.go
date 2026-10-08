@@ -35,6 +35,7 @@ type Telegram struct {
 	BotToken    string
 	ChannelID   int64
 	SessionFile string
+	Transport   string // tcp | websocket
 }
 
 func Load() (*Config, error) {
@@ -49,6 +50,7 @@ func Load() (*Config, error) {
 			AppHash:     os.Getenv("TG_APP_HASH"),
 			BotToken:    os.Getenv("TG_BOT_TOKEN"),
 			SessionFile: env("TG_SESSION_FILE", "./data/tg-session.json"),
+			Transport:   env("TG_TRANSPORT", "tcp"),
 		},
 	}
 
@@ -105,6 +107,9 @@ func (c *Config) Validate() error {
 		t := c.Telegram
 		if t.AppID == 0 || t.AppHash == "" || t.BotToken == "" || t.ChannelID == 0 {
 			return errors.New("TG_APP_ID, TG_APP_HASH, TG_BOT_TOKEN and TG_CHANNEL_ID are required for telegram storage")
+		}
+		if t.Transport != "tcp" && t.Transport != "websocket" {
+			return fmt.Errorf("unknown TG_TRANSPORT %q (want tcp or websocket)", t.Transport)
 		}
 	default:
 		return fmt.Errorf("unknown XIAOJU_STORAGE %q (want telegram or local)", c.Storage)

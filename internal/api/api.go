@@ -32,6 +32,7 @@ func New(svc *service.Service, userID uuid.UUID, token string, log *slog.Logger)
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("xiaoju-cloud is running\n")) })
 
 	api := http.NewServeMux()
 	api.HandleFunc("POST /api/folders", s.createFolder)
@@ -46,8 +47,12 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
+		// 私有 Hugging Face Space 的 Authorization 头被 HF 自己的 token 占用，所以也接受 X-Xiaoju-Token。
+		got := r.Header.Get("X-Xiaoju-Token")
+		if got == "" {
+			got, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

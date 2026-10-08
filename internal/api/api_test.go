@@ -98,6 +98,15 @@ func TestUploadDownloadIntegration(t *testing.T) {
 	if resp = do("POST", "/api/files?name=a.bin", bytes.NewReader(plain)); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("duplicate upload status %d", resp.StatusCode)
 	}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/files/%s", ts.URL, f.ID), nil)
+	req.Header.Set("X-Xiaoju-Token", "tok")
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("X-Xiaoju-Token auth failed: %v %v", err, resp)
+	}
+	if resp, _ := http.Get(ts.URL + "/api/folders/root/children"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status %d", resp.StatusCode)
+	}
+
 	if resp = do("DELETE", fmt.Sprintf("/api/files/%s?permanent=1", f.ID), nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("purge status %d", resp.StatusCode)
 	}

@@ -143,6 +143,7 @@ func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (stora
 	t := cfg.Telegram
 	tgAPI, done, err := telegram.Start(ctx, telegram.ClientConfig{
 		AppID: t.AppID, AppHash: t.AppHash, BotToken: t.BotToken, SessionFile: t.SessionFile,
+		Transport: t.Transport,
 	}, log)
 	if err != nil {
 		return nil, nil, err
