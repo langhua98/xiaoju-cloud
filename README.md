@@ -92,7 +92,7 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 
 ## 网页前端
 
-`web/` 是纯静态页面（目录浏览、拖拽上传、下载、图片/视频在线预览、删除），推送到 `main` 后由
+`web/` 是纯静态页面（目录浏览、拖拽上传、下载、图片/视频在线预览、删除、一键同步相册），推送到 `main` 后由
 `.github/workflows/pages.yml` 发布到 GitHub Pages：`https://<用户名>.github.io/xiaoju-cloud/`。
 
 1. 仓库 **Settings → Pages → Build and deployment → Source** 选 **GitHub Actions**；
@@ -101,6 +101,8 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 4. 打开网页，输入 `XIAOJU_ADMIN_TOKEN` 登录（服务端地址取自 `config.js`，为空时才需要填写）。令牌只保存在当前页面内存中，刷新或关闭页面后需重新输入。
 
 部署在 HF Space 时 Space 需要是公开的，见 [部署文档](docs/deploy-huggingface.md#网页前端)。
+
+**同步相册**：在相册选择器里一次多选照片 / 视频，自动传到根目录的“相册”文件夹；文件名和大小相同的视为已同步并跳过，同名不同内容自动改名为“名字 (2)”。上传 2 个并发，网络中断或服务端出错（多为 Telegram 限流）时自动重试 3 次。
 
 本地预览：`python3 -m http.server -d web 8090`，服务端设置 `XIAOJU_CORS_ORIGINS=http://localhost:8090`。
 

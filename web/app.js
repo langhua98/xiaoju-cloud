@@ -305,50 +305,116 @@ async function remove(f) {
 
 // ---------- 上传 ----------
 
-const queue = [];
-let uploading = false;
+const CONCURRENCY = 2;
+// 网络中断、服务端出错（多为 Telegram 限流）时的重试间隔（秒）
+const RETRY_DELAYS = [5, 20, 60];
+const ALBUM = "相册";
 
-function enqueue(files) {
-  const parent = state.folderId;
-  for (const file of files) {
-    const row = document.createElement("div");
-    row.className = "upload";
-    const name = Object.assign(document.createElement("span"), { className: "uname", textContent: file.name });
-    const status = Object.assign(document.createElement("span"), { className: "ustatus", textContent: "等待中" });
-    const bar = Object.assign(document.createElement("progress"), { max: 1, value: 0 });
-    row.append(name, status, bar);
-    $("#uploads").append(row);
-    queue.push({ file, parent, status, bar, row });
-  }
-  $("#uploads").hidden = false;
-  if (!uploading) drain();
+const queue = [];
+let active = 0;
+let stats = null; // 本轮上传的统计：{ uploaded, skipped, failed, sync }
+
+const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
+
+// items: [{ file, name }]；sync=true 表示来自“同步相册”，同名已存在视为已同步
+function enqueue(items, parent = state.folderId, sync = false) {
+  stats ??= { uploaded: 0, skipped: 0, failed: 0, sync: false };
+  stats.sync ||= sync;
+  for (const { file, name } of items) queue.push({ file, name: name || file.name, parent, sync });
+  pump();
 }
 
-async function drain() {
-  uploading = true;
-  while (queue.length) {
-    const job = queue.shift();
+function pump() {
+  while (active < CONCURRENCY && queue.length) {
+    active++;
+    runJob(queue.shift()).finally(() => {
+      active--;
+      if (active || queue.length) pump();
+      else finishBatch();
+    });
+  }
+  updateSummary();
+}
+
+function updateSummary() {
+  if (!stats) return;
+  const s = stats;
+  const parts = [`已上传 ${s.uploaded}`];
+  if (queue.length + active) parts.push(`剩余 ${queue.length + active}`);
+  if (s.skipped) parts.push(`跳过 ${s.skipped}（已存在）`);
+  if (s.failed) parts.push(`失败 ${s.failed}`);
+  $("#upload-summary").textContent = (s.sync ? "同步相册：" : "上传：") + parts.join(" · ");
+  $("#uploads").hidden = false;
+}
+
+function finishBatch() {
+  const s = stats;
+  stats = null;
+  if (!s) return;
+  let msg = `${s.sync ? "同步" : "上传"}完成：上传 ${s.uploaded} 个`;
+  if (s.skipped) msg += `，跳过 ${s.skipped} 个（已存在）`;
+  if (s.failed) msg += `，失败 ${s.failed} 个（见上方列表）`;
+  toast(msg);
+  $("#upload-summary").textContent = msg;
+  if (!s.failed) setTimeout(() => { if (!stats) $("#uploads").hidden = true; }, 4000);
+}
+
+let reloadTimer;
+function scheduleReload() {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(load, 1500);
+}
+
+async function runJob(job) {
+  const row = document.createElement("div");
+  row.className = "upload";
+  const name = Object.assign(document.createElement("span"), { className: "uname", textContent: job.name });
+  const status = Object.assign(document.createElement("span"), { className: "ustatus", textContent: "上传中" });
+  const bar = Object.assign(document.createElement("progress"), { max: 1, value: 0 });
+  row.append(name, status, bar);
+  $("#upload-rows").append(row);
+
+  for (let attempt = 0; ; attempt++) {
     try {
-      await uploadOne(job);
-      job.status.textContent = "完成";
-      job.bar.value = 1;
-      setTimeout(() => {
-        job.row.remove();
-        if (!$("#uploads").children.length) $("#uploads").hidden = true;
-      }, 2500);
-      if (job.parent === state.folderId) load();
+      await uploadOne(job, status, bar);
+      stats.uploaded++;
+      status.textContent = "完成";
+      bar.value = 1;
+      setTimeout(() => row.remove(), 1500);
+      if (job.parent === state.folderId) scheduleReload();
+      return;
     } catch (err) {
-      job.status.textContent = err.message;
-      job.status.classList.add("error");
-      if (err.status === 401) logout("令牌错误，请重新输入");
+      if (err.status === 401) {
+        queue.length = 0;
+        row.remove();
+        logout("令牌错误，请重新输入");
+        return;
+      }
+      // 同步时，或重试时（上次其实已成功但响应丢失），同名已存在都算已同步
+      if (err.status === 409 && (job.sync || attempt > 0)) {
+        stats.skipped++;
+        row.remove();
+        return;
+      }
+      const retryable = err.status === 0 || err.status >= 500;
+      if (retryable && attempt < RETRY_DELAYS.length) {
+        status.textContent = `${err.message}，${RETRY_DELAYS[attempt]} 秒后重试`;
+        bar.value = 0;
+        await sleep(RETRY_DELAYS[attempt]);
+        if (!state.token) { row.remove(); return; } // 已退出登录
+        continue;
+      }
+      stats.failed++;
+      status.textContent = err.message;
+      status.classList.add("error");
+      return;
     }
   }
-  uploading = false;
 }
 
-function uploadOne({ file, parent, status, bar }) {
+function uploadOne({ file, name, parent }, status, bar) {
   return new Promise((resolve, reject) => {
-    const q = new URLSearchParams({ name: file.name });
+    const q = new URLSearchParams({ name });
     if (parent) q.set("parent_id", parent);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${state.api}/api/files?${q}`);
@@ -368,14 +434,62 @@ function uploadOne({ file, parent, status, bar }) {
       reject(new HttpError(xhr.status, errorText(xhr.status, msg)));
     };
     xhr.onerror = () => reject(new HttpError(0, "上传中断（网络错误或连接超时）"));
-    status.textContent = "上传中";
     xhr.send(file);
   });
 }
 
 $("#file-input").addEventListener("change", (e) => {
-  enqueue(e.target.files);
+  enqueue([...e.target.files].map((file) => ({ file })));
   e.target.value = "";
+});
+
+// ---------- 同步相册 ----------
+
+// 去掉自动加的序号：“IMG_1 (2).jpg” → “IMG_1.jpg”
+const baseName = (n) => n.replace(/ \(\d+\)(?=\.[^.]*$|$)/, "");
+const withSuffix = (n, i) => n.replace(/(\.[^.]*)?$/, (ext) => ` (${i})${ext}`);
+
+// 把选中的照片 / 视频传到根目录的“相册”文件夹。已传过的（文件名 + 大小相同）自动跳过，
+// 所以每次多选一些也不会重复上传；同名但内容不同的照片自动改名为“名字 (2)”。
+async function syncAlbum(files) {
+  if (!files.length) return;
+  toast(`正在检查 ${files.length} 个文件是否已同步…`);
+  try {
+    const root = await request("GET", "/api/folders/root/children");
+    let album = root.items.find((f) => f.type === "folder" && f.name === ALBUM);
+    album ??= await request("POST", "/api/folders", { name: ALBUM, parent_id: null });
+    const { items } = await request("GET", `/api/folders/${album.id}/children`);
+    const synced = new Set(items.filter((f) => f.type === "file").map((f) => `${baseName(f.name)}\0${f.size}`));
+    const taken = new Set(items.map((f) => f.name));
+
+    const todo = [];
+    let skipped = 0;
+    for (const file of files) {
+      const key = `${baseName(file.name)}\0${file.size}`;
+      if (synced.has(key)) { skipped++; continue; }
+      synced.add(key); // 同一批里选了两次同一张
+      let name = file.name;
+      for (let i = 2; taken.has(name); i++) name = withSuffix(file.name, i);
+      taken.add(name);
+      todo.push({ file, name });
+    }
+    if (!todo.length) {
+      toast(`没有新的照片：选中的 ${skipped} 个都已经同步过了`);
+      return;
+    }
+    if (state.folderId !== album.id) location.hash = `#/f/${album.id}`;
+    enqueue(todo, album.id, true);
+    stats.skipped += skipped;
+    updateSummary();
+  } catch (err) {
+    fail(err);
+  }
+}
+
+$("#album-input").addEventListener("change", (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  syncAlbum(files);
 });
 
 const drop = $("#drop");
@@ -385,7 +499,7 @@ drop.addEventListener("drop", (e) => {
   e.preventDefault();
   drop.classList.remove("dragover");
   const files = [...e.dataTransfer.files];
-  if (files.length) enqueue(files);
+  if (files.length) enqueue(files.map((file) => ({ file })));
 });
 
 window.addEventListener("hashchange", load);
