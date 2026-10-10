@@ -26,7 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Write config.js
-        # 仓库变量 XIAOJU_API_URL（如 https://user-xiaoju-cloud.hf.space）作为前端默认服务端地址
+        # 仓库变量 XIAOJU_API_URL（如 https://user-xiaoju-cloud.hf.space）覆盖前端默认服务端地址
+        if: ${{ vars.XIAOJU_API_URL != '' }}
         env:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
         run: |
