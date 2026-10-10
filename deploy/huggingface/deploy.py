@@ -100,7 +100,9 @@ def main():
     # 网页前端（GitHub Pages）需要公开 Space：私有 Space 的网关会拦截浏览器的跨域预检请求。
     # 公开后 API 仍由 XIAOJU_ADMIN_TOKEN 保护。
     private = os.environ.get("HF_SPACE_PUBLIC", "").strip().lower() not in ("1", "true", "yes")
-    api.create_repo(repo_id, repo_type="space", space_sdk="docker", private=private, exist_ok=True)
+    # 免费账号新建 Docker Space 会被拒绝（402），但已有的 Space 仍可更新，所以存在时跳过创建。
+    if not api.repo_exists(repo_id, repo_type="space"):
+        api.create_repo(repo_id, repo_type="space", space_sdk="docker", private=private)
     api.update_repo_visibility(repo_id, private=private, repo_type="space")
     log(f"space visibility: {'private' if private else 'public'}")
 
@@ -128,6 +130,10 @@ def main():
             delete_patterns="*",
         )
     log("source uploaded; waiting for build...")
+    # 已暂停 / 已停止的 Space 不会因为新提交自动启动
+    if api.get_space_runtime(repo_id).stage in ("PAUSED", "STOPPED"):
+        api.restart_space(repo_id)
+        log("space was paused; restart requested")
 
     stage = wait_for_stage(api, repo_id)
     if stage in ("BUILD_ERROR", "CONFIG_ERROR", "NO_APP_FILE"):

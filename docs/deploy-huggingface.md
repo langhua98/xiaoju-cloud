@@ -16,7 +16,8 @@ GitHub Actions ──上传源码 + 写入 Secrets──▶ HF 私有 Space（xi
 | Space 磁盘不持久，重启即清空 | 数据只放在外部 PostgreSQL 和 Telegram；Space 里只有临时文件和 Bot 会话（重启后自动重新登录） |
 | Space 没有数据库 | 用免费的 [Neon](https://neon.tech) 或 [Supabase](https://supabase.com) PostgreSQL |
 | 免费 Space 约 48 小时无访问会休眠 | 第一次访问需要等它唤醒 |
-| HF 的出站网络可能拦截 Telegram | 先跑诊断模式确认；不通时设 `TG_TRANSPORT=websocket` 再试 |
+| HF 屏蔽了 Telegram 域名（DNS 解析失败） | 保持默认的 `TG_TRANSPORT=tcp`：MTProto 直连 Telegram 数据中心 IP，不经过 DNS（2026-10 实测可用）；**不要**用 `websocket`，它依赖 `*.web.telegram.org` 域名 |
+| 自 2026-07 起免费账号不能新建 Docker Space（402） | 订阅 PRO；或沿用账号里规则变更前就有、仍占着免费额度的 Docker Space：把它改名为 `xiaoju-cloud`（或用 `HF_SPACE_ID` 指向它），部署会覆盖其内容。已暂停的旧 Space 通常因额度为 0 无法再启动 |
 | 上传经过 Space 中转，单个请求太久可能被网关断开 | 大文件先用较小的测试；后续版本会加分片续传 |
 | 使用条款 | 把 Space 当文件中转属于灰色用法，仅建议个人自用 |
 
@@ -44,7 +45,7 @@ GitHub Actions ──上传源码 + 写入 Secrets──▶ HF 私有 Space（xi
 在日志中查看结果：
 
 - `telegram check passed` → HF 能连上 Telegram，进入第二步；
-- `telegram: not connected after 1m30s` → 在 **Variables** 里添加 `TG_TRANSPORT=websocket` 后重跑；仍不通说明 HF 拦截了 Telegram；
+- `telegram: not connected after 1m30s` → 确认 Variables 里没有把 `TG_TRANSPORT` 设成 `websocket`（HF 屏蔽了 Telegram 域名，只有默认的 `tcp` 能连上）；
 - `channel ... not found` → Bot 不是频道管理员，或频道 ID 不对；
 - `ACCESS_TOKEN_INVALID` / `API_ID_INVALID` → Bot token 或 api_id/api_hash 有误。
 
