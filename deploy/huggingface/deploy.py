@@ -27,7 +27,7 @@ SECRET_KEYS = [
     "TG_BOT_TOKEN",
     "TG_CHANNEL_ID",
 ]
-VARIABLE_KEYS = ["TG_TRANSPORT", "XIAOJU_PART_SIZE"]
+VARIABLE_KEYS = ["TG_TRANSPORT", "XIAOJU_PART_SIZE", "XIAOJU_CORS_ORIGINS"]
 
 DONE_STAGES = {"RUNNING", "RUNTIME_ERROR", "BUILD_ERROR", "CONFIG_ERROR", "NO_APP_FILE", "PAUSED", "STOPPED"}
 
@@ -97,7 +97,12 @@ def main():
     repo_id = os.environ.get("HF_SPACE_ID", "").strip() or f"{user}/xiaoju-cloud"
     log(f"deploying to space {repo_id} (https://{space_host(repo_id)})")
 
-    api.create_repo(repo_id, repo_type="space", space_sdk="docker", private=True, exist_ok=True)
+    # 网页前端（GitHub Pages）需要公开 Space：私有 Space 的网关会拦截浏览器的跨域预检请求。
+    # 公开后 API 仍由 XIAOJU_ADMIN_TOKEN 保护。
+    private = os.environ.get("HF_SPACE_PUBLIC", "").strip().lower() not in ("1", "true", "yes")
+    api.create_repo(repo_id, repo_type="space", space_sdk="docker", private=private, exist_ok=True)
+    api.update_repo_visibility(repo_id, private=private, repo_type="space")
+    log(f"space visibility: {'private' if private else 'public'}")
 
     for key in SECRET_KEYS:
         value = os.environ.get(key, "").strip()

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/langhua98/xiaoju-cloud/internal/crypto"
@@ -49,7 +50,7 @@ func TestUploadDownloadIntegration(t *testing.T) {
 	master, _ := crypto.NewKey()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := service.New(store, driver, service.Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: log})
-	ts := httptest.NewServer(New(svc, userID, "tok", log).Handler())
+	ts := httptest.NewServer(New(svc, Options{UserID: userID, Token: "tok", CORSOrigins: []string{"https://web.example"}, Log: log}).Handler())
 	defer ts.Close()
 
 	do := func(method, path string, body io.Reader, hdr ...string) *http.Response {
@@ -105,6 +106,51 @@ func TestUploadDownloadIntegration(t *testing.T) {
 	}
 	if resp, _ := http.Get(ts.URL + "/api/folders/root/children"); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status %d", resp.StatusCode)
+	}
+	if resp = do("GET", fmt.Sprintf("/api/files/%s", f.ID), nil, "Origin", "https://web.example"); resp.Header.Get("Access-Control-Allow-Origin") != "https://web.example" {
+		t.Fatal("missing CORS header on allowed origin")
+	}
+
+	// 签名下载链接：无需认证头，支持 Range；篡改签名或过期时拒绝。
+	resp = do("POST", fmt.Sprintf("/api/files/%s/link", f.ID), nil)
+	var link struct{ URL string }
+	json.NewDecoder(resp.Body).Decode(&link)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || link.URL == "" {
+		t.Fatalf("link status %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest("GET", ts.URL+link.URL, nil)
+	req.Header.Set("Range", "bytes=10-19")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(got, plain[10:20]) {
+		t.Fatalf("signed link range: status %d", resp.StatusCode)
+	}
+	for _, bad := range []string{
+		strings.Replace(link.URL, "sig=", "sig=0", 1), // 签名被篡改
+		strings.Replace(link.URL, "exp=", "exp=9", 1), // 有效期被延长
+	} {
+		if resp, _ := http.Get(ts.URL + bad); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("bad link %s status %d", bad, resp.StatusCode)
+		}
+	}
+
+	// CORS：允许的来源预检直接通过（不需要认证），其他来源不返回允许头。
+	for origin, want := range map[string]string{"https://web.example": "https://web.example", "https://evil.example": ""} {
+		req, _ = http.NewRequest("OPTIONS", ts.URL+"/api/folders/root/children", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusNoContent || resp.Header.Get("Access-Control-Allow-Origin") != want {
+			t.Fatalf("preflight from %s: status %d, allow-origin %q", origin, resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
+		}
 	}
 
 	if resp = do("DELETE", fmt.Sprintf("/api/files/%s?permanent=1", f.ID), nil); resp.StatusCode != http.StatusNoContent {

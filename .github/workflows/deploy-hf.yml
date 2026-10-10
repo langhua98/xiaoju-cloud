@@ -7,6 +7,8 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - "web/**"
+      - ".github/workflows/pages.yml"
 
 concurrency:
   group: deploy-hf
@@ -55,6 +57,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+          HF_SPACE_PUBLIC: ${{ vars.HF_SPACE_PUBLIC }}
           XIAOJU_DATABASE_URL: ${{ secrets.XIAOJU_DATABASE_URL }}
           XIAOJU_ADMIN_TOKEN: ${{ secrets.XIAOJU_ADMIN_TOKEN }}
           XIAOJU_MASTER_KEY: ${{ secrets.XIAOJU_MASTER_KEY }}
@@ -64,3 +67,4 @@ jobs:
           TG_CHANNEL_ID: ${{ secrets.TG_CHANNEL_ID }}
           TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
           XIAOJU_PART_SIZE: ${{ vars.XIAOJU_PART_SIZE }}
+          XIAOJU_CORS_ORIGINS: ${{ vars.XIAOJU_CORS_ORIGINS }}

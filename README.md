@@ -26,6 +26,7 @@
 | `internal/service` | 上传切块加密、可 Seek 的解密读取器、删除 |
 | `internal/storage` | 存储驱动接口；`telegram/` MTProto 驱动，`local/` 本地驱动 |
 | `internal/api` | HTTP API |
+| `web/` | 网页前端（纯静态，部署到 GitHub Pages） |
 
 ### 加密
 
@@ -80,6 +81,7 @@ make run
 | `POST` | `/api/files?name=..&parent_id=..` | 上传，请求体为文件原始内容（流式） |
 | `GET` | `/api/files/{id}` | 文件元数据 |
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
+| `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
 
 ```bash
@@ -87,6 +89,20 @@ T="Authorization: Bearer change-me"
 curl -H "$T" --data-binary @movie.mp4 "http://localhost:8080/api/files?name=movie.mp4"
 curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/content" -o head.bin
 ```
+
+## 网页前端
+
+`web/` 是纯静态页面（目录浏览、拖拽上传、下载、图片/视频在线预览、删除），推送到 `main` 后由
+`.github/workflows/pages.yml` 发布到 GitHub Pages：`https://<用户名>.github.io/xiaoju-cloud/`。
+
+1. 仓库 **Settings → Pages → Build and deployment → Source** 选 **GitHub Actions**；
+2. 服务端设置 `XIAOJU_CORS_ORIGINS=https://<用户名>.github.io`（允许该网页跨域调用 API）；
+3. 可选：仓库变量 `XIAOJU_API_URL` 设为服务端地址，网页会默认填好；
+4. 打开网页，填写服务端地址和 `XIAOJU_ADMIN_TOKEN` 即可使用（令牌只保存在浏览器本地）。
+
+部署在 HF Space 时 Space 需要是公开的，见 [部署文档](docs/deploy-huggingface.md#网页前端)。
+
+本地预览：`python3 -m http.server -d web 8090`，服务端设置 `XIAOJU_CORS_ORIGINS=http://localhost:8090`。
 
 ## 测试
 
@@ -97,10 +113,10 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 ## 路线图
 
-- [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密
+- [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密；网页前端（GitHub Pages）
 - [ ] V1：多 Bot 池并发与调度、分片断点续传（上传会话）、回收站清理任务、本地热点缓存
 - [ ] V2：秒传去重、分享链接、WebDAV、备份频道双写、按消息说明重建元数据
-- [ ] V3：多用户与配额、Web 前端、缩略图预览、S3/R2 驱动
+- [ ] V3：多用户与配额、缩略图预览、S3/R2 驱动
 
 ## 风险提示
 
