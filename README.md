@@ -98,7 +98,7 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 1. 仓库 **Settings → Pages → Build and deployment → Source** 选 **GitHub Actions**；
 2. 服务端设置 `XIAOJU_CORS_ORIGINS=https://<用户名>.github.io`（允许该网页跨域调用 API）；
 3. 可选：仓库变量 `XIAOJU_API_URL` 设为服务端地址，网页会默认填好；
-4. 打开网页，填写服务端地址和 `XIAOJU_ADMIN_TOKEN` 即可使用（令牌只保存在浏览器本地）。
+4. 打开网页，输入 `XIAOJU_ADMIN_TOKEN` 登录（服务端地址取自 `config.js`，为空时才需要填写）。令牌只保存在当前页面内存中，刷新或关闭页面后需重新输入。
 
 部署在 HF Space 时 Space 需要是公开的，见 [部署文档](docs/deploy-huggingface.md#网页前端)。
 
