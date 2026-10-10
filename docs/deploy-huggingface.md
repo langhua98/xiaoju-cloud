@@ -80,3 +80,19 @@ curl -H "$HF" -H "$T" "$B/api/files/<id>/content" -o photo-back.jpg
 ```
 
 如果把 Space 改成 Public，就不需要 HF token，只用 `X-Xiaoju-Token`（或 `Authorization: Bearer <XIAOJU_ADMIN_TOKEN>`）。
+
+## 网页前端
+
+网页前端部署在 GitHub Pages（见 README“网页前端”），浏览器直接跨域调用 Space 上的 API。
+私有 Space 的网关会拦截浏览器的跨域预检请求，所以使用网页前端时 **Space 必须公开**，访问控制由 `XIAOJU_ADMIN_TOKEN` 负责
+（请使用足够长的随机令牌；文件内容在 Telegram 中是加密的，Space 公开不会暴露数据，只是任何人都能看到 Space 的源码页面）。
+
+在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 添加：
+
+| Variable | 值 |
+|---|---|
+| `HF_SPACE_PUBLIC` | `true`（下次部署时把 Space 设为公开；删除该变量后再部署会改回私有） |
+| `XIAOJU_CORS_ORIGINS` | `https://<GitHub 用户名>.github.io` |
+| `XIAOJU_API_URL` | `https://<HF用户名>-xiaoju-cloud.hf.space`（网页默认服务端地址，可选） |
+
+然后重新运行 “Deploy to Hugging Face Space” 和 “Deploy web to GitHub Pages” 两个工作流。

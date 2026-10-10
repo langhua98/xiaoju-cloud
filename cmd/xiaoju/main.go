@@ -119,9 +119,12 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		MasterKey: cfg.MasterKey, PartSize: cfg.PartSize, TempDir: cfg.TempDir, Log: log,
 	})
 
+	handler := api.New(svc, api.Options{
+		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
+	}).Handler()
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.New(svc, userID, cfg.AdminToken, log).Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)

@@ -2,15 +2,21 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,15 +24,28 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
 
+// downloadLinkTTL 是签名下载链接的有效期。
+const downloadLinkTTL = 6 * time.Hour
+
 type Server struct {
-	svc    *service.Service
-	userID uuid.UUID
-	token  string
-	log    *slog.Logger
+	svc         *service.Service
+	userID      uuid.UUID
+	token       string
+	corsOrigins []string
+	log         *slog.Logger
 }
 
-func New(svc *service.Service, userID uuid.UUID, token string, log *slog.Logger) *Server {
-	return &Server{svc: svc, userID: userID, token: token, log: log}
+type Options struct {
+	UserID uuid.UUID
+	Token  string
+	// CORSOrigins 允许跨域调用 /api 的来源（如 GitHub Pages 上的前端），"*" 表示任意来源。
+	// 认证只走请求头、不用 Cookie，所以放开来源不会带来 CSRF 风险。
+	CORSOrigins []string
+	Log         *slog.Logger
+}
+
+func New(svc *service.Service, opt Options) *Server {
+	return &Server{svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -40,9 +59,37 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/files", s.upload)
 	api.HandleFunc("GET /api/files/{id}", s.getFile)
 	api.HandleFunc("GET /api/files/{id}/content", s.download)
+	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
-	mux.Handle("/api/", s.auth(api))
+	mux.Handle("/api/", s.cors(s.auth(api)))
+	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
+	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
 	return mux
+}
+
+// cors 处理跨域请求；预检请求（OPTIONS）不带认证头，必须在 auth 之前直接放行。
+func (s *Server) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		allowed := origin != "" && (slices.Contains(s.corsOrigins, "*") || slices.Contains(s.corsOrigins, origin))
+		if allowed {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Add("Vary", "Origin")
+			h.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Range")
+		}
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			if allowed {
+				h := w.Header()
+				h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
+				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, Content-Type, Range")
+				h.Set("Access-Control-Max-Age", "86400")
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
@@ -159,6 +206,56 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveContent(w, r, id)
+}
+
+// POST /api/files/{id}/link 生成限时有效的下载链接 /dl/{id}?exp=..&sig=..（相对路径），
+// 加 &inline=1 可在浏览器内预览。
+func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	f, err := s.svc.Store().Get(r.Context(), s.userID, id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if f.Type != meta.TypeFile || f.TrashedAt != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	exp := time.Now().Add(downloadLinkTTL).Unix()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":        fmt.Sprintf("/dl/%s?exp=%d&sig=%s", id, exp, s.linkSig(id, exp)),
+		"expires_at": time.Unix(exp, 0).UTC(),
+	})
+}
+
+// GET /dl/{id}?exp=..&sig=..[&inline=1]
+func (s *Server) signedDownload(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
+	if err != nil || time.Now().Unix() > exp ||
+		!hmac.Equal([]byte(q.Get("sig")), []byte(s.linkSig(id, exp))) {
+		writeError(w, http.StatusForbidden, "invalid or expired link")
+		return
+	}
+	s.serveContent(w, r, id)
+}
+
+// linkSig 用管理员令牌签名，令牌更换后旧链接全部失效。
+func (s *Server) linkSig(id uuid.UUID, exp int64) string {
+	m := hmac.New(sha256.New, []byte("xiaoju download link\x00"+s.token))
+	fmt.Fprintf(m, "%s\n%d", id, exp)
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func (s *Server) serveContent(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	f, rd, err := s.svc.Open(r.Context(), s.userID, id)
 	if err != nil {
 		s.fail(w, err)

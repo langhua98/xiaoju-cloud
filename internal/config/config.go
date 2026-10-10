@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -23,6 +24,8 @@ type Config struct {
 	Storage     string // telegram | local
 	PartSize    int64
 	TempDir     string
+	// CORSOrigins 允许跨域访问 API 的网页来源，如 https://user.github.io；"*" 表示任意来源。
+	CORSOrigins []string
 
 	LocalDir string
 
@@ -52,6 +55,12 @@ func Load() (*Config, error) {
 			SessionFile: env("TG_SESSION_FILE", "./data/tg-session.json"),
 			Transport:   env("TG_TRANSPORT", "tcp"),
 		},
+	}
+
+	for _, o := range strings.Split(os.Getenv("XIAOJU_CORS_ORIGINS"), ",") {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			c.CORSOrigins = append(c.CORSOrigins, o)
+		}
 	}
 
 	var err error
