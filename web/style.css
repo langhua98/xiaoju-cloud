@@ -82,7 +82,7 @@ main { max-width: 1000px; margin: 0 auto; padding: 16px; }
   justify-content: space-between;
   margin-bottom: 12px;
 }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
 .crumbs a { color: var(--muted); text-decoration: none; padding: 2px 4px; border-radius: 6px; }
 .crumbs a:hover { background: var(--hover); color: var(--text); }
@@ -117,6 +117,7 @@ td.name a:hover { text-decoration: underline; }
   padding: 8px 12px;
   margin-bottom: 12px;
 }
+.usummary { margin: 2px 0 4px; font-size: 14px; font-weight: 500; }
 .upload { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 6px 0; font-size: 14px; }
 .upload .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload .ustatus { color: var(--muted); }
