@@ -61,6 +61,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/files/{id}/content", s.download)
 	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
+	api.HandleFunc("GET /api/album/check", s.albumCheck)
+	api.HandleFunc("POST /api/album/upload", s.albumUpload)
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
