@@ -7,11 +7,14 @@ const store = {
   set(key, v) { try { localStorage.setItem(key, v); } catch { /* 隐私模式下忽略 */ } },
 };
 
+// 内置了服务端地址时只需输入令牌；令牌只放在内存里，刷新或关闭页面即失效。
+const defaultAPI = (window.XIAOJU_API_URL || "").replace(/\/+$/, "");
 const state = {
-  api: (store.get("xiaoju.api") || window.XIAOJU_API_URL || "").replace(/\/+$/, ""),
-  token: store.get("xiaoju.token"),
+  api: defaultAPI || store.get("xiaoju.api"),
+  token: "",
   folderId: null,
 };
+try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -50,42 +53,56 @@ function toast(msg) {
 }
 
 function fail(err) {
-  if (err.status === 401) { openSettings("令牌错误，请重新填写"); return; }
+  if (err.status === 401) { logout("令牌错误，请重新输入"); return; }
   toast(err.message);
 }
 
-// ---------- 设置 ----------
+// ---------- 登录 ----------
 
-function openSettings(message) {
-  const form = $("#settings-form");
+function openLogin(message) {
+  const form = $("#login-form");
+  $("#api-field").hidden = !!defaultAPI;
+  form.api.disabled = !!defaultAPI; // 隐藏的必填项会阻止表单提交
   form.api.value = state.api;
-  form.token.value = state.token;
-  const errEl = $("#settings-error");
+  form.token.value = "";
+  const errEl = $("#login-error");
   errEl.textContent = message || "";
   errEl.hidden = !message;
-  $("#settings").showModal();
+  if (!$("#login").open) $("#login").showModal();
+  (defaultAPI ? form.token : form.api).focus();
 }
 
-$("#settings-btn").addEventListener("click", () => openSettings());
-$("#settings-form").addEventListener("submit", async (e) => {
-  if (e.submitter?.value !== "save") return;
+function logout(message) {
+  state.token = "";
+  $("#app").hidden = true;
+  $("#logout-btn").hidden = true;
+  $("#rows").replaceChildren();
+  $("#preview").close();
+  openLogin(message);
+}
+
+$("#logout-btn").addEventListener("click", () => logout());
+// 未登录时不允许用 Esc 关掉登录框
+$("#login").addEventListener("cancel", (e) => { if (!state.token) e.preventDefault(); });
+$("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.target;
+  const api = defaultAPI || form.api.value.trim().replace(/\/+$/, "");
+  const token = form.token.value.trim();
   const prev = { api: state.api, token: state.token };
-  state.api = form.api.value.trim().replace(/\/+$/, "");
-  state.token = form.token.value.trim();
+  Object.assign(state, { api, token });
   try {
     await request("GET", "/api/folders/root/children");
   } catch (err) {
     Object.assign(state, prev);
-    const errEl = $("#settings-error");
+    const errEl = $("#login-error");
     errEl.textContent = err.message;
     errEl.hidden = false;
     return;
   }
-  store.set("xiaoju.api", state.api);
-  store.set("xiaoju.token", state.token);
-  $("#settings").close();
+  if (!defaultAPI) store.set("xiaoju.api", api);
+  $("#login").close();
+  $("#logout-btn").hidden = false;
   load();
 });
 
@@ -120,7 +137,7 @@ function renderCrumbs(chain) {
 }
 
 async function load() {
-  if (!state.api || !state.token) { openSettings(); return; }
+  if (!state.api || !state.token) { openLogin(); return; }
   $("#app").hidden = false;
   state.folderId = currentFolderFromHash();
   $("#loading").hidden = false;
@@ -323,7 +340,7 @@ async function drain() {
     } catch (err) {
       job.status.textContent = err.message;
       job.status.classList.add("error");
-      if (err.status === 401) openSettings("令牌错误，请重新填写");
+      if (err.status === 401) logout("令牌错误，请重新输入");
     }
   }
   uploading = false;
