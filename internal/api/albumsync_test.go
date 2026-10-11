@@ -42,6 +42,22 @@ func TestDateStampAndFormKey(t *testing.T) {
 			t.Errorf("fieldName(%q) = %q, want %q", in, got, want)
 		}
 	}
+	for in, want := range map[string]string{
+		"2026年10月10日 下午7:55":         "20261010_195500",
+		"2026/10/10 19:55:12":        "20261010_195512",
+		"Oct 10, 2026 at 7:55:12 PM": "", // 认不出年月日顺序，不能用来推进进度
+		"2026年13月40日 19:55":          "",
+		"":                           "",
+	} {
+		if got, ok := cursorStamp(in); got != want || ok != (want != "") {
+			t.Errorf("cursorStamp(%q) = %q, %v, want %q", in, got, ok, want)
+		}
+	}
+	for in, want := range map[string]string{"": "1971-01-01 00:00", "20261010_195512": "2026-10-10 19:54", "20261010_000000": "2026-10-09 23:59"} {
+		if got := cursorDate(in); got != want {
+			t.Errorf("cursorDate(%q) = %q, want %q", in, got, want)
+		}
+	}
 	for _, tc := range []struct{ name, date, file, want string }{
 		{"IMG_1234", "2026年10月10日 19:55", "", "20261010_1955_IMG_1234"},
 		{" IMG_1234.HEIC\n", "2026年10月10日 19:55", "", "20261010_1955_IMG_1234"},
@@ -122,45 +138,81 @@ func TestAlbumSyncRunIntegration(t *testing.T) {
 	heic := func(fill byte) []byte {
 		return append([]byte("\x00\x00\x00\x18ftypheic\x00\x00\x00\x00"), bytes.Repeat([]byte{fill}, 3000)...)
 	}
+	uploadNoFile := func(name, date string) (int, string) {
+		t.Helper()
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		mw.WriteField("name", name)
+		mw.WriteField("date", date)
+		mw.Close()
+		return send("POST", "/api/album/upload?token=tok", mw.FormDataContentType(), &buf)
+	}
+	start := func(query, want string) {
+		t.Helper()
+		if code, body := send("GET", "/api/album/start?token=tok"+query, "", nil); code != 200 || body != want {
+			t.Fatalf("start%s: %d %q, want %q", query, code, body, want)
+		}
+	}
+	finish := func(wants ...string) {
+		t.Helper()
+		_, report := send("GET", "/api/album/finish?token=tok", "", nil)
+		for _, want := range wants {
+			if !strings.Contains(report, want) {
+				t.Fatalf("report missing %q:\n%s", want, report)
+			}
+		}
+	}
+	expect := func(what, got, want string) {
+		t.Helper()
+		if got != want {
+			t.Fatalf("%s = %q, want %q", what, got, want)
+		}
+	}
+	uploaded := func(name, date string, fill byte) {
+		t.Helper()
+		if code, body := upload(name, date, name+".HEIC", heic(fill)); code != http.StatusCreated || body != "uploaded" {
+			t.Fatalf("upload %s: %d %q", name, code, body)
+		}
+	}
 	date1, date2, date3 := "2026年10月10日 下午7:55", "2026年10月10日 下午8:01", "2026年10月11日 09:12"
 
-	// 第一轮：3 张里只传了 1 张就“中断”了
-	if code, body := send("GET", "/api/album/start?token=tok&total=3", "", nil); code != 200 || !strings.Contains(body, "共 3 张") {
-		t.Fatalf("start: %d %q", code, body)
-	}
-	if got := check("IMG_0001", date1); got != "missing" {
-		t.Fatalf("first check = %q", got)
-	}
-	if code, body := upload("IMG_0001", date1, "IMG_0001.HEIC", heic(1)); code != http.StatusCreated || body != "uploaded" {
-		t.Fatalf("upload: %d %q", code, body)
-	}
-	_, report := send("GET", "/api/album/finish?token=tok", "", nil)
-	for _, want := range []string{"共 3 张", "本次新上传 1 张", "之前已备份 0 张", "还没处理 2 张"} {
-		if !strings.Contains(report, want) {
-			t.Fatalf("report 1 missing %q:\n%s", want, report)
-		}
-	}
+	// 第一轮：还没有进度，从很早的日期开始；传完第 1 张、检查完第 2 张时被打断（没走到 finish）
+	start("&limit=2", "1971-01-01 00:00")
+	expect("check 1", check("IMG_0001", date1), "missing")
+	uploaded("IMG_0001", date1, 1)
+	expect("check 2", check("IMG_0002", date2), "missing")
 
-	// 第二轮：从头再跑，已传的跳过，剩下的接着传
-	send("GET", "/api/album/start?token=tok&total=3", "", nil)
-	if got := check("IMG_0001", date1); got != "exists" {
-		t.Fatalf("re-check = %q", got)
-	}
-	for _, p := range []struct{ name, date string }{{"IMG_0002", date2}, {"IMG_0003", date3}} {
-		if got := check(p.name, p.date); got != "missing" {
-			t.Fatalf("check %s = %q", p.name, got)
-		}
-		if code, body := upload(p.name, p.date, p.name+".HEIC", heic(2)); code != http.StatusCreated {
-			t.Fatalf("upload %s: %d %q", p.name, code, body)
-		}
-	}
-	_, report = send("GET", "/api/album/finish?token=tok", "", nil)
-	for _, want := range []string{"共 3 张", "本次新上传 2 张", "之前已备份 1 张", "全部备份完成"} {
-		if !strings.Contains(report, want) {
-			t.Fatalf("report 2 missing %q:\n%s", want, report)
-		}
-	}
+	// 第二轮：从第 1 张前 1 分钟接着查，第 1 张跳过，第 2 张接着传；查到的张数等于上限，说明后面还有
+	start("&limit=2", "2026-10-10 19:54")
+	expect("re-check 1", check("IMG_0001", date1), "exists")
+	expect("check 2", check("IMG_0002", date2), "missing")
+	uploaded("IMG_0002", date2, 2)
+	finish("本次检查 2 张", "新上传 1 张", "之前已备份 1 张", "已备份到 2026年10月10日 20:01", "共 2 个文件", "后面还有照片")
 
+	// 第三轮：只剩第 3 张
+	start("&limit=3", "2026-10-10 20:00")
+	expect("re-check 2", check("IMG_0002", date2), "exists")
+	expect("check 3", check("IMG_0003", date3), "missing")
+	uploaded("IMG_0003", date3, 3)
+	finish("本次检查 2 张", "新上传 1 张", "已备份到 2026年10月11日 09:12", "共 3 个文件", "全部备份完成")
+	start("&limit=3", "2026-10-11 09:11")
+	finish("没有新照片", "全部备份完成")
+
+	// 排序选错（最新的排最前）：进度不会跳到最新那张，汇总里提醒
+	start("&limit=3&reset=1", "1971-01-01 00:00")
+	expect("newest first", check("IMG_0003", date3), "exists")
+	expect("then older", check("IMG_0001", date1), "exists")
+	finish("最旧的排最前")
+	start("&limit=3", "1971-01-01 00:00")
+
+	// 上传失败：进度停在失败那张的前一张，下次从它重试
+	expect("check 1", check("IMG_0001", date1), "exists")
+	expect("check 2", check("IMG_0002", date2), "exists")
+	if code, body := uploadNoFile("IMG_0003", date3); code != http.StatusBadRequest || !strings.HasPrefix(body, "failed") {
+		t.Fatalf("upload without file: %d %q", code, body)
+	}
+	finish("上传失败 1 张", "已备份到 2026年10月10日 20:01", "从没传好的那张接着传")
+	start("&limit=3", "2026-10-10 20:00")
 	album, err := store.FindFolder(ctx, userID, nil, albumFolder)
 	if err != nil {
 		t.Fatal(err)

@@ -86,6 +86,10 @@ make run
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
 | `GET` | `/api/album/check?key=..` | 自动同步用：根目录“相册”里是否已有主文件名为 `key` 的文件（含回收站），返回纯文本 `exists` / `missing` |
 | `POST` | `/api/album/upload?key=..` | 自动同步用：上传到“相册”，文件名为 `key` + 扩展名（取自 Content-Type，缺省时按文件头识别 HEIC / MOV / MP4 / JPEG 等）；已存在返回 200 `exists` |
+| `GET` | `/api/album/start?limit=N[&reset=1]` | 快捷指令分批同步：开始一轮，返回纯文本进度日期（如 `2026-10-10 19:54`），快捷指令查找创建日期在它之后的照片（从旧到新，最多 N 张）；`reset=1` 清除进度、从头检查 |
+| `POST` | `/api/album/check` | 表单 `name`、`date`（照片名称、创建日期）→ `exists` / `missing`；照片按拍摄时间从旧到新检查，备份好的部分记为进度 |
+| `POST` | `/api/album/upload` | multipart 表单 `name`、`date`、`file` → 201 `uploaded` / 200 `exists`，文件名为“拍摄时间_照片名”+ 原扩展名 |
+| `GET` | `/api/album/finish` | 本轮汇总（纯文本）：检查、新上传、已备份、失败张数，进度，后面是否还有照片 |
 
 ```bash
 T="Authorization: Bearer change-me"

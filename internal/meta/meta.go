@@ -206,6 +206,38 @@ func (s *Store) StemExists(ctx context.Context, userID, parentID uuid.UUID, stem
 	return ok, err
 }
 
+// CountFiles 返回目录下未删除的文件数（不含子目录）。
+func (s *Store) CountFiles(ctx context.Context, userID, parentID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `
+		SELECT count(*) FROM files WHERE user_id = $1 AND parent_id = $2
+		  AND type = 'file' AND status = 'active' AND trashed_at IS NULL`, userID, parentID).Scan(&n)
+	return n, err
+}
+
+// AlbumCursor 返回相册同步进度（已经连续备份到的拍摄时间 yyyyMMdd_HHmmss），没有时返回空字符串。
+func (s *Store) AlbumCursor(ctx context.Context, userID uuid.UUID) (string, error) {
+	var stamp string
+	err := s.db.QueryRow(ctx, `SELECT stamp FROM album_cursors WHERE user_id = $1`, userID).Scan(&stamp)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return stamp, err
+}
+
+// SetAlbumCursor 把相册同步进度推进到 stamp（只前进不后退）；stamp 为空时清除进度。
+func (s *Store) SetAlbumCursor(ctx context.Context, userID uuid.UUID, stamp string) error {
+	if stamp == "" {
+		_, err := s.db.Exec(ctx, `DELETE FROM album_cursors WHERE user_id = $1`, userID)
+		return err
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO album_cursors (user_id, stamp) VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE
+		SET stamp = GREATEST(album_cursors.stamp, excluded.stamp), updated_at = now()`, userID, stamp)
+	return err
+}
+
 func (s *Store) ListParts(ctx context.Context, fileID uuid.UUID) ([]Part, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT file_id, part_no, storage, channel_id, message_id, size, iv, sha256
