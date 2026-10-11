@@ -72,7 +72,7 @@ make run
 
 ## API
 
-所有 `/api/*` 请求需带 `Authorization: Bearer $XIAOJU_ADMIN_TOKEN`，或 `X-Xiaoju-Token: $XIAOJU_ADMIN_TOKEN`（Authorization 头被占用时，如私有 HF Space）。
+所有 `/api/*` 请求需带 `Authorization: Bearer $XIAOJU_ADMIN_TOKEN`，或 `X-Xiaoju-Token: $XIAOJU_ADMIN_TOKEN`（Authorization 头被占用时，如私有 HF Space）。`/api/album/*` 另外接受网址参数 `?token=`，供无法可靠设置请求头的 iOS 快捷指令使用。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

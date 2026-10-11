@@ -101,6 +101,12 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if got == "" {
 			got, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
+		// iOS 快捷指令里粘贴的请求头常带上看不见的换行，整个请求会被系统直接丢弃，
+		// 所以相册同步接口也接受网址参数 ?token=。其余接口仍只认请求头，避免令牌出现在网址里。
+		if got == "" && strings.HasPrefix(r.URL.Path, "/api/album/") {
+			got = r.URL.Query().Get("token")
+		}
+		got = strings.TrimSpace(got)
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
 			// 只记录长度，不记录令牌内容，便于排查复制时多带了空格等问题
 			s.log.Warn("unauthorized", "method", r.Method, "path", r.URL.Path, "token_len", len(got), "want_len", len(s.token))

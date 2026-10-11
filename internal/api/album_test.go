@@ -133,4 +133,23 @@ func TestAlbumSyncIntegration(t *testing.T) {
 	if code, _ := do("GET", "/api/album/check?key="+strings.Repeat("x", 300), "", nil); code != http.StatusBadRequest {
 		t.Fatalf("long key: %d", code)
 	}
+
+	// 相册接口也接受网址里的 ?token=（快捷指令用），其他接口不接受
+	get := func(path string) int {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := get("/api/album/check?key=" + key + "&token=tok"); code != http.StatusOK {
+		t.Fatalf("album check with ?token=: %d", code)
+	}
+	if code := get("/api/album/check?key=" + key + "&token=bad"); code != http.StatusUnauthorized {
+		t.Fatalf("album check with bad ?token=: %d", code)
+	}
+	if code := get("/api/folders/root/children?token=tok"); code != http.StatusUnauthorized {
+		t.Fatalf("?token= accepted outside album API: %d", code)
+	}
 }
