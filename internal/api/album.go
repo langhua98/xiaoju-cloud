@@ -21,6 +21,7 @@ const albumFolder = "相册"
 func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if err := validName(key); err != nil {
+		s.log.Warn("album check: invalid key", "key", key)
 		writeError(w, http.StatusBadRequest, "invalid key")
 		return
 	}
@@ -29,6 +30,7 @@ func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.log.Info("album check", "key", key, "exists", exists)
 	if exists {
 		writeText(w, http.StatusOK, "exists")
 	} else {
@@ -41,6 +43,7 @@ func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) albumUpload(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if err := validName(key); err != nil {
+		s.log.Warn("album upload: invalid key", "key", key)
 		writeError(w, http.StatusBadRequest, "invalid key")
 		return
 	}
@@ -53,6 +56,7 @@ func (s *Server) albumUpload(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	} else if exists {
+		s.log.Info("album upload: already synced", "key", key)
 		writeText(w, http.StatusOK, "exists")
 		return
 	}
@@ -71,6 +75,7 @@ func (s *Server) albumUpload(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.log.Info("album upload", "name", f.Name, "mime", f.Mime, "size", f.Size)
 	writeJSON(w, http.StatusCreated, f)
 }
 

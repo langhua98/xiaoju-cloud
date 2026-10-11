@@ -102,6 +102,8 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			got, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
+			// 只记录长度，不记录令牌内容，便于排查复制时多带了空格等问题
+			s.log.Warn("unauthorized", "method", r.Method, "path", r.URL.Path, "token_len", len(got), "want_len", len(s.token))
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
