@@ -161,6 +161,51 @@ func (s *Store) ListChildren(ctx context.Context, userID uuid.UUID, parentID *uu
 	return out, rows.Err()
 }
 
+// FindChild 返回目录下指定名称的未删除条目（文件或目录）。
+func (s *Store) FindChild(ctx context.Context, userID uuid.UUID, parentID *uuid.UUID, name string) (*File, error) {
+	return scanFile(s.db.QueryRow(ctx, `
+		SELECT `+fileColumns+` FROM files
+		WHERE user_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND name = $3
+		  AND status = 'active' AND trashed_at IS NULL`, userID, parentID, name))
+}
+
+// Move 移动并 / 或重命名条目。目标目录下已有同名条目时返回 ErrConflict；
+// 调用方负责防止把目录移进它自己的子目录。
+func (s *Store) Move(ctx context.Context, userID, id uuid.UUID, parentID *uuid.UUID, name string) error {
+	if err := s.checkParent(ctx, userID, parentID); err != nil {
+		return err
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE files SET parent_id = $3, name = $4, updated_at = now()
+		WHERE id = $1 AND user_id = $2 AND status = 'active' AND trashed_at IS NULL`, id, userID, parentID, name)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// FindFolder 返回目录下指定名称的未删除子目录。
+func (s *Store) FindFolder(ctx context.Context, userID uuid.UUID, parentID *uuid.UUID, name string) (*File, error) {
+	return scanFile(s.db.QueryRow(ctx, `
+		SELECT `+fileColumns+` FROM files
+		WHERE user_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND name = $3
+		  AND type = 'folder' AND status = 'active' AND trashed_at IS NULL`, userID, parentID, name))
+}
+
+// StemExists 判断目录下是否已有主文件名（去掉扩展名）为 stem 的文件，回收站中的也算，
+// 这样自动同步不会把用户删掉的照片再传回来。
+func (s *Store) StemExists(ctx context.Context, userID, parentID uuid.UUID, stem string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM files WHERE user_id = $1 AND parent_id = $2
+		  AND type = 'file' AND status = 'active'
+		  AND (name = $3 OR left(name, length($3) + 1) = $3 || '.'))`, userID, parentID, stem).Scan(&ok)
+	return ok, err
+}
+
 func (s *Store) ListParts(ctx context.Context, fileID uuid.UUID) ([]Part, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT file_id, part_no, storage, channel_id, message_id, size, iv, sha256

@@ -26,6 +26,7 @@
 | `internal/service` | 上传切块加密、可 Seek 的解密读取器、删除 |
 | `internal/storage` | 存储驱动接口；`telegram/` MTProto 驱动，`local/` 本地驱动 |
 | `internal/api` | HTTP API |
+| `internal/dav` | WebDAV 接口（`/dav/`），供相册备份 App、系统文件管理器挂载 |
 | `web/` | 网页前端（纯静态，部署到 GitHub Pages） |
 
 ### 加密
@@ -72,7 +73,7 @@ make run
 
 ## API
 
-所有 `/api/*` 请求需带 `Authorization: Bearer $XIAOJU_ADMIN_TOKEN`，或 `X-Xiaoju-Token: $XIAOJU_ADMIN_TOKEN`（Authorization 头被占用时，如私有 HF Space）。
+所有 `/api/*` 请求需带 `Authorization: Bearer $XIAOJU_ADMIN_TOKEN`，或 `X-Xiaoju-Token: $XIAOJU_ADMIN_TOKEN`（Authorization 头被占用时，如私有 HF Space）。`/api/album/*` 另外接受网址参数 `?token=`，供无法可靠设置请求头的 iOS 快捷指令使用。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -83,12 +84,20 @@ make run
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
 | `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
+| `GET` | `/api/album/check?key=..` | 自动同步用：根目录“相册”里是否已有主文件名为 `key` 的文件（含回收站），返回纯文本 `exists` / `missing` |
+| `POST` | `/api/album/upload?key=..` | 自动同步用：上传到“相册”，文件名为 `key` + 扩展名（取自 Content-Type，缺省时按文件头识别 HEIC / MOV / MP4 / JPEG 等）；已存在返回 200 `exists` |
 
 ```bash
 T="Authorization: Bearer change-me"
 curl -H "$T" --data-binary @movie.mp4 "http://localhost:8080/api/files?name=movie.mp4"
 curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/content" -o head.bin
 ```
+
+## WebDAV
+
+`https://<服务端地址>/dav/` 以 WebDAV 提供整个云盘，可用任意 WebDAV 客户端挂载或自动备份相册（如 iOS 的 WebDAV Browser 开启“相机备份”）。
+认证为 HTTP Basic：用户名任意，密码为 `XIAOJU_ADMIN_TOKEN`。上传边收边加密写入 Telegram；覆盖文件时先上传新内容、成功后再替换旧文件；
+删除操作移入回收站。
 
 ## 网页前端
 
@@ -115,9 +124,9 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 ## 路线图
 
-- [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密；网页前端（GitHub Pages）
+- [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密；网页前端（GitHub Pages）；WebDAV
 - [ ] V1：多 Bot 池并发与调度、分片断点续传（上传会话）、回收站清理任务、本地热点缓存
-- [ ] V2：秒传去重、分享链接、WebDAV、备份频道双写、按消息说明重建元数据
+- [ ] V2：秒传去重、分享链接、备份频道双写、按消息说明重建元数据
 - [ ] V3：多用户与配额、缩略图预览、S3/R2 驱动
 
 ## 风险提示
