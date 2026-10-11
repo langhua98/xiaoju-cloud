@@ -7,6 +7,11 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode"
 
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
@@ -19,7 +24,7 @@ const albumFolder = "相册"
 
 // GET /api/album/check?key=... → 纯文本 "exists" 或 "missing"，方便快捷指令直接判断。
 func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
+	key := albumQuery(r).Get("key")
 	if err := validName(key); err != nil {
 		s.log.Warn("album check: invalid key", "key", key)
 		writeError(w, http.StatusBadRequest, "invalid key")
@@ -41,7 +46,7 @@ func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
 // POST /api/album/upload?key=...，请求体为照片 / 视频原始内容。扩展名和 MIME 取自
 // Content-Type，没有时从文件头识别。已同步过的直接返回 200 "exists"，新文件返回 201。
 func (s *Server) albumUpload(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Query().Get("key")
+	key := albumQuery(r).Get("key")
 	if err := validName(key); err != nil {
 		s.log.Warn("album upload: invalid key", "key", key)
 		writeError(w, http.StatusBadRequest, "invalid key")
@@ -77,6 +82,31 @@ func (s *Server) albumUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("album upload", "name", f.Name, "mime", f.Mime, "size", f.Size)
 	writeJSON(w, http.StatusCreated, f)
+}
+
+// albumQuery 解析相册接口的网址参数。快捷指令拼出来的网址可能把 & = 转义成 %26 %3D，
+// 或夹带换行、空格（粘贴时带进去的），所以先完整解码、去掉所有空白再解析。
+// key 和 token 本身只含字母、数字和下划线，这样处理不会误伤。
+func albumQuery(r *http.Request) url.Values {
+	raw := r.URL.RawQuery
+	if dec, err := url.QueryUnescape(raw); err == nil {
+		raw = dec
+	}
+	raw = strings.Map(func(c rune) rune {
+		if unicode.IsSpace(c) {
+			return -1
+		}
+		return c
+	}, raw)
+	q, _ := url.ParseQuery(raw)
+	return q
+}
+
+var hexRun = regexp.MustCompile(`[0-9a-fA-F]{16,}`)
+
+// redactQuery 用于日志：把长十六进制串（令牌）打码。
+func redactQuery(raw string) string {
+	return hexRun.ReplaceAllStringFunc(raw, func(m string) string { return "<hex" + strconv.Itoa(len(m)) + ">" })
 }
 
 func (s *Server) albumHas(ctx context.Context, key string) (bool, error) {

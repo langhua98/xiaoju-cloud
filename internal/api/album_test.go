@@ -149,6 +149,16 @@ func TestAlbumSyncIntegration(t *testing.T) {
 	if code := get("/api/album/check?key=" + key + "&token=bad"); code != http.StatusUnauthorized {
 		t.Fatalf("album check with bad ?token=: %d", code)
 	}
+	// 快捷指令可能把 & = 转义，或带进换行
+	for _, q := range []string{
+		"key=" + key + "%26token%3Dtok",
+		"key=" + key + "%0A&token=tok%0A",
+		"key=%20" + key + "&token=%20tok",
+	} {
+		if code := get("/api/album/check?" + q); code != http.StatusOK {
+			t.Fatalf("album check ?%s: %d", q, code)
+		}
+	}
 	if code := get("/api/folders/root/children?token=tok"); code != http.StatusUnauthorized {
 		t.Fatalf("?token= accepted outside album API: %d", code)
 	}
