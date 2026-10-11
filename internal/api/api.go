@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/langhua98/xiaoju-cloud/internal/dav"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
@@ -66,6 +67,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
+	// WebDAV：相册备份 App、系统文件管理器挂载用，Basic 认证（密码为访问令牌）。
+	davHandler := dav.Handler(s.svc, s.userID, s.token, s.log)
+	mux.Handle(dav.Prefix+"/", davHandler)
+	mux.Handle(dav.Prefix, davHandler)
 	return mux
 }
 

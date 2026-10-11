@@ -161,6 +161,32 @@ func (s *Store) ListChildren(ctx context.Context, userID uuid.UUID, parentID *uu
 	return out, rows.Err()
 }
 
+// FindChild 返回目录下指定名称的未删除条目（文件或目录）。
+func (s *Store) FindChild(ctx context.Context, userID uuid.UUID, parentID *uuid.UUID, name string) (*File, error) {
+	return scanFile(s.db.QueryRow(ctx, `
+		SELECT `+fileColumns+` FROM files
+		WHERE user_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND name = $3
+		  AND status = 'active' AND trashed_at IS NULL`, userID, parentID, name))
+}
+
+// Move 移动并 / 或重命名条目。目标目录下已有同名条目时返回 ErrConflict；
+// 调用方负责防止把目录移进它自己的子目录。
+func (s *Store) Move(ctx context.Context, userID, id uuid.UUID, parentID *uuid.UUID, name string) error {
+	if err := s.checkParent(ctx, userID, parentID); err != nil {
+		return err
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE files SET parent_id = $3, name = $4, updated_at = now()
+		WHERE id = $1 AND user_id = $2 AND status = 'active' AND trashed_at IS NULL`, id, userID, parentID, name)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // FindFolder 返回目录下指定名称的未删除子目录。
 func (s *Store) FindFolder(ctx context.Context, userID uuid.UUID, parentID *uuid.UUID, name string) (*File, error) {
 	return scanFile(s.db.QueryRow(ctx, `

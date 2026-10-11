@@ -26,6 +26,7 @@
 | `internal/service` | 上传切块加密、可 Seek 的解密读取器、删除 |
 | `internal/storage` | 存储驱动接口；`telegram/` MTProto 驱动，`local/` 本地驱动 |
 | `internal/api` | HTTP API |
+| `internal/dav` | WebDAV 接口（`/dav/`），供相册备份 App、系统文件管理器挂载 |
 | `web/` | 网页前端（纯静态，部署到 GitHub Pages） |
 
 ### 加密
@@ -92,6 +93,12 @@ curl -H "$T" --data-binary @movie.mp4 "http://localhost:8080/api/files?name=movi
 curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/content" -o head.bin
 ```
 
+## WebDAV
+
+`https://<服务端地址>/dav/` 以 WebDAV 提供整个云盘，可用任意 WebDAV 客户端挂载或自动备份相册（如 iOS 的 WebDAV Browser 开启“相机备份”）。
+认证为 HTTP Basic：用户名任意，密码为 `XIAOJU_ADMIN_TOKEN`。上传边收边加密写入 Telegram；覆盖文件时先上传新内容、成功后再替换旧文件；
+删除操作移入回收站。
+
 ## 网页前端
 
 `web/` 是纯静态页面（目录浏览、拖拽上传、下载、图片/视频在线预览、删除、一键同步相册），推送到 `main` 后由
@@ -117,9 +124,9 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 ## 路线图
 
-- [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密；网页前端（GitHub Pages）
+- [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密；网页前端（GitHub Pages）；WebDAV
 - [ ] V1：多 Bot 池并发与调度、分片断点续传（上传会话）、回收站清理任务、本地热点缓存
-- [ ] V2：秒传去重、分享链接、WebDAV、备份频道双写、按消息说明重建元数据
+- [ ] V2：秒传去重、分享链接、备份频道双写、按消息说明重建元数据
 - [ ] V3：多用户与配额、缩略图预览、S3/R2 驱动
 
 ## 风险提示
