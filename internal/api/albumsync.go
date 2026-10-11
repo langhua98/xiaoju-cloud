@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
@@ -89,9 +91,10 @@ func (s *Server) albumCheckAny(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid form")
 			return
 		}
-		key := formKey(r.PostFormValue("name"), r.PostFormValue("date"), "")
+		f := normalizedForm(r)
+		key := formKey(f["name"], f["date"], "")
 		if validName(key) != nil {
-			s.log.Warn("album check: invalid form", "name", r.PostFormValue("name"), "date", r.PostFormValue("date"))
+			s.log.Warn("album check: invalid form", "fields", fmt.Sprint(r.PostForm))
 			writeError(w, http.StatusBadRequest, "invalid name/date")
 			return
 		}
@@ -156,8 +159,9 @@ func (s *Server) albumUploadForm(r *http.Request) (status int, msg string, err e
 		if err != nil {
 			return http.StatusBadRequest, "invalid form", err
 		}
+		field := fieldName(p.FormName())
 		switch {
-		case p.FileName() != "" || p.FormName() == "file":
+		case p.FileName() != "" || field == "file":
 			if tmp != nil {
 				p.Close()
 				continue // 只取第一个文件
@@ -169,9 +173,9 @@ func (s *Server) albumUploadForm(r *http.Request) (status int, msg string, err e
 			if _, err := io.Copy(tmp, p); err != nil {
 				return http.StatusBadRequest, "read file", err
 			}
-		case p.FormName() == "name":
+		case field == "name":
 			name = readField(p)
-		case p.FormName() == "date":
+		case field == "date":
 			date = readField(p)
 		}
 		p.Close()
@@ -217,6 +221,22 @@ func (s *Server) albumUploadForm(r *http.Request) (status int, msg string, err e
 	return http.StatusCreated, "uploaded", nil
 }
 
+// fieldName 规范化表单字段名：手机上手打的字段名可能带空格、大写或全角字符。
+func fieldName(s string) string {
+	return strings.ToLower(nonLetter.ReplaceAllString(norm.NFKC.String(s), ""))
+}
+
+// normalizedForm 返回按 fieldName 规范化字段名后的表单值。
+func normalizedForm(r *http.Request) map[string]string {
+	out := map[string]string{}
+	for k, v := range r.PostForm {
+		if len(v) > 0 {
+			out[fieldName(k)] = v[0]
+		}
+	}
+	return out
+}
+
 func readField(r io.Reader) string {
 	b, _ := io.ReadAll(io.LimitReader(r, 1024))
 	return string(b)
@@ -235,10 +255,11 @@ func parseForm(r *http.Request) error {
 }
 
 var (
-	digitRun = regexp.MustCompile(`\d+`)
-	nonDigit = regexp.MustCompile(`\D`)
-	pmMarker = regexp.MustCompile(`(?i)下午|晚上|傍晚|\bpm\b|p\.m\.`)
-	amMarker = regexp.MustCompile(`(?i)上午|凌晨|早上|\bam\b|a\.m\.`)
+	digitRun  = regexp.MustCompile(`\d+`)
+	nonDigit  = regexp.MustCompile(`\D`)
+	nonLetter = regexp.MustCompile(`[^A-Za-z]`)
+	pmMarker  = regexp.MustCompile(`(?i)下午|晚上|傍晚|\bpm\b|p\.m\.`)
+	amMarker  = regexp.MustCompile(`(?i)上午|凌晨|早上|\bam\b|a\.m\.`)
 )
 
 // formKey 由照片名称和创建日期生成去重 key（“拍摄时间_照片名”）。名称为空时用上传文件名。

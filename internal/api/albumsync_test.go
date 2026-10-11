@@ -37,6 +37,11 @@ func TestDateStampAndFormKey(t *testing.T) {
 			t.Errorf("dateStamp(%q) = %q, want %q", in, got, want)
 		}
 	}
+	for in, want := range map[string]string{"name": "name", " Name\n": "name", "ｎａｍｅ": "name", "DATE ": "date", "file": "file"} {
+		if got := fieldName(in); got != want {
+			t.Errorf("fieldName(%q) = %q, want %q", in, got, want)
+		}
+	}
 	for _, tc := range []struct{ name, date, file, want string }{
 		{"IMG_1234", "2026年10月10日 19:55", "", "20261010_1955_IMG_1234"},
 		{" IMG_1234.HEIC\n", "2026年10月10日 19:55", "", "20261010_1955_IMG_1234"},
@@ -96,7 +101,7 @@ func TestAlbumSyncRunIntegration(t *testing.T) {
 	// 快捷指令把令牌放在网址里，名称和日期放在表单里
 	check := func(name, date string) string {
 		t.Helper()
-		form := url.Values{"name": {name}, "date": {date}}
+		form := url.Values{" Name ": {name}, "date\n": {date}} // 字段名带空格、大写也能识别
 		code, body := send("POST", "/api/album/check?token=tok", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 		if code != 200 {
 			t.Fatalf("check %s: %d %s", name, code, body)
