@@ -36,7 +36,8 @@ func Start(ctx context.Context, cfg ClientConfig, log *slog.Logger) (api *tg.Cli
 	}
 	opts := telegram.Options{
 		SessionStorage: &session.FileStorage{Path: cfg.SessionFile},
-		Middlewares:    []telegram.Middleware{floodWait(log, 3, time.Minute)},
+		// 批量上传时仍可能被限流，多等几次而不是让上传失败
+		Middlewares: []telegram.Middleware{floodWait(log, 10, 5*time.Minute)},
 	}
 	if cfg.Transport == "websocket" {
 		opts.Resolver = dcs.Websocket(dcs.WebsocketOptions{})
