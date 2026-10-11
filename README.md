@@ -72,7 +72,7 @@ make run
 
 ## API
 
-所有 `/api/*` 请求需带 `Authorization: Bearer $XIAOJU_ADMIN_TOKEN`，或 `X-Xiaoju-Token: $XIAOJU_ADMIN_TOKEN`（Authorization 头被占用时，如私有 HF Space）。
+所有 `/api/*` 请求需带 `Authorization: Bearer $XIAOJU_ADMIN_TOKEN`，或 `X-Xiaoju-Token: $XIAOJU_ADMIN_TOKEN`（Authorization 头被占用时，如私有 HF Space）。`/api/album/*` 另外接受网址参数 `?token=`，供无法可靠设置请求头的 iOS 快捷指令使用。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -83,6 +83,8 @@ make run
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
 | `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
+| `GET` | `/api/album/check?key=..` | 自动同步用：根目录“相册”里是否已有主文件名为 `key` 的文件（含回收站），返回纯文本 `exists` / `missing` |
+| `POST` | `/api/album/upload?key=..` | 自动同步用：上传到“相册”，文件名为 `key` + 扩展名（取自 Content-Type，缺省时按文件头识别 HEIC / MOV / MP4 / JPEG 等）；已存在返回 200 `exists` |
 
 ```bash
 T="Authorization: Bearer change-me"

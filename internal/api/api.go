@@ -61,6 +61,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/files/{id}/content", s.download)
 	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
+	api.HandleFunc("GET /api/album/check", s.albumCheck)
+	api.HandleFunc("POST /api/album/upload", s.albumUpload)
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
@@ -99,7 +101,20 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if got == "" {
 			got, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
+		// iOS 快捷指令里粘贴的请求头常带上看不见的换行，整个请求会被系统直接丢弃，
+		// 所以相册同步接口也接受网址参数 ?token=。其余接口仍只认请求头，避免令牌出现在网址里。
+		album := strings.HasPrefix(r.URL.Path, "/api/album/")
+		if got == "" && album {
+			got = albumQuery(r).Get("token")
+		}
+		got = strings.TrimSpace(got)
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
+			// 只记录长度，不记录令牌内容，便于排查复制时多带了空格等问题
+			attrs := []any{"method", r.Method, "path", r.URL.Path, "token_len", len(got), "want_len", len(s.token)}
+			if album {
+				attrs = append(attrs, "query", redactQuery(r.URL.RawQuery))
+			}
+			s.log.Warn("unauthorized", attrs...)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
