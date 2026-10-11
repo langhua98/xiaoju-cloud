@@ -34,6 +34,8 @@ type Server struct {
 	token       string
 	corsOrigins []string
 	log         *slog.Logger
+
+	albumRun albumRun // 快捷指令同步的本轮计数
 }
 
 type Options struct {
@@ -62,8 +64,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/files/{id}/content", s.download)
 	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
-	api.HandleFunc("GET /api/album/check", s.albumCheck)
-	api.HandleFunc("POST /api/album/upload", s.albumUpload)
+	api.HandleFunc("GET /api/album/check", s.albumCheckAny)
+	api.HandleFunc("POST /api/album/check", s.albumCheckAny)
+	api.HandleFunc("POST /api/album/upload", s.albumUploadAny)
+	api.HandleFunc("GET /api/album/start", s.albumStart)
+	api.HandleFunc("POST /api/album/start", s.albumStart)
+	api.HandleFunc("GET /api/album/finish", s.albumFinish)
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
