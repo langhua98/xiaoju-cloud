@@ -26,6 +26,9 @@ const (
 	uploadPartSize = 512 * 1024
 	// file_reference 会过期，缓存的文档位置只用一段时间。
 	locationTTL = 30 * time.Minute
+	// Bot 往同一个频道发消息大约每分钟 20 条封顶，超过就会收到 FLOOD_WAIT。
+	// 发送统一排队并保持间隔，批量上传（如相册备份 App 并发上传）时就不会被限流。
+	sendInterval = 3 * time.Second
 )
 
 type Driver struct {
@@ -35,6 +38,9 @@ type Driver struct {
 
 	mu    sync.Mutex
 	cache map[int64]cachedLocation
+
+	sendMu   sync.Mutex // 串行化发消息，见 sendInterval
+	lastSend time.Time
 }
 
 type cachedLocation struct {
@@ -78,6 +84,16 @@ func (d *Driver) Put(ctx context.Context, req storage.PutRequest) (storage.Locat
 	if err != nil {
 		return storage.Location{}, err
 	}
+	d.sendMu.Lock()
+	defer d.sendMu.Unlock()
+	if wait := time.Until(d.lastSend.Add(sendInterval)); wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return storage.Location{}, ctx.Err()
+		}
+	}
+	defer func() { d.lastSend = time.Now() }()
 	updates, err := d.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
 		Peer: &tg.InputPeerChannel{ChannelID: d.channel.ChannelID, AccessHash: d.channel.AccessHash},
 		Media: &tg.InputMediaUploadedDocument{
