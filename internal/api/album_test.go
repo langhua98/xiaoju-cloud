@@ -22,6 +22,22 @@ import (
 	"github.com/langhua98/xiaoju-cloud/migrations"
 )
 
+func TestAlbumKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"20261010_221910_IMG_1672":    "20261010_221910_IMG_1672",
+		"IMG_167220261010_221910_":    "20261010_221910_IMG_1672",
+		"IMG_1672_20261010_221910":    "20261010_221910_IMG_1672",
+		"20261010_221910＿ IMG_1672\n": "20261010_221910_IMG_1672",
+		"20261010_221910_":            "20261010_221910",
+		"IMG_1672":                    "IMG_1672",
+		"":                            "",
+	} {
+		if got := albumKey(in); got != want {
+			t.Errorf("albumKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestMediaType(t *testing.T) {
 	jpeg := []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00")
 	ftyp := func(brand string) []byte { return []byte("\x00\x00\x00\x18ftyp" + brand + "\x00\x00\x00\x00") }
@@ -158,6 +174,10 @@ func TestAlbumSyncIntegration(t *testing.T) {
 		if code := get("/api/album/check?" + q); code != http.StatusOK {
 			t.Fatalf("album check ?%s: %d", q, code)
 		}
+	}
+	// 名称在前、时间在后（末尾带隐形字符被截断也不影响），与已同步的是同一张
+	if code, body := do("GET", "/api/album/check?token=tok&key=IMG_123420261010_153012_", "", nil); code != 200 || body != "exists" {
+		t.Fatalf("reordered key: %d %q", code, body)
 	}
 	if code := get("/api/folders/root/children?token=tok"); code != http.StatusUnauthorized {
 		t.Fatalf("?token= accepted outside album API: %d", code)

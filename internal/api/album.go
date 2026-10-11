@@ -24,7 +24,7 @@ const albumFolder = "相册"
 
 // GET /api/album/check?key=... → 纯文本 "exists" 或 "missing"，方便快捷指令直接判断。
 func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
-	key := albumQuery(r).Get("key")
+	key := albumKey(albumQuery(r).Get("key"))
 	if err := validName(key); err != nil {
 		s.log.Warn("album check: invalid key", "key", key)
 		writeError(w, http.StatusBadRequest, "invalid key")
@@ -46,7 +46,7 @@ func (s *Server) albumCheck(w http.ResponseWriter, r *http.Request) {
 // POST /api/album/upload?key=...，请求体为照片 / 视频原始内容。扩展名和 MIME 取自
 // Content-Type，没有时从文件头识别。已同步过的直接返回 200 "exists"，新文件返回 201。
 func (s *Server) albumUpload(w http.ResponseWriter, r *http.Request) {
-	key := albumQuery(r).Get("key")
+	key := albumKey(albumQuery(r).Get("key"))
 	if err := validName(key); err != nil {
 		s.log.Warn("album upload: invalid key", "key", key)
 		writeError(w, http.StatusBadRequest, "invalid key")
@@ -100,6 +100,26 @@ func albumQuery(r *http.Request) url.Values {
 	}, raw)
 	q, _ := url.ParseQuery(raw)
 	return q
+}
+
+var (
+	nonKeyRun = regexp.MustCompile(`[^A-Za-z0-9]+`)
+	stampRe   = regexp.MustCompile(`^(.*?)(\d{8}_\d{6})(.*)$`)
+)
+
+// albumKey 把客户端拼的 key 整理成“拍摄时间_照片名”：非字母数字的字符一律换成 _，
+// 并把 yyyyMMdd_HHmmss 时间戳挪到最前面。这样“IMG_1234 + 时间”和“时间 + IMG_1234”
+// 两种拼法得到同一个 key，快捷指令也可以把时间放在网址末尾（时间后面带上的隐形字符
+// 会截断网址，放在末尾就不会丢掉照片名和令牌）。
+func albumKey(raw string) string {
+	k := strings.Trim(nonKeyRun.ReplaceAllString(raw, "_"), "_")
+	if m := stampRe.FindStringSubmatch(k); m != nil {
+		if name := strings.Trim(m[1]+"_"+m[3], "_"); name != "" {
+			return m[2] + "_" + name
+		}
+		return m[2]
+	}
+	return k
 }
 
 var hexRun = regexp.MustCompile(`[0-9a-fA-F]{16,}`)
