@@ -10,6 +10,8 @@ on:
       - "web/**"
       - ".github/workflows/pages.yml"
       - ".github/workflows/diagnose-hf.yml"
+      - "shortcuts/**"
+      - ".github/workflows/shortcut.yml"
 
 concurrency:
   group: deploy-hf

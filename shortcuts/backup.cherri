@@ -28,7 +28,10 @@ action 'downloadurl' uploadFile(
 for photo in photos {
     @name = getImageDetail(photo, "Name")
     @resp = uploadFile(uploadURL, photo, {"X-File-Name": "{name}"})
-    @result = "{resp['result']}"
+    // 返回的是 JSON：先转成词典再取 result（uploaded / skipped），不能直接 resp['result']——那会编译成读取文件属性
+    @respDict = getDictionary(resp)
+    @resultValue = getValue(respDict, "result")
+    @result = "{resultValue}"
     if result == "uploaded" {
         @uploaded += 1
     } else if result == "skipped" {
