@@ -26,8 +26,12 @@ jobs:
       - name: Build and sign
         env:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
-        run: python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --out xiaoju-backup.shortcut ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"}
+        run: |
+          for s in backup sync; do
+            python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "xiaoju-$s.shortcut" \
+              ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"}
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: xiaoju-backup-shortcut
-          path: xiaoju-backup.shortcut
+          name: xiaoju-shortcuts
+          path: xiaoju-*.shortcut
