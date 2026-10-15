@@ -190,3 +190,58 @@ func countFiles(t *testing.T, dir string) int {
 	}
 	return len(entries)
 }
+
+func TestDriveStatsIntegration(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, _ := store.EnsureUser(ctx, "stats-test")
+	primary, _ := local.New(t.TempDir())
+	backup, _ := local.New(t.TempDir())
+	master, _ := crypto.NewKey()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	noBackup := New(store, primary, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: log})
+	withBackup := New(store, primary, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: log, Backup: backup})
+
+	put := func(svc *Service, parent *meta.File, name, mime string, size int) {
+		t.Helper()
+		req := UploadRequest{UserID: userID, Name: name, Mime: mime, Body: bytes.NewReader(randBytes(size))}
+		if parent != nil {
+			req.ParentID = &parent.ID
+		}
+		if _, err := svc.Upload(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	album, _ := store.CreateFolder(ctx, userID, nil, "相册")
+	trash, _ := store.CreateFolder(ctx, userID, nil, "旧东西")
+
+	put(withBackup, album, "a.jpg", "image/jpeg", 1500)                // 照片（MIME），2 块，已备份
+	put(withBackup, album, "IMG_0001.HEIC", "", 300)                   // 照片（扩展名）
+	put(noBackup, album, "clip.MOV", "application/octet-stream", 2000) // 视频（扩展名），未备份
+	put(noBackup, nil, "notes.txt", "text/plain", 10)                  // 其他，未备份
+	put(withBackup, nil, "empty.bin", "", 0)                           // 其他，空文件算已备份
+	put(withBackup, trash, "gone.jpg", "image/jpeg", 100)              // 在回收站文件夹里，不计入
+	if err := store.Trash(ctx, userID, trash.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.DriveStats(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := meta.DriveStats{
+		Folders: 1, Files: 5, Photos: 2, Videos: 1, Others: 2,
+		Bytes: 1500 + 300 + 2000 + 10, PhotoBytes: 1800, VideoBytes: 2000, BackedUpFiles: 3,
+	}
+	if st != want {
+		t.Fatalf("stats = %+v\nwant    %+v", st, want)
+	}
+}

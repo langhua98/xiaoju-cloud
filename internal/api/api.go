@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
 	api.HandleFunc("GET /api/backup/status", s.backupStatus)
+	api.HandleFunc("GET /api/stats", s.stats)
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
@@ -296,6 +297,16 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 // GET /api/backup/status 返回双备份是否启用，以及已备份的分块数和字节数。
 func (s *Server) backupStatus(w http.ResponseWriter, r *http.Request) {
 	st, err := s.svc.BackupStatus(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// GET /api/stats 返回整个网盘的统计：文件数（照片、视频、其他）、总大小、已完整备份的文件数。
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.Store().DriveStats(r.Context(), s.userID)
 	if err != nil {
 		s.fail(w, err)
 		return

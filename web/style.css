@@ -74,6 +74,19 @@ input {
 .brand::before { content: "🍊 "; }
 .topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
+/* 整个网盘的统计 */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.stats b { color: var(--text); font-weight: 600; }
+.stats .total { color: var(--text); }
+
 /* 双备份进度 */
 .backup-badge {
   display: inline-flex;

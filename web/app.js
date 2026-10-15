@@ -243,27 +243,48 @@ function stopBackupPolling() {
   clearInterval(backupTimer);
   backupTimer = null;
   $("#backup-badge").hidden = true;
+  $("#stats").hidden = true;
 }
 
+// 同时刷新网盘统计和备份进度（备份提示里的文件数来自统计）
 async function refreshBackup() {
   if (!state.token) return;
-  const el = $("#backup-badge");
-  let st;
-  try {
-    st = await request("GET", "/api/backup/status");
-  } catch {
-    el.hidden = true; // 旧版服务端没有这个接口，或网络暂时不通：不显示
-    return;
-  }
+  const [stats, backup] = await Promise.all([
+    request("GET", "/api/stats").catch(() => null), // 旧版服务端没有这些接口，或网络暂时不通：不显示
+    request("GET", "/api/backup/status").catch(() => null),
+  ]);
   if (!state.token) return; // 请求期间已退出
-  renderBackup(el, st);
-  el.hidden = false;
+  const statsEl = $("#stats");
+  if (stats) renderStats(statsEl, stats);
+  statsEl.hidden = !stats;
+  const badge = $("#backup-badge");
+  if (backup) renderBackup(badge, backup, stats);
+  badge.hidden = !backup;
+}
+
+// 例：共 120 个文件 · 照片 80 张 · 视频 30 个 · 其他 10 个 · 12.3 GB
+function renderStats(el, st) {
+  const part = (label, n, unit, bytes) => {
+    const span = document.createElement("span");
+    span.append(`${label} `, Object.assign(document.createElement("b"), { textContent: n }), ` ${unit}`);
+    if (bytes) span.title = formatSize(bytes);
+    return span;
+  };
+  const total = part("共", st.files, "个文件");
+  total.className = "total";
+  const items = [total];
+  if (st.photos) items.push(part("🖼️ 照片", st.photos, "张", st.photo_bytes));
+  if (st.videos) items.push(part("🎬 视频", st.videos, "个", st.video_bytes));
+  if (st.others) items.push(part("📦 其他", st.others, "个"));
+  if (st.folders) items.push(part("📁", st.folders, "个文件夹"));
+  items.push(Object.assign(document.createElement("span"), { textContent: `已用 ${formatSize(st.bytes)}` }));
+  el.replaceChildren(...items);
 }
 
 // 手机上没有悬停提示，点一下显示详情
 $("#backup-badge").addEventListener("click", (e) => { if (e.currentTarget.title) toast(e.currentTarget.title); });
 
-function renderBackup(el, st) {
+function renderBackup(el, st, stats) {
   el.className = "backup-badge";
   el.replaceChildren();
   if (!st.enabled) {
@@ -274,7 +295,11 @@ function renderBackup(el, st) {
       : "服务端没有配置备份频道，文件只存了一份";
     return;
   }
-  const detail = `已备份 ${st.backed_up} / ${st.parts} 个分块（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）`;
+  // 有统计时按文件数说明，否则退回按分块
+  const count = stats
+    ? `已备份 ${stats.backed_up_files} / ${stats.files} 个文件`
+    : `已备份 ${st.backed_up} / ${st.parts} 个分块`;
+  const detail = `${count}（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）`;
   if (st.backed_up >= st.parts) {
     el.classList.add("done");
     el.textContent = "✅ 已双备份";
@@ -533,7 +558,7 @@ async function remove(f) {
     await request("DELETE", `/api/files/${f.id}${permanent ? "?permanent=1" : ""}`);
     toast(permanent ? "已永久删除" : "已移入回收站");
     load();
-    if (permanent) refreshBackup();
+    refreshBackup();
   } catch (err) { fail(err); }
 }
 

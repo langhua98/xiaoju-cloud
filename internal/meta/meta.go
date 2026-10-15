@@ -146,6 +146,56 @@ func (s *Store) ListPartsMissingBackup(ctx context.Context, limit int) ([]Part, 
 	return pgx.CollectRows(rows, scanPart)
 }
 
+// DriveStats 是整个网盘的文件统计，不含回收站里的条目及被移入回收站的文件夹里的内容。
+type DriveStats struct {
+	Folders       int64 `json:"folders"`
+	Files         int64 `json:"files"`
+	Photos        int64 `json:"photos"`
+	Videos        int64 `json:"videos"`
+	Others        int64 `json:"others"`
+	Bytes         int64 `json:"bytes"`
+	PhotoBytes    int64 `json:"photo_bytes"`
+	VideoBytes    int64 `json:"video_bytes"`
+	BackedUpFiles int64 `json:"backed_up_files"` // 所有分块都已备份的文件数（空文件算已备份）
+}
+
+// 按 MIME 类型识别，类型缺失或不准时（如 curl 上传、部分手机格式）再按扩展名识别
+const (
+	isPhotoSQL = `(mime LIKE 'image/%' OR name ~* '\.(jpe?g|png|gif|webp|heic|heif|bmp|avif|tiff?|dng|raw)$')`
+	isVideoSQL = `(mime LIKE 'video/%' OR name ~* '\.(mp4|mov|m4v|avi|mkv|webm|3gp|wmv|flv|mts)$')`
+)
+
+// DriveStats 统计用户网盘里的文件数量和大小。从根目录递归，跳过回收站里的条目及其子项。
+func (s *Store) DriveStats(ctx context.Context, userID uuid.UUID) (DriveStats, error) {
+	var st DriveStats
+	err := s.db.QueryRow(ctx, `
+		WITH RECURSIVE live AS (
+			SELECT id, type, mime, name, size FROM files
+			WHERE user_id = $1 AND parent_id IS NULL AND status = 'active' AND trashed_at IS NULL
+			UNION ALL
+			SELECT c.id, c.type, c.mime, c.name, c.size FROM files c
+			JOIN live p ON c.parent_id = p.id
+			WHERE c.status = 'active' AND c.trashed_at IS NULL
+		), kinds AS (
+			SELECT *, type = 'file' AND `+isPhotoSQL+` AS photo,
+			          type = 'file' AND NOT `+isPhotoSQL+` AND `+isVideoSQL+` AS video
+			FROM live
+		)
+		SELECT count(*) FILTER (WHERE type = 'folder'),
+		       count(*) FILTER (WHERE type = 'file'),
+		       count(*) FILTER (WHERE photo),
+		       count(*) FILTER (WHERE video),
+		       COALESCE(sum(size) FILTER (WHERE type = 'file'), 0),
+		       COALESCE(sum(size) FILTER (WHERE photo), 0),
+		       COALESCE(sum(size) FILTER (WHERE video), 0),
+		       count(*) FILTER (WHERE type = 'file' AND NOT EXISTS (
+		           SELECT 1 FROM file_parts p WHERE p.file_id = kinds.id AND p.backup_message_id IS NULL))
+		FROM kinds`, userID).
+		Scan(&st.Folders, &st.Files, &st.Photos, &st.Videos, &st.Bytes, &st.PhotoBytes, &st.VideoBytes, &st.BackedUpFiles)
+	st.Others = st.Files - st.Photos - st.Videos
+	return st, err
+}
+
 type BackupStats struct {
 	Parts       int64 `json:"parts"`
 	BackedUp    int64 `json:"backed_up"`
