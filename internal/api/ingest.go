@@ -17,31 +17,25 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/langhua98/xiaoju-cloud/internal/auth"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
 
-// 批量上传（iPhone 快捷指令等）：用“只能上传”的密钥把照片、视频直接传进根目录的“相册”文件夹。
-// 密钥不能列目录、下载或删除，所以不会削弱刷脸和格子口令对查看的保护。
+// 批量上传（iPhone 快捷指令等）：把照片、视频直接传进根目录的“相册”文件夹。
+// 只进不出：不需要任何认证，但只能添加文件（不会覆盖已有文件），不能列目录、下载或删除，
+// 所以不影响刷脸和格子口令对查看的保护。代价是知道地址的人都能往“相册”里塞文件。
 
 // AlbumFolder 是同步相册用的文件夹（和网页的“同步相册”是同一个）。
 const AlbumFolder = "相册"
 
 // POST /api/ingest[?name=IMG_0001.HEIC]
 //
-//	头部 X-Xiaoju-Upload-Key: xju_…（或 Authorization: Bearer xju_…）
 //	头部 X-File-Name: 文件名（也可以放在 ?name=；没有扩展名时按文件内容补上）
 //	请求体：文件原始内容
 //
 // 文件名去掉自动加的序号后相同、大小也相同的视为已经传过，直接跳过：
 // 返回 200 {"result":"skipped"}；新上传返回 201 {"result":"uploaded"}。同名不同内容自动改名为“名字 (2)”。
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.uploadKey(r)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or revoked upload key", "code": "upload_key_invalid"})
-		return
-	}
 	ctx := r.Context()
 	body := bufio.NewReaderSize(r.Body, 64<<10)
 	head, _ := body.Peek(64)
@@ -63,7 +57,6 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		for _, f := range same {
 			if strings.EqualFold(stripCopySuffix(f.Name), stripCopySuffix(name)) {
 				io.Copy(io.Discard, body)
-				s.touchUploadKey(r, key, false)
 				writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": f.Name})
 				return
 			}
@@ -91,37 +84,19 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
-		s.touchUploadKey(r, key, true)
-		s.log.Info("ingested", "key", key.Name, "name", f.Name, "size", f.Size)
+		s.log.Info("ingested", "name", f.Name, "size", f.Size, "client", clientIP(r))
 		writeJSON(w, http.StatusCreated, map[string]any{"result": "uploaded", "name": f.Name, "size": f.Size})
 		return
 	}
 }
 
-// uploadKey 校验请求带的上传密钥。
-func (s *Server) uploadKey(r *http.Request) (*meta.UploadKey, bool) {
-	k := r.Header.Get("X-Xiaoju-Upload-Key")
-	if k == "" {
-		k, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+// clientIP 取上传者的地址（记日志用；HF Space 在代理后面，看 X-Forwarded-For）。
+func clientIP(r *http.Request) string {
+	if f := r.Header.Get("X-Forwarded-For"); f != "" {
+		ip, _, _ := strings.Cut(f, ",")
+		return strings.TrimSpace(ip)
 	}
-	k = strings.TrimSpace(k)
-	if !strings.HasPrefix(k, auth.UploadKeyPrefix) {
-		return nil, false
-	}
-	key, err := s.svc.Store().FindUploadKey(r.Context(), auth.HashUploadKey(k))
-	if err != nil {
-		if !errors.Is(err, meta.ErrNotFound) {
-			s.log.Error("find upload key", "err", err)
-		}
-		return nil, false
-	}
-	return key, true
-}
-
-func (s *Server) touchUploadKey(r *http.Request, key *meta.UploadKey, uploaded bool) {
-	if err := s.svc.Store().TouchUploadKey(r.Context(), key.ID, uploaded); err != nil {
-		s.log.Warn("touch upload key", "err", err)
-	}
+	return r.RemoteAddr
 }
 
 // albumFolder 返回根目录的“相册”文件夹，没有就新建。
@@ -221,59 +196,4 @@ func mimeByExt(ext string) string {
 		return "video/mp4"
 	}
 	return mime.TypeByExtension(ext)
-}
-
-// ---------- 管理上传密钥（需要会话） ----------
-
-func (s *Server) listUploadKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := s.svc.Store().ListUploadKeys(r.Context())
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": keys, "endpoint": "/api/ingest"})
-}
-
-// POST /api/upload-keys {name}：新建上传密钥。密钥只在这次返回，之后只能作废重建。
-func (s *Server) createUploadKey(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
-	}
-	if !decodeBody(w, r, &req) {
-		return
-	}
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		name = "iPhone 快捷指令"
-	}
-	if utf8.RuneCountInString(name) > 60 {
-		name = string([]rune(name)[:60])
-	}
-	plain, hash, err := auth.NewUploadKey()
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	k, err := s.svc.Store().CreateUploadKey(r.Context(), name, hash)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.log.Info("upload key created", "name", name)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": k.ID, "name": k.Name, "created_at": k.CreatedAt, "key": plain, "endpoint": "/api/ingest",
-	})
-}
-
-func (s *Server) deleteUploadKey(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
-	if !ok {
-		return
-	}
-	if err := s.svc.Store().DeleteUploadKey(r.Context(), id); err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.log.Info("upload key revoked", "id", id)
-	w.WriteHeader(http.StatusNoContent)
 }

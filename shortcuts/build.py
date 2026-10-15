@@ -4,9 +4,9 @@
     python3 shortcuts/build.py --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
 
 1. 用 Cherri 编译 backup.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
-2. 修正导入问题指向的操作（Cherri 1.3.2 会把两个问题都指向第 0 个操作）；
+2. 修正导入问题指向的操作（如果有；Cherri 1.3.2 会把多个问题都指向第 0 个操作）；
 3. iOS 15 起快捷指令文件必须签名才能导入：交给 RoutineHub 的 HubSign 服务签名（Cherri 在非 macOS 上也用它）。
-   文件里只有默认上传地址，不含任何密钥（密钥在安装时由用户填写）。
+   文件里只有上传地址（本来就公开在 web/config.js 里），没有任何密钥。
 """
 import argparse
 import json

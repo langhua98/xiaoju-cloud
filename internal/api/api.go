@@ -96,9 +96,6 @@ func (s *Server) Handler() http.Handler {
 	files("POST /api/auth/grid/setup/begin", s.gridSetupBegin)
 	files("POST /api/auth/grid/setup/finish", s.gridSetupFinish)
 	files("DELETE /api/auth/grid", s.gridDisable)
-	files("GET /api/upload-keys", s.listUploadKeys)
-	files("POST /api/upload-keys", s.createUploadKey)
-	files("DELETE /api/upload-keys/{id}", s.deleteUploadKey)
 	files("POST /api/auth/grid/challenge", s.gridChallenge)
 	files("POST /api/auth/grid/verify", s.gridVerify)
 
@@ -115,7 +112,7 @@ func (s *Server) Handler() http.Handler {
 	passkey("POST /api/auth/passkey/register/finish", s.passkeyRegisterFinish)
 	login("POST /api/auth/recovery/passkey", s.recoveryPasskey)
 
-	// 批量上传（快捷指令）：用“只能上传”的密钥认证，见 ingest.go
+	// 批量上传（快捷指令）：不需要认证，只能往“相册”里添加文件，见 ingest.go
 	api.HandleFunc("POST /api/ingest", s.ingest)
 
 	mux.Handle("/api/", s.cors(api))

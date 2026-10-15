@@ -576,7 +576,6 @@ button.danger { color: var(--danger); }
 #upload-more { margin-top: 8px; }
 
 /* 快捷指令批量上传 */
-.key-box { margin: 0 0 12px; padding: 12px; border-radius: 10px; background: var(--hover); font-size: 14px; }
 .key-field { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; margin: 0 0 8px; }
 .key-field span { color: var(--muted); font-size: 13px; }
 .key-field code { overflow-wrap: anywhere; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface); padding: 6px 8px; border-radius: 6px; }

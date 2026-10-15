@@ -70,8 +70,8 @@ func TestIngestName(t *testing.T) {
 	}
 }
 
-// 集成测试：上传密钥只能往“相册”里传文件；已传过的跳过；不能用来看文件；作废后立即失效。
-func TestIngestWithUploadKey(t *testing.T) {
+// 集成测试：不需要认证就能往“相册”里传文件；已传过的跳过；同名不同内容改名；但不能用来看文件。
+func TestIngest(t *testing.T) {
 	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
@@ -112,18 +112,9 @@ func TestIngestWithUploadKey(t *testing.T) {
 	}
 	tokenH := []string{"X-Xiaoju-Token", "tok"}
 
-	code, out := call("POST", "/api/upload-keys", `{"name":"我的 iPhone"}`, tokenH...)
-	if code != 201 || !strings.HasPrefix(out["key"].(string), "xju_") {
-		t.Fatalf("create key: %d %v", code, out)
-	}
-	key := out["key"].(string)
-	keyID := out["id"].(string)
-	t.Cleanup(func() { store.DeleteUploadKey(context.Background(), uuid.MustParse(keyID)) })
-	keyH := []string{"X-Xiaoju-Upload-Key", key}
-
 	jpeg := "\xFF\xD8\xFF\xE0" + strings.Repeat("x", 2500) // 跨多个分块
-	ingest := func(name, body string, hdr ...string) (int, map[string]any) {
-		return call("POST", "/api/ingest", body, append(append([]string{"X-File-Name", name}, keyH...), hdr...)...)
+	ingest := func(name, body string) (int, map[string]any) {
+		return call("POST", "/api/ingest", body, "X-File-Name", name)
 	}
 	if code, out := ingest("IMG_0001", jpeg); code != 201 || out["name"] != "IMG_0001.jpg" || out["result"] != "uploaded" {
 		t.Fatalf("ingest: %d %v", code, out)
@@ -137,15 +128,9 @@ func TestIngestWithUploadKey(t *testing.T) {
 	if code, out := ingest("IMG_0001", jpeg+"y"); code != 201 || out["name"] != "IMG_0001 (2).jpg" {
 		t.Fatalf("same name, different content: %d %v", code, out)
 	}
-	if code, out := call("POST", "/api/ingest", "data", "X-Xiaoju-Upload-Key", "xju_wrong"); code != 401 || out["code"] != "upload_key_invalid" {
-		t.Fatalf("wrong key: %d %v", code, out)
-	}
-	// 密钥不能用来看文件、管理密钥
-	if code, _ := call("GET", "/api/folders/root/children", "", keyH...); code != 401 {
-		t.Fatalf("upload key must not list files: %d", code)
-	}
-	if code, _ := call("GET", "/api/upload-keys", "", keyH...); code != 401 {
-		t.Fatalf("upload key must not manage keys: %d", code)
+	// 只进不出：不带认证不能列目录、下载
+	if code, _ := call("GET", "/api/folders/root/children", ""); code != 401 {
+		t.Fatalf("anonymous must not list files: %d", code)
 	}
 
 	// 文件都在“相册”里，内容能正确解密
@@ -164,6 +149,9 @@ func TestIngestWithUploadKey(t *testing.T) {
 	if first["mime"] != "image/jpeg" {
 		t.Fatalf("mime from content: %v", first)
 	}
+	if code, _ := call("GET", "/api/files/"+first["id"].(string)+"/content", ""); code != 401 {
+		t.Fatalf("anonymous must not download: %d", code)
+	}
 	req, _ := http.NewRequest("GET", ts.URL+"/api/files/"+first["id"].(string)+"/content", nil)
 	req.Header.Set("X-Xiaoju-Token", "tok")
 	resp, err := http.DefaultClient.Do(req)
@@ -174,17 +162,5 @@ func TestIngestWithUploadKey(t *testing.T) {
 	resp.Body.Close()
 	if string(got) != jpeg {
 		t.Fatalf("content mismatch: %d bytes", len(got))
-	}
-
-	_, list := call("GET", "/api/upload-keys", "", tokenH...)
-	k := list["items"].([]any)[0].(map[string]any)
-	if k["uploads"] != float64(2) || k["last_used_at"] == nil || k["key"] != nil {
-		t.Fatalf("key list: %v", k)
-	}
-	if code, _ := call("DELETE", "/api/upload-keys/"+keyID, "", tokenH...); code != 204 {
-		t.Fatalf("revoke: %d", code)
-	}
-	if code, _ := ingest("IMG_0002", jpeg); code != 401 {
-		t.Fatalf("revoked key still works: %d", code)
 	}
 }
