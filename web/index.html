@@ -12,7 +12,7 @@
 <body>
   <div id="page-progress" class="page-progress" hidden><i></i></div>
   <div id="update-bar" class="update-bar" role="status" hidden>
-    <span>网页有新版本，刷新后才能正常使用（需要重新登录）</span>
+    <span>网页有新版本，刷新后才能正常使用</span>
     <button id="update-btn" type="button" class="primary">刷新</button>
   </div>
   <header class="topbar">
@@ -43,12 +43,14 @@
     <p id="stats" class="stats" hidden></p>
 
     <p id="picking" class="picking" role="status" hidden>
-      <span class="spinner" aria-hidden="true"></span>正在读取选中的文件…选得多时手机要先转换格式（每张约 1 秒），请稍候，不要离开这个页面。
+      <span class="spinner" aria-hidden="true"></span><b>iPhone 正在准备选中的照片</b> <span id="picking-time"></span><br>
+      <small>要把每张照片准备好（必要时转换格式、从 iCloud 下载原图）才交给网页，选得越多越久。请别锁屏或切走；一次选 100 张左右最顺。点这里可以先收起。</small>
     </p>
 
     <section id="uploads" class="uploads" hidden>
       <p id="upload-summary" class="usummary"></p>
       <div id="upload-rows"></div>
+      <button id="upload-more" type="button" class="primary" hidden>继续选下一批照片</button>
     </section>
 
     <div id="drop" class="listing">
@@ -131,6 +133,17 @@
       <div id="grid-sec-actions" class="dialog-actions wrap">
         <button id="grid-sec-enable" type="button" class="primary">开启格子口令</button>
         <button id="grid-sec-disable" type="button" class="danger">关闭格子口令</button>
+      </div>
+    </section>
+
+    <section id="keys-sec" class="grid-sec">
+      <h2>📲 快捷指令批量上传</h2>
+      <p class="hint">几百上千张照片：用 iPhone「快捷指令」从相册一张张直接传进“相册”文件夹，不会卡在选择照片那一步，传过的自动跳过。
+        需要一个<b>只能上传、不能查看</b>的密钥（看照片仍然要刷脸、格子口令）。</p>
+      <ul id="keys-list" class="sec-list"></ul>
+      <div id="keys-new"></div>
+      <div class="dialog-actions wrap">
+        <button id="keys-create" type="button">新建上传密钥</button>
       </div>
     </section>
 

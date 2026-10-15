@@ -69,7 +69,7 @@ func New(svc *service.Service, opt Options) *Server {
 //   - 文件接口：需要会话（令牌 + 刷脸后签发）；刷脸和格子口令都没开启时，仅凭令牌也可以（兼容旧客户端和脚本）。
 //     开启格子口令后，照片、视频每看随机 3–7 张要先答一道格子题（mediaGate）
 //   - 运维接口（统计、备份状态、对账）：令牌或会话都可以，不涉及文件内容，方便自动化诊断
-//   - 登录接口：需要令牌
+//   - 登录接口：需要令牌（刷脸的几个接口已登录时用会话也可以）
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
@@ -79,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 	files := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireSession(h)) }
 	ops := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireTokenOrSession(h)) }
 	login := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireToken(h)) }
+	// 刷脸：登录时用令牌；已登录时（给本机加设备、敏感操作前重新刷脸）用会话也可以
+	passkey := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireTokenOrSession(h)) }
 
 	files("POST /api/folders", s.createFolder)
 	files("GET /api/folders/{id}/children", s.listChildren)
@@ -94,6 +96,9 @@ func (s *Server) Handler() http.Handler {
 	files("POST /api/auth/grid/setup/begin", s.gridSetupBegin)
 	files("POST /api/auth/grid/setup/finish", s.gridSetupFinish)
 	files("DELETE /api/auth/grid", s.gridDisable)
+	files("GET /api/upload-keys", s.listUploadKeys)
+	files("POST /api/upload-keys", s.createUploadKey)
+	files("DELETE /api/upload-keys/{id}", s.deleteUploadKey)
 	files("POST /api/auth/grid/challenge", s.gridChallenge)
 	files("POST /api/auth/grid/verify", s.gridVerify)
 
@@ -104,11 +109,14 @@ func (s *Server) Handler() http.Handler {
 	ops("POST /api/maintenance/reconcile", s.reconcile(true))
 
 	login("POST /api/auth/session", s.createSession)
-	login("POST /api/auth/passkey/login/begin", s.passkeyLoginBegin)
-	login("POST /api/auth/passkey/login/finish", s.passkeyLoginFinish)
-	login("POST /api/auth/passkey/register/begin", s.passkeyRegisterBegin)
-	login("POST /api/auth/passkey/register/finish", s.passkeyRegisterFinish)
+	passkey("POST /api/auth/passkey/login/begin", s.passkeyLoginBegin)
+	passkey("POST /api/auth/passkey/login/finish", s.passkeyLoginFinish)
+	passkey("POST /api/auth/passkey/register/begin", s.passkeyRegisterBegin)
+	passkey("POST /api/auth/passkey/register/finish", s.passkeyRegisterFinish)
 	login("POST /api/auth/recovery/passkey", s.recoveryPasskey)
+
+	// 批量上传（快捷指令）：用“只能上传”的密钥认证，见 ingest.go
+	api.HandleFunc("POST /api/ingest", s.ingest)
 
 	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
