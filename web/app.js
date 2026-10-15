@@ -7,17 +7,26 @@ const store = {
   set(key, v) { try { localStorage.setItem(key, v); } catch { /* 隐私模式下忽略 */ } },
 };
 
-// 内置了服务端地址时只需输入令牌；令牌只放在内存里，刷新或关闭页面即失效。
+// 内置了服务端地址时只需输入令牌；令牌和会话只放在内存里，刷新或关闭页面即失效。
+// 登录分两步：令牌正确后，如果已注册 Face ID / 指纹设备，还要刷脸，通过后服务端签发会话（12 小时）。
 const defaultAPI = (window.XIAOJU_API_URL || "").replace(/\/+$/, "");
 const state = {
   api: defaultAPI || store.get("xiaoju.api"),
-  token: "",
+  token: "",   // 访问令牌（登录接口要用）
+  session: "", // 刷脸后签发的会话；有值即表示已登录
   folderId: null,
 };
 try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
 
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, code) { super(message); this.status = status; this.code = code; }
+}
+
+function authHeaders() {
+  const h = {};
+  if (state.token) h["X-Xiaoju-Token"] = state.token;
+  if (state.session) h["X-Xiaoju-Session"] = state.session;
+  return h;
 }
 
 async function request(method, path, body) {
@@ -25,7 +34,7 @@ async function request(method, path, body) {
   try {
     resp = await fetch(state.api + path, {
       method,
-      headers: { "X-Xiaoju-Token": state.token, ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers: { ...authHeaders(), ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -33,12 +42,13 @@ async function request(method, path, body) {
   }
   if (resp.status === 204) return null;
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new HttpError(resp.status, errorText(resp.status, data.error));
+  if (!resp.ok) throw new HttpError(resp.status, errorText(resp.status, data.error, data.code), data.code);
   return data;
 }
 
-function errorText(status, msg) {
-  if (status === 401) return "令牌错误";
+function errorText(status, msg, code) {
+  if (code === "passkey_required") return "需要刷脸验证，请重新登录";
+  if (status === 401) return state.session ? "登录已过期，请重新验证" : "令牌错误";
   if (status === 404) return "不存在或已被删除";
   if (status === 409) return "同名文件已存在";
   return msg || `请求失败（${status}）`;
@@ -53,7 +63,7 @@ function toast(msg) {
 }
 
 function fail(err) {
-  if (err.status === 401) { logout("令牌错误，请重新输入"); return; }
+  if (err.status === 401) { logout(err.message); return; }
   toast(err.message);
 }
 
@@ -126,15 +136,18 @@ const LOGIN_HINT = "令牌不会保存，刷新或关闭页面后需要重新输
 const WAKE_HINT = "服务端可能在休眠，正在唤醒，首次访问约需 30 秒…";
 const WAKE_HINT_DELAY_MS = 4000;
 
-function setLoginBusy(busy) {
-  const form = $("#login-form");
-  const btn = $("#login-btn");
-  $("#login").classList.toggle("busy", busy);
+function setButtonBusy(btn, busy, busyLabel, idleLabel) {
   btn.classList.toggle("loading", busy);
   btn.disabled = busy;
+  if (busyLabel) btn.querySelector(".label").textContent = busy ? busyLabel : idleLabel;
+}
+
+function setLoginBusy(busy) {
+  const form = $("#login-form");
+  $("#login").classList.toggle("busy", busy);
+  setButtonBusy($("#login-btn"), busy, "登录中…", "登录");
   form.token.readOnly = busy;
   if (!defaultAPI) form.api.readOnly = busy;
-  btn.querySelector(".label").textContent = busy ? "登录中…" : "登录";
 }
 
 function setLoginHint(text) {
@@ -142,6 +155,15 @@ function setLoginHint(text) {
   if (hint.textContent === text) return;
   hint.style.opacity = "0";
   setTimeout(() => { hint.textContent = text; hint.style.opacity = ""; }, 150);
+}
+
+function showLoginStep(step) {
+  const form = $("#login-form");
+  const face = $("#face-step");
+  form.hidden = step !== "token";
+  face.hidden = step !== "face";
+  const shown = step === "token" ? form : face;
+  playClass(shown, "step-in", 400);
 }
 
 function openLogin(message) {
@@ -157,15 +179,22 @@ function openLogin(message) {
   const errEl = $("#login-error");
   errEl.textContent = message || "";
   errEl.hidden = !message;
+  form.hidden = false;
+  $("#face-step").hidden = true;
   if (!$("#login").open) $("#login").showModal();
   (defaultAPI ? form.token : form.api).focus();
 }
 
 async function logout(message) {
   state.token = "";
+  state.session = "";
+  faceOptions = null;
+  regOptions = null;
   stopBackupPolling();
   $("#logout-btn").hidden = true;
+  $("#security-btn").hidden = true;
   $("#preview").close();
+  $("#security").close();
   // 主界面淡出后再弹出登录框
   const app = $("#app");
   if (!app.hidden) {
@@ -181,24 +210,24 @@ async function logout(message) {
 
 $("#logout-btn").addEventListener("click", () => logout());
 // 未登录时不允许用 Esc 关掉登录框
-$("#login").addEventListener("cancel", (e) => { if (!state.token) e.preventDefault(); });
+$("#login").addEventListener("cancel", (e) => { if (!state.session) e.preventDefault(); });
+
+// 第一步：校验令牌。已注册设备时进入刷脸，否则直接拿到会话
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.target;
   const api = defaultAPI || form.api.value.trim().replace(/\/+$/, "");
   const token = form.token.value.trim();
-  const btn = $("#login-btn");
-  if (btn.disabled) return;
+  if ($("#login-btn").disabled) return;
   const prev = { api: state.api, token: state.token };
-  Object.assign(state, { api, token });
+  Object.assign(state, { api, token, session: "" });
 
   $("#login-error").hidden = true;
   setLoginBusy(true);
   const wakeTimer = setTimeout(() => setLoginHint(WAKE_HINT), WAKE_HINT_DELAY_MS);
-  let root;
+  let res;
   try {
-    // 登录校验顺便拿到根目录列表，登录后直接渲染，不用再请求一次
-    root = await request("GET", "/api/folders/root/children");
+    res = await request("POST", "/api/auth/session");
   } catch (err) {
     Object.assign(state, prev);
     setLoginBusy(false);
@@ -213,19 +242,321 @@ $("#login-form").addEventListener("submit", async (e) => {
     clearTimeout(wakeTimer);
   }
   if (!defaultAPI) store.set("xiaoju.api", api);
-
-  // 成功：按钮显示“登录成功”，稍停后登录框淡出、主界面淡入
   setLoginBusy(false);
+
+  if (res.passkey_required) {
+    enterFaceStep();
+    return;
+  }
+  state.session = res.session;
+  await finishLogin($("#login-btn"));
+  // 还没开启刷脸：提示开启（只在服务端支持时）
+  if (res.passkeys_available && webauthnSupported()) {
+    setTimeout(() => openSecurity("建议开启：开启后登录需要「令牌 + 刷脸」，别人拿到令牌也打不开你的网盘。"), 700);
+  }
+});
+
+// 登录成功：按钮显示“✓ 登录成功”，稍停后登录框淡出、主界面淡入
+async function finishLogin(btn) {
   btn.disabled = true;
   btn.classList.add("done");
-  btn.querySelector(".label").textContent = "✓ 登录成功";
+  const label = btn.querySelector(".label");
+  const idle = label.textContent;
+  label.textContent = "✓ 登录成功";
   await sleepMs(350);
   await closeDialog($("#login"));
   btn.disabled = false;
   btn.classList.remove("done");
+  label.textContent = idle;
+  $("#face-step").classList.remove("ok", "verifying");
   $("#logout-btn").hidden = false;
+  $("#security-btn").hidden = false;
   startBackupPolling();
-  load(currentFolderFromHash() ? null : root);
+  load();
+}
+
+// ---------- 刷脸 / 指纹（通行密钥）----------
+// 人脸比对在设备上由系统完成，服务端只保存公钥、校验签名，不接触任何人脸数据。
+
+const webauthnSupported = () => !!window.PublicKeyCredential && !!navigator.credentials;
+
+const b64u = {
+  enc(buf) {
+    let s = "";
+    for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  },
+  dec(str) {
+    const s = str.replace(/-/g, "+").replace(/_/g, "/");
+    return Uint8Array.from(atob(s + "=".repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
+  },
+};
+
+const decodeDescriptors = (list) => (list || []).map((c) => ({ ...c, id: b64u.dec(c.id) }));
+
+function decodeRequestOptions(pk) {
+  return { ...pk, challenge: b64u.dec(pk.challenge), allowCredentials: decodeDescriptors(pk.allowCredentials) };
+}
+
+function decodeCreationOptions(pk) {
+  return {
+    ...pk,
+    challenge: b64u.dec(pk.challenge),
+    user: { ...pk.user, id: b64u.dec(pk.user.id) },
+    excludeCredentials: decodeDescriptors(pk.excludeCredentials),
+  };
+}
+
+function encodeCredential(c) {
+  const r = c.response;
+  const out = {
+    id: c.id,
+    rawId: b64u.enc(c.rawId),
+    type: c.type,
+    authenticatorAttachment: c.authenticatorAttachment || undefined,
+    clientExtensionResults: c.getClientExtensionResults ? c.getClientExtensionResults() : {},
+    response: { clientDataJSON: b64u.enc(r.clientDataJSON) },
+  };
+  if (r.attestationObject) {
+    out.response.attestationObject = b64u.enc(r.attestationObject);
+    out.response.transports = r.getTransports ? r.getTransports() : [];
+  } else {
+    out.response.authenticatorData = b64u.enc(r.authenticatorData);
+    out.response.signature = b64u.enc(r.signature);
+    if (r.userHandle) out.response.userHandle = b64u.enc(r.userHandle);
+  }
+  return out;
+}
+
+function webauthnError(err) {
+  if (err.name === "NotAllowedError") return "已取消，或验证没有通过";
+  if (err.name === "InvalidStateError") return "这台设备已经注册过了";
+  if (err.name === "SecurityError") return "网址不对：请从网盘的正式网址打开";
+  if (err.code === "verification_failed") return "验证失败：这台设备可能还没注册，或已被移除";
+  if (err.code === "ceremony_expired") return "验证超时，请再试一次";
+  if (err.code === "add_code_required") return "添加码不对或已过期";
+  if (err.code === "passkeys_unavailable") return "服务端没有开启刷脸功能";
+  return err.message || "出错了";
+}
+
+function deviceName() {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android 手机"
+    : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows 电脑" : /Linux/.test(ua) ? "Linux 电脑" : "设备";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox"
+    : /Safari\//.test(ua) ? "Safari" : "";
+  return browser ? `${os} · ${browser}` : os;
+}
+
+// 预取的刷脸参数：进入刷脸步骤时就请求好，点按钮时直接调起系统验证
+// （Safari 要求验证由点击直接触发，中间不能先等网络请求太久）
+let faceOptions = null;
+
+async function prefetchFaceOptions() {
+  faceOptions = null;
+  try {
+    const res = await request("POST", "/api/auth/passkey/login/begin");
+    faceOptions = { ...res, at: Date.now() };
+  } catch (err) {
+    showFaceError(webauthnError(err));
+  }
+}
+
+function enterFaceStep() {
+  $("#face-error").hidden = true;
+  $("#face-step").classList.remove("ok", "verifying");
+  $("#face-add").open = false;
+  $("#add-code").value = "";
+  if (!webauthnSupported()) {
+    showLoginStep("face");
+    showFaceError("这个浏览器不支持 Face ID / 指纹登录，请用 Safari 或 Chrome 打开（不要在微信里打开）");
+    $("#face-btn").disabled = true;
+    return;
+  }
+  $("#face-btn").disabled = false;
+  showLoginStep("face");
+  prefetchFaceOptions();
+  $("#face-btn").focus();
+}
+
+function showFaceError(msg) {
+  const el = $("#face-error");
+  el.textContent = msg;
+  el.hidden = false;
+  playClass($("#face-step"), "shake", 450);
+}
+
+// 第二步：刷脸解锁
+$("#face-btn").addEventListener("click", async () => {
+  const btn = $("#face-btn");
+  if (btn.disabled) return;
+  $("#face-error").hidden = true;
+  const step = $("#face-step");
+  setButtonBusy(btn, true, "正在验证…", "使用 Face ID / 指纹解锁");
+  step.classList.add("verifying");
+  try {
+    let opts = faceOptions;
+    faceOptions = null;
+    if (!opts || Date.now() - opts.at > 120_000) opts = await request("POST", "/api/auth/passkey/login/begin");
+    const cred = await navigator.credentials.get({ publicKey: decodeRequestOptions(opts.options.publicKey) });
+    const res = await request("POST", `/api/auth/passkey/login/finish?ceremony=${encodeURIComponent(opts.ceremony)}`, encodeCredential(cred));
+    state.session = res.session;
+    step.classList.remove("verifying");
+    step.classList.add("ok");
+    setButtonBusy(btn, false, "正在验证…", "使用 Face ID / 指纹解锁");
+    await finishLogin(btn);
+  } catch (err) {
+    step.classList.remove("verifying");
+    setButtonBusy(btn, false, "正在验证…", "使用 Face ID / 指纹解锁");
+    if (err.status === 401 && !err.code) { logout("令牌已失效，请重新输入"); return; }
+    showFaceError(webauthnError(err));
+    prefetchFaceOptions();
+  }
+});
+
+// 没注册过的设备：输入另一台已登录设备生成的添加码，注册本机后直接登录
+$("#face-register-btn").addEventListener("click", async () => {
+  const btn = $("#face-register-btn");
+  const code = $("#add-code").value.trim();
+  if (btn.disabled) return;
+  if (!code) { $("#add-code").focus(); return; }
+  $("#face-error").hidden = true;
+  setButtonBusy(btn, true, "注册中…", "注册本机");
+  try {
+    state.session = await registerThisDevice(code);
+    $("#face-step").classList.add("ok");
+    setButtonBusy(btn, false, "注册中…", "注册本机");
+    toast("本机已开启刷脸登录");
+    await finishLogin($("#face-btn"));
+  } catch (err) {
+    setButtonBusy(btn, false, "注册中…", "注册本机");
+    showFaceError(webauthnError(err));
+  }
+});
+$("#add-code").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#face-register-btn").click(); });
+$("#add-code").addEventListener("input", async (e) => {
+  const code = e.target.value.trim();
+  if (code.length !== 8 || regOptions?.code === code) return;
+  $("#face-error").hidden = true;
+  try {
+    await prefetchRegistration(code);
+  } catch (err) {
+    showFaceError(webauthnError(err));
+  }
+});
+
+$("#face-back").addEventListener("click", () => {
+  faceOptions = null;
+  state.token = "";
+  $("#login-form").token.value = "";
+  $("#login-error").hidden = true;
+  showLoginStep("token");
+  $("#login-form").token.focus();
+});
+
+// 预取的注册参数（和刷脸一样，让点击能直接调起系统验证）
+let regOptions = null;
+
+async function prefetchRegistration(code = "") {
+  regOptions = null;
+  const res = await request("POST", "/api/auth/passkey/register/begin", { name: deviceName(), code });
+  regOptions = { ...res, code, at: Date.now() };
+}
+
+// 在本机注册 Face ID / 指纹，成功后返回新的会话
+async function registerThisDevice(code = "") {
+  let begin = regOptions;
+  regOptions = null;
+  if (!begin || begin.code !== code || Date.now() - begin.at > 150_000) {
+    begin = await request("POST", "/api/auth/passkey/register/begin", { name: deviceName(), code });
+  }
+  const cred = await navigator.credentials.create({ publicKey: decodeCreationOptions(begin.options.publicKey) });
+  const res = await request("POST", `/api/auth/passkey/register/finish?ceremony=${encodeURIComponent(begin.ceremony)}`, encodeCredential(cred));
+  return res.session;
+}
+
+// ---------- 安全设置：管理刷脸设备 ----------
+
+$("#security-btn").addEventListener("click", () => openSecurity());
+$("#sec-close").addEventListener("click", () => closeDialog($("#security")));
+
+async function openSecurity(hint) {
+  const dlg = $("#security");
+  $("#sec-code-box").hidden = true;
+  $("#sec-hint").textContent = hint || "";
+  if (!dlg.open) dlg.showModal();
+  await renderDevices(hint);
+}
+
+async function renderDevices(hint) {
+  const list = $("#sec-list");
+  let res;
+  try {
+    res = await request("GET", "/api/auth/passkeys");
+  } catch (err) {
+    fail(err);
+    return;
+  }
+  const items = res.items || [];
+  if (!hint) {
+    $("#sec-hint").textContent = !res.available ? "服务端没有开启刷脸功能（需要设置 XIAOJU_CORS_ORIGINS）。"
+      : items.length ? "登录需要「令牌 + 刷脸」。手机丢了？在这里删掉那台设备即可。"
+      : "还没有开启。开启后登录需要「令牌 + 刷脸」，别人拿到令牌也打不开你的网盘。";
+  }
+  list.replaceChildren(...items.map((d) => {
+    const li = document.createElement("li");
+    const info = document.createElement("div");
+    info.append(d.name);
+    const metaEl = Object.assign(document.createElement("div"), { className: "meta" });
+    metaEl.textContent = `添加于 ${formatDate(d.created_at)}` + (d.last_used_at ? ` · 最近使用 ${formatDate(d.last_used_at)}` : "");
+    info.append(metaEl);
+    const del = Object.assign(document.createElement("button"), { type: "button", className: "link danger", textContent: "移除" });
+    del.addEventListener("click", () => removeDevice(d, items.length));
+    li.append(info, del);
+    return li;
+  }));
+  $("#sec-register").hidden = !res.available || !webauthnSupported();
+  $("#sec-code").hidden = !res.available || items.length === 0;
+  if (!$("#sec-register").hidden && !regOptions) prefetchRegistration().catch(() => { /* 点击时再请求 */ });
+}
+
+async function removeDevice(d, total) {
+  const warn = total === 1 ? "\n\n这是最后一台设备：移除后，仅凭令牌就能登录。" : "";
+  if (!confirm(`移除「${d.name}」？移除后这台设备不能再刷脸登录。${warn}`)) return;
+  try {
+    await request("DELETE", `/api/auth/passkeys/${encodeURIComponent(d.id)}`);
+    toast("已移除");
+    renderDevices();
+  } catch (err) { fail(err); }
+}
+
+$("#sec-register").addEventListener("click", async () => {
+  const btn = $("#sec-register");
+  if (btn.disabled) return;
+  setButtonBusy(btn, true, "请完成 Face ID / 指纹…", "在本机开启 Face ID / 指纹");
+  try {
+    state.session = await registerThisDevice();
+    toast("✓ 本机已开启刷脸登录");
+    $("#sec-hint").textContent = "";
+    renderDevices();
+  } catch (err) {
+    toast(webauthnError(err));
+    prefetchRegistration().catch(() => { /* 点击时再请求 */ });
+  } finally {
+    setButtonBusy(btn, false, "请完成 Face ID / 指纹…", "在本机开启 Face ID / 指纹");
+  }
+});
+
+$("#sec-code").addEventListener("click", async () => {
+  try {
+    const { code, expires_at: exp } = await request("POST", "/api/auth/passkeys/add-code");
+    const box = $("#sec-code-box");
+    box.replaceChildren("在新设备的登录页点「这台设备还没注册？」，输入添加码：", document.createElement("br"),
+      Object.assign(document.createElement("b"), { textContent: code }),
+      document.createElement("br"), `${formatDate(exp)} 前有效，只能用一次。`);
+    box.hidden = false;
+    playClass(box, "fade-in", 400);
+  } catch (err) { fail(err); }
 });
 
 // ---------- 备份进度 ----------
@@ -248,12 +579,12 @@ function stopBackupPolling() {
 
 // 同时刷新网盘统计和备份进度（备份提示里的文件数来自统计）
 async function refreshBackup() {
-  if (!state.token) return;
+  if (!state.session) return;
   const [stats, backup] = await Promise.all([
     request("GET", "/api/stats").catch(() => null), // 旧版服务端没有这些接口，或网络暂时不通：不显示
     request("GET", "/api/backup/status").catch(() => null),
   ]);
-  if (!state.token) return; // 请求期间已退出
+  if (!state.session) return; // 请求期间已退出
   const statsEl = $("#stats");
   if (stats) renderStats(statsEl, stats);
   statsEl.hidden = !stats;
@@ -351,7 +682,7 @@ let loadSeq = 0;
 
 // prefetchedRoot：登录时已经拿到的根目录列表，避免重复请求
 async function load(prefetchedRoot = null) {
-  if (!state.api || !state.token) { openLogin(); return; }
+  if (!state.api || !state.session) { openLogin(); return; }
   const seq = ++loadSeq;
   const app = $("#app");
   if (app.hidden) {
@@ -647,7 +978,7 @@ async function runJob(job) {
       if (err.status === 401) {
         queue.length = 0;
         row.remove();
-        logout("令牌错误，请重新输入");
+        logout(err.message);
         return;
       }
       // 同步时，或重试时（上次其实已成功但响应丢失），同名已存在都算已同步
@@ -661,7 +992,7 @@ async function runJob(job) {
         status.textContent = `${err.message}，${RETRY_DELAYS[attempt]} 秒后重试`;
         bar.value = 0;
         await sleep(RETRY_DELAYS[attempt]);
-        if (!state.token) { row.remove(); return; } // 已退出登录
+        if (!state.session) { row.remove(); return; } // 已退出登录
         continue;
       }
       stats.failed++;
@@ -678,7 +1009,7 @@ function uploadOne({ file, name, parent }, status, bar) {
     if (parent) q.set("parent_id", parent);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${state.api}/api/files?${q}`);
-    xhr.setRequestHeader("X-Xiaoju-Token", state.token);
+    for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
@@ -689,9 +1020,9 @@ function uploadOne({ file, name, parent }, status, bar) {
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) return resolve();
-      let msg;
-      try { msg = JSON.parse(xhr.responseText).error; } catch { /* 非 JSON */ }
-      reject(new HttpError(xhr.status, errorText(xhr.status, msg)));
+      let data = {};
+      try { data = JSON.parse(xhr.responseText) || {}; } catch { /* 非 JSON */ }
+      reject(new HttpError(xhr.status, errorText(xhr.status, data.error, data.code), data.code));
     };
     xhr.onerror = () => reject(new HttpError(0, "上传中断（网络错误或连接超时）"));
     xhr.send(file);

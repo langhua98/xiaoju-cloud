@@ -289,3 +289,52 @@ button:disabled { opacity: 0.85; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- 刷脸 / 指纹 ---------- */
+
+.face-step { text-align: center; }
+.face-step h2 { margin-top: 4px; }
+.face-step .hint { margin-bottom: 16px; }
+.face-step .scan { position: relative; width: 104px; height: 104px; margin: 6px auto 14px; color: var(--accent); }
+.face-step .scan svg { width: 100%; height: 100%; filter: drop-shadow(0 0 10px rgb(232 135 11 / 0.35)); }
+.face-step .scan::after {
+  content: "";
+  position: absolute;
+  left: 11px;
+  right: 11px;
+  top: 11px;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  opacity: 0.75;
+  animation: sweep 2.6s ease-in-out infinite;
+}
+.face-step.verifying .scan::after { animation-duration: 0.9s; }
+.face-step.ok .scan { color: #16a34a; }
+.face-step.ok .scan::after { display: none; }
+button.wide { width: 100%; padding: 10px 14px; }
+.face-add { margin-top: 14px; text-align: left; font-size: 14px; }
+.face-add summary { cursor: pointer; color: var(--muted); }
+.face-add .row { display: flex; gap: 8px; align-items: center; }
+.face-add input { margin: 0; letter-spacing: 0.2em; text-transform: uppercase; }
+.face-step button.link { margin-top: 10px; }
+.step-in { animation: fade-up 0.28s ease both; }
+#face-step.shake { animation: shake 0.36s ease; }
+
+/* 安全设置 */
+.sec-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.sec-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.sec-list li .meta { color: var(--muted); font-size: 12px; }
+.sec-code { font-size: 14px; background: var(--hover); border-radius: 8px; padding: 10px 12px; }
+.sec-code b { font-size: 20px; letter-spacing: 0.25em; font-family: ui-monospace, monospace; }
+.dialog-actions.wrap { flex-wrap: wrap; }
+
+@keyframes sweep { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(80px); } }
