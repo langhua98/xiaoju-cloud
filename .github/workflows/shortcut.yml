@@ -1,10 +1,11 @@
 name: Build iPhone shortcut
 
-# 改了快捷指令时在任意分支上编译 + 签名一次，签好的文件作为构建产物上传（检查签名服务是否可用）。
-# 正式发布由 pages.yml 在部署网页时完成。
+# 改了快捷指令时在开发分支上编译 + 签名一次，签好的文件作为构建产物上传（检查签名服务是否可用）。
+# main 上由 pages.yml 在部署网页时构建，这里不再重复（签名服务有频率限制）。
 on:
   workflow_dispatch:
   push:
+    branches-ignore: [main]
     paths:
       - "shortcuts/**"
       - ".github/workflows/shortcut.yml"
