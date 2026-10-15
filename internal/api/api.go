@@ -4,7 +4,6 @@ package api
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/langhua98/xiaoju-cloud/internal/auth"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
@@ -33,6 +33,8 @@ type Server struct {
 	token       string
 	corsOrigins []string
 	log         *slog.Logger
+	passkeys    *auth.Passkeys
+	sessions    *auth.Sessions
 }
 
 type Options struct {
@@ -42,31 +44,55 @@ type Options struct {
 	// 认证只走请求头、不用 Cookie，所以放开来源不会带来 CSRF 风险。
 	CORSOrigins []string
 	Log         *slog.Logger
+	// Passkeys 为 nil 时不启用刷脸（仅凭令牌访问）。
+	Passkeys *auth.Passkeys
 }
 
 func New(svc *service.Service, opt Options) *Server {
-	return &Server{svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log}
+	return &Server{
+		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
+		passkeys: opt.Passkeys, sessions: auth.NewSessions(opt.Token),
+	}
 }
 
+// 接口按访问级别分三组：
+//   - 文件接口：需要会话（令牌 + 刷脸后签发）；还没有注册任何设备时，仅凭令牌也可以（兼容旧客户端和脚本）
+//   - 运维接口（统计、备份状态、对账）：令牌或会话都可以，不涉及文件内容，方便自动化诊断
+//   - 登录接口：需要令牌
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("xiaoju-cloud is running\n")) })
 
 	api := http.NewServeMux()
-	api.HandleFunc("POST /api/folders", s.createFolder)
-	api.HandleFunc("GET /api/folders/{id}/children", s.listChildren)
-	api.HandleFunc("POST /api/files", s.upload)
-	api.HandleFunc("GET /api/files/{id}", s.getFile)
-	api.HandleFunc("GET /api/files/{id}/content", s.download)
-	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
-	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
-	api.HandleFunc("GET /api/backup/status", s.backupStatus)
-	api.HandleFunc("GET /api/stats", s.stats)
+	files := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireSession(h)) }
+	ops := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireTokenOrSession(h)) }
+	login := func(pattern string, h http.HandlerFunc) { api.Handle(pattern, s.requireToken(h)) }
+
+	files("POST /api/folders", s.createFolder)
+	files("GET /api/folders/{id}/children", s.listChildren)
+	files("POST /api/files", s.upload)
+	files("GET /api/files/{id}", s.getFile)
+	files("GET /api/files/{id}/content", s.download)
+	files("POST /api/files/{id}/link", s.createLink)
+	files("DELETE /api/files/{id}", s.deleteFile)
+	files("GET /api/auth/passkeys", s.listPasskeys)
+	files("DELETE /api/auth/passkeys/{id}", s.deletePasskey)
+	files("POST /api/auth/passkeys/add-code", s.newAddCode)
+
+	ops("GET /api/backup/status", s.backupStatus)
+	ops("GET /api/stats", s.stats)
 	// 对账：GET 只出报告；POST 执行修复和残块清理
-	api.HandleFunc("GET /api/maintenance/reconcile", s.reconcile(false))
-	api.HandleFunc("POST /api/maintenance/reconcile", s.reconcile(true))
-	mux.Handle("/api/", s.cors(s.auth(api)))
+	ops("GET /api/maintenance/reconcile", s.reconcile(false))
+	ops("POST /api/maintenance/reconcile", s.reconcile(true))
+
+	login("POST /api/auth/session", s.createSession)
+	login("POST /api/auth/passkey/login/begin", s.passkeyLoginBegin)
+	login("POST /api/auth/passkey/login/finish", s.passkeyLoginFinish)
+	login("POST /api/auth/passkey/register/begin", s.passkeyRegisterBegin)
+	login("POST /api/auth/passkey/register/finish", s.passkeyRegisterFinish)
+
+	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
 	return mux
@@ -87,25 +113,10 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			if allowed {
 				h := w.Header()
 				h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
-				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, Content-Type, Range")
+				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, Content-Type, Range")
 				h.Set("Access-Control-Max-Age", "86400")
 			}
 			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (s *Server) auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 私有 Hugging Face Space 的 Authorization 头被 HF 自己的 token 占用，所以也接受 X-Xiaoju-Token。
-		got := r.Header.Get("X-Xiaoju-Token")
-		if got == "" {
-			got, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		}
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -29,7 +29,16 @@ SECRET_KEYS = [
     "TG_BACKUP_BOT_TOKEN",
     "TG_BACKUP_CHANNEL_ID",
 ]
-VARIABLE_KEYS = ["TG_TRANSPORT", "XIAOJU_PART_SIZE", "XIAOJU_CORS_ORIGINS"]
+VARIABLE_KEYS = [
+    "TG_TRANSPORT",
+    "XIAOJU_PART_SIZE",
+    "XIAOJU_CORS_ORIGINS",
+    "XIAOJU_WEBAUTHN_RP_ID",
+    "XIAOJU_WEBAUTHN_ORIGINS",
+    "XIAOJU_PASSKEY_RESET",
+]
+# 这些变量在 GitHub 里删掉后，也要从 Space 上删掉（否则会一直生效）
+REMOVE_WHEN_UNSET = {"XIAOJU_PASSKEY_RESET"}
 
 DONE_STAGES = {"RUNNING", "RUNTIME_ERROR", "BUILD_ERROR", "CONFIG_ERROR", "NO_APP_FILE", "PAUSED", "STOPPED"}
 
@@ -120,6 +129,12 @@ def main():
         if value:
             api.add_space_variable(repo_id, key, value)
             log(f"variable set: {key}={value}")
+        elif key in REMOVE_WHEN_UNSET:
+            try:
+                api.delete_space_variable(repo_id, key)
+                log(f"variable removed: {key}")
+            except Exception as e:  # 本来就没有
+                log(f"variable not present: {key} ({type(e).__name__})")
 
     with tempfile.TemporaryDirectory() as tmp:
         stage_source(tmp)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/langhua98/xiaoju-cloud/internal/api"
+	"github.com/langhua98/xiaoju-cloud/internal/auth"
 	"github.com/langhua98/xiaoju-cloud/internal/config"
 	"github.com/langhua98/xiaoju-cloud/internal/db"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
@@ -131,8 +132,25 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	go svc.RunMaintenance(ctx, time.Hour)
 
+	passkeys, err := auth.NewPasskeys(ctx, store, userID, auth.PasskeyConfig{RPID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins})
+	if err != nil {
+		return err
+	}
+	if cfg.PasskeyReset {
+		n, err := passkeys.ResetAll(ctx)
+		if err != nil {
+			return err
+		}
+		log.Warn("XIAOJU_PASSKEY_RESET is set: removed all registered face / fingerprint devices; unset it after re-registering", "removed", n)
+	}
+	if passkeys.Available() {
+		log.Info("face / fingerprint login available", "rp_id", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins, "required", passkeys.Required())
+	} else {
+		log.Warn("face / fingerprint login not configured: set XIAOJU_CORS_ORIGINS (or XIAOJU_WEBAUTHN_RP_ID / XIAOJU_WEBAUTHN_ORIGINS)")
+	}
+
 	handler := api.New(svc, api.Options{
-		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
+		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log, Passkeys: passkeys,
 	}).Handler()
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

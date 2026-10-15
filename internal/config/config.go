@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,6 +27,12 @@ type Config struct {
 	TempDir     string
 	// CORSOrigins 允许跨域访问 API 的网页来源，如 https://user.github.io；"*" 表示任意来源。
 	CORSOrigins []string
+
+	// 刷脸（通行密钥）：绑定网页所在的域名。默认取 CORSOrigins 里第一个具体来源。
+	WebAuthnRPID    string
+	WebAuthnOrigins []string
+	// PasskeyReset 为 true 时启动时清空所有已注册设备（设备全部丢失时的紧急恢复）。
+	PasskeyReset bool
 
 	LocalDir string
 
@@ -68,11 +75,23 @@ func Load() (*Config, error) {
 		},
 	}
 
-	for _, o := range strings.Split(os.Getenv("XIAOJU_CORS_ORIGINS"), ",") {
-		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
-			c.CORSOrigins = append(c.CORSOrigins, o)
+	c.CORSOrigins = splitList(os.Getenv("XIAOJU_CORS_ORIGINS"))
+
+	c.WebAuthnOrigins = splitList(os.Getenv("XIAOJU_WEBAUTHN_ORIGINS"))
+	if len(c.WebAuthnOrigins) == 0 {
+		for _, o := range c.CORSOrigins {
+			if o != "*" {
+				c.WebAuthnOrigins = append(c.WebAuthnOrigins, o)
+			}
 		}
 	}
+	c.WebAuthnRPID = os.Getenv("XIAOJU_WEBAUTHN_RP_ID")
+	if c.WebAuthnRPID == "" && len(c.WebAuthnOrigins) > 0 {
+		if u, err := url.Parse(c.WebAuthnOrigins[0]); err == nil {
+			c.WebAuthnRPID = u.Hostname()
+		}
+	}
+	c.PasskeyReset, _ = strconv.ParseBool(os.Getenv("XIAOJU_PASSKEY_RESET"))
 
 	var err error
 	if c.PartSize, err = envInt64("XIAOJU_PART_SIZE", 256*MiB); err != nil {
@@ -154,6 +173,17 @@ func (c *Config) ValidateTelegram() error {
 		}
 	}
 	return nil
+}
+
+// splitList 解析逗号分隔的网址列表，去掉空白和结尾的 /
+func splitList(v string) []string {
+	var out []string
+	for _, o := range strings.Split(v, ",") {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func env(key, def string) string {
