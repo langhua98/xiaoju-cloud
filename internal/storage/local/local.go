@@ -35,6 +35,9 @@ func (d *Driver) path(loc storage.Location) string {
 	return filepath.Join(d.dir, strconv.FormatInt(loc.MessageID, 10))
 }
 
+// 分块文件名另存一个旁路文件，对账时用来识别本程序上传的分块
+const nameSuffix = ".name"
+
 func (d *Driver) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
 	loc := storage.Location{MessageID: d.next.Add(1)}
 	f, err := os.OpenFile(d.path(loc), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
@@ -48,8 +51,12 @@ func (d *Driver) Put(ctx context.Context, req storage.PutRequest) (storage.Locat
 	if err == nil && n != req.Size {
 		err = fmt.Errorf("local: wrote %d bytes, expected %d", n, req.Size)
 	}
+	if err == nil && req.Name != "" {
+		err = os.WriteFile(d.path(loc)+nameSuffix, []byte(req.Name), 0o640)
+	}
 	if err != nil {
 		os.Remove(d.path(loc))
+		os.Remove(d.path(loc) + nameSuffix)
 		return storage.Location{}, err
 	}
 	return loc, nil
@@ -75,6 +82,32 @@ func (d *Driver) Delete(ctx context.Context, locs []storage.Location) error {
 		if err := os.Remove(d.path(loc)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
+		os.Remove(d.path(loc) + nameSuffix)
 	}
 	return errors.Join(errs...)
+}
+
+func (d *Driver) List(ctx context.Context, _ int64, fn func(storage.Object) error) error {
+	entries, err := os.ReadDir(d.dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		id, err := strconv.ParseInt(e.Name(), 10, 64)
+		if err != nil || e.IsDir() {
+			continue // 旁路文件等
+		}
+		info, err := e.Info()
+		if err != nil {
+			return err
+		}
+		obj := storage.Object{Location: storage.Location{MessageID: id}, Size: info.Size(), Created: info.ModTime()}
+		if name, err := os.ReadFile(d.path(obj.Location) + nameSuffix); err == nil {
+			obj.Name = string(name)
+		}
+		if err := fn(obj); err != nil {
+			return err
+		}
+	}
+	return nil
 }

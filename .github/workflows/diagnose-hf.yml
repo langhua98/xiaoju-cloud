@@ -1,8 +1,15 @@
 name: Diagnose Hugging Face Space
 
 # 手动运行：查询线上服务的备份状态和网盘统计，并打印 Space 最近的运行日志（只输出备份、警告和错误相关的行）。
+# reconcile=report 时附带对账报告（只读）；=apply 时执行对账修复和残块清理（见 README“对账与清理残块”）。
 on:
   workflow_dispatch:
+    inputs:
+      reconcile:
+        description: "对账：none 不做；report 只出报告；apply 修复并清理残块"
+        type: choice
+        options: [report, none, apply]
+        default: report
 
 permissions:
   contents: read
@@ -14,6 +21,7 @@ jobs:
     steps:
       - name: Query service and logs
         env:
+          RECONCILE: ${{ inputs.reconcile }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
           XIAOJU_ADMIN_TOKEN: ${{ secrets.XIAOJU_ADMIN_TOKEN }}
@@ -27,15 +35,25 @@ jobs:
           echo "space: $SPACE ($HOST)"
 
           api() {
-            curl -sS --retry 3 --retry-delay 10 --max-time 120 -H "X-Xiaoju-Token: $TOKEN" "$HOST$1"
+            curl -sS --retry 3 --retry-delay 10 --max-time 300 -H "X-Xiaoju-Token: $TOKEN" "$@"
             echo
           }
           echo "::group::backup status"
-          api /api/backup/status
+          api "$HOST/api/backup/status"
           echo "::endgroup::"
           echo "::group::drive stats"
-          api /api/stats
+          api "$HOST/api/stats"
           echo "::endgroup::"
+
+          pretty() { out=$(cat); printf '%s\n' "$out" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$out"; }
+          case "$RECONCILE" in
+            report) echo "::group::reconcile report (read-only)"
+                    api "$HOST/api/maintenance/reconcile" | pretty
+                    echo "::endgroup::" ;;
+            apply)  echo "::group::reconcile APPLY"
+                    api -X POST "$HOST/api/maintenance/reconcile" | pretty
+                    echo "::endgroup::" ;;
+          esac
 
           echo "::group::space run logs (backup / warnings / errors, last 200)"
           curl -sS -N --max-time 30 -H "Authorization: Bearer $HF" \

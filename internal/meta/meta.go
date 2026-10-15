@@ -132,6 +132,63 @@ func (s *Store) SetPartBackup(ctx context.Context, fileID uuid.UUID, partNo int,
 	return err
 }
 
+// SetPartPrimary 更新分块在主存储中的位置（从备份修复主存储后使用）。
+func (s *Store) SetPartPrimary(ctx context.Context, fileID uuid.UUID, partNo int, channelID, messageID int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE file_parts SET channel_id = $3, message_id = $4
+		WHERE file_id = $1 AND part_no = $2`, fileID, partNo, channelID, messageID)
+	return err
+}
+
+// ClearPartBackup 清除分块的备份位置（备份端数据丢失时），后台同步会重新复制。
+func (s *Store) ClearPartBackup(ctx context.Context, fileID uuid.UUID, partNo int) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE file_parts SET backup_channel_id = NULL, backup_message_id = NULL
+		WHERE file_id = $1 AND part_no = $2`, fileID, partNo)
+	return err
+}
+
+// AllParts 返回所有分块（任何状态的文件，包括上传中和回收站里的），以及所属文件的状态。
+func (s *Store) AllParts(ctx context.Context) ([]Part, []string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+partColumns+`, f.status FROM file_parts p JOIN files f ON f.id = p.file_id
+		ORDER BY p.file_id, p.part_no`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var parts []Part
+	var statuses []string
+	for rows.Next() {
+		var p Part
+		var status string
+		if err := rows.Scan(&p.FileID, &p.PartNo, &p.Storage, &p.ChannelID, &p.MessageID, &p.Size, &p.IV, &p.SHA256,
+			&p.BackupChannelID, &p.BackupMessageID, &status); err != nil {
+			return nil, nil, err
+		}
+		parts = append(parts, p)
+		statuses = append(statuses, status)
+	}
+	return parts, statuses, rows.Err()
+}
+
+// FileExists 报告某个 ID 的文件记录是否存在（任何状态）。
+func (s *Store) FileExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM files WHERE id = $1)`, id).Scan(&ok)
+	return ok, err
+}
+
+// ListStaleUploads 返回创建时间早于 before 仍处于上传中的文件（上传被中断，如服务重启）。
+func (s *Store) ListStaleUploads(ctx context.Context, before time.Time) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id FROM files WHERE status = 'uploading' AND created_at < $1 ORDER BY created_at`, before)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+}
+
 // ListPartsMissingBackup 返回最早的一批还没有备份的分块（只看已上传完成的文件）。
 func (s *Store) ListPartsMissingBackup(ctx context.Context, limit int) ([]Part, error) {
 	rows, err := s.db.Query(ctx, `

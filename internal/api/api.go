@@ -63,6 +63,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
 	api.HandleFunc("GET /api/backup/status", s.backupStatus)
 	api.HandleFunc("GET /api/stats", s.stats)
+	// 对账：GET 只出报告；POST 执行修复和残块清理
+	api.HandleFunc("GET /api/maintenance/reconcile", s.reconcile(false))
+	api.HandleFunc("POST /api/maintenance/reconcile", s.reconcile(true))
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
@@ -312,6 +315,17 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) reconcile(apply bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rep, err := s.svc.Reconcile(r.Context(), apply)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rep)
+	}
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {

@@ -183,12 +183,19 @@ func removeAll(t *testing.T, dir string) {
 	}
 }
 
+// countFiles 统计本地驱动目录里的分块文件数（不含 .name 旁路文件）
 func countFiles(t *testing.T, dir string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return len(entries)
+	n := 0
+	for _, e := range entries {
+		if _, err := strconv.ParseInt(e.Name(), 10, 64); err == nil {
+			n++
+		}
+	}
+	return n
 }
 
 func TestDriveStatsIntegration(t *testing.T) {

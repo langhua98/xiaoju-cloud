@@ -54,3 +54,17 @@ func TestExtractMessageID(t *testing.T) {
 		t.Fatal("expected error for empty updates")
 	}
 }
+
+func TestDocumentObject(t *testing.T) {
+	msg := &tg.Message{ID: 42, Date: 1700000000, Media: &tg.MessageMediaDocument{Document: &tg.Document{
+		Size:       1234,
+		Attributes: []tg.DocumentAttributeClass{&tg.DocumentAttributeFilename{FileName: "abc.part0001"}},
+	}}}
+	obj, ok := documentObject(7, msg)
+	if !ok || obj.MessageID != 42 || obj.ChannelID != 7 || obj.Size != 1234 || obj.Name != "abc.part0001" || obj.Created.Unix() != 1700000000 {
+		t.Fatalf("got %+v ok=%v", obj, ok)
+	}
+	if _, ok := documentObject(7, &tg.Message{ID: 1, Message: "test"}); ok {
+		t.Fatal("text message must not be treated as a part")
+	}
+}

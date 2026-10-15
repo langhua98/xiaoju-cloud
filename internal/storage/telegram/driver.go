@@ -127,6 +127,73 @@ func (d *Driver) Delete(ctx context.Context, locs []storage.Location) error {
 	return nil
 }
 
+const (
+	listBatch = 100 // channels.getMessages 单次最多 100 个 ID
+	// 已扫过已知最大 ID 后，连续这么多批（500 个 ID）都没有任何消息才认为到头了
+	listEmptyBatches = 5
+)
+
+// List 按消息 ID 从 1 开始逐批扫描频道（Bot 不能调用 messages.getHistory），回调其中的文档消息。
+// 已删除的消息（MessageEmpty）和服务消息跳过。
+func (d *Driver) List(ctx context.Context, minMessageID int64, fn func(storage.Object) error) error {
+	empty := 0
+	for start := 1; ; start += listBatch {
+		ids := make([]tg.InputMessageClass, listBatch)
+		for i := range ids {
+			ids[i] = &tg.InputMessageID{ID: start + i}
+		}
+		res, err := d.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{Channel: d.channel, ID: ids})
+		if err != nil {
+			return fmt.Errorf("list messages from %d: %w", start, err)
+		}
+		msgs, ok := res.(*tg.MessagesChannelMessages)
+		if !ok {
+			return fmt.Errorf("unexpected getMessages result %T", res)
+		}
+		found := false
+		for _, m := range msgs.Messages {
+			switch msg := m.(type) {
+			case *tg.MessageService:
+				found = true
+			case *tg.Message:
+				found = true
+				if obj, ok := documentObject(d.channel.ChannelID, msg); ok {
+					if err := fn(obj); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if found {
+			empty = 0
+		} else if empty++; empty >= listEmptyBatches && int64(start+listBatch) > minMessageID {
+			return nil
+		}
+	}
+}
+
+func documentObject(channelID int64, msg *tg.Message) (storage.Object, bool) {
+	media, ok := msg.Media.(*tg.MessageMediaDocument)
+	if !ok {
+		return storage.Object{}, false
+	}
+	doc, ok := media.Document.(*tg.Document)
+	if !ok {
+		return storage.Object{}, false
+	}
+	obj := storage.Object{
+		Location: storage.Location{ChannelID: channelID, MessageID: int64(msg.ID)},
+		Size:     doc.Size,
+		Created:  time.Unix(int64(msg.Date), 0),
+	}
+	for _, a := range doc.Attributes {
+		if fa, ok := a.(*tg.DocumentAttributeFilename); ok {
+			obj.Name = fa.FileName
+		}
+	}
+	return obj, true
+}
+
 // location 返回消息中文档的下载位置，带缓存；refresh=true 时强制重新获取（file_reference 过期时）。
 func (d *Driver) location(ctx context.Context, msgID int64, refresh bool) (*tg.InputDocumentFileLocation, error) {
 	d.mu.Lock()

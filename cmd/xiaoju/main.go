@@ -129,6 +129,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if backup != nil {
 		go svc.RunBackupSync(ctx, 5*time.Minute)
 	}
+	go svc.RunMaintenance(ctx, time.Hour)
 
 	handler := api.New(svc, api.Options{
 		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,

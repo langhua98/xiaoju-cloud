@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 // Location 指向一个已存储的分块。对 Telegram 来说就是 频道ID + 消息ID。
@@ -31,3 +32,19 @@ type Driver interface {
 }
 
 var ErrNotFound = errors.New("storage: part not found")
+
+// Object 是存储端实际存在的一个分块，用于对账。
+type Object struct {
+	Location
+	Name    string // 上传时的文件名（PutRequest.Name）；不是本程序上传的为空
+	Size    int64
+	Created time.Time
+}
+
+// Lister 是可以列出全部已存储分块的驱动（对账、清理残块用）。
+type Lister interface {
+	// List 逐个回调存储端的分块。minMessageID 是已知存在的最大消息 ID，
+	// 实现至少要扫描到这里，避免因为中间有大段被删除的消息而提前停止。
+	// 扫描出错时返回错误，调用方必须把结果当作不完整。
+	List(ctx context.Context, minMessageID int64, fn func(Object) error) error
+}
