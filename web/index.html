@@ -11,6 +11,10 @@
 </head>
 <body>
   <div id="page-progress" class="page-progress" hidden><i></i></div>
+  <div id="update-bar" class="update-bar" role="status" hidden>
+    <span>网页有新版本，刷新后才能正常使用（需要重新登录）</span>
+    <button id="update-btn" type="button" class="primary">刷新</button>
+  </div>
   <header class="topbar">
     <a class="brand" href="#/">小桔云盘</a>
     <div class="topbar-right">
@@ -70,6 +74,7 @@
         <input name="token" type="password" required autocomplete="off" autocapitalize="off" spellcheck="false">
       </label>
       <p id="login-hint" class="hint">令牌不会保存，刷新或关闭页面后需要重新输入。</p>
+      <p id="login-update" class="update-hint" hidden>网页有新版本，<button id="login-update-btn" type="button" class="link">点这里刷新</button></p>
       <p id="login-error" class="error" hidden></p>
       <div class="dialog-actions">
         <button id="login-btn" type="submit" class="primary"><span class="spinner" aria-hidden="true"></span><span class="label">登录</span></button>

@@ -33,6 +33,16 @@ jobs:
         run: |
           printf 'window.XIAOJU_API_URL = %s;\n' "$(jq -Rn --arg v "$XIAOJU_API_URL" '$v')" > web/config.js
           cat web/config.js
+      - name: Stamp version
+        # 网页带上提交号：已经打开的旧页面发现版本变了会自动刷新或提示刷新（见 app.js checkWebVersion）；
+        # 资源地址的 ?v= 也换成提交号，每次部署浏览器都会重新下载
+        run: |
+          v="${GITHUB_SHA::7}"
+          printf '{"version":"%s"}\n' "$v" > web/version.json
+          sed -i "s/^const WEB_VERSION = \"dev\";/const WEB_VERSION = \"$v\";/" web/app.js
+          sed -i -E "s/\?v=[0-9a-z]+\"/?v=$v\"/g" web/index.html
+          grep -q "^const WEB_VERSION = \"$v\";" web/app.js
+          grep -o '?v=[0-9a-z]*' web/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

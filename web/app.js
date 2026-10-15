@@ -1711,3 +1711,51 @@ drop.addEventListener("drop", (e) => {
 
 window.addEventListener("hashchange", () => load());
 load();
+
+// ---------- 网页版本检查 ----------
+// 部署后已经打开的旧页面不认识服务端的新要求（比如看照片时的格子口令），要换成新版。
+// WEB_VERSION 由 .github/workflows/pages.yml 换成提交号；本地开发是 "dev"，不检查。
+const WEB_VERSION = "dev";
+
+async function checkWebVersion() {
+  if (WEB_VERSION === "dev") return;
+  let latest;
+  try {
+    const resp = await fetch(`version.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!resp.ok) return;
+    latest = (await resp.json()).version;
+  } catch { return; } // 离线等情况：下次再查
+  if (!latest || latest === WEB_VERSION) return;
+  // 没登录、也没在上传：直接换新版（令牌和会话只在内存里，登录后刷新要重新登录，所以那时只提示）
+  if (!state.session && !active && !queue.length) reloadTo(latest);
+  else showUpdateBar(latest);
+}
+
+function reloadTo(version) {
+  // 换个网址绕开 GitHub Pages 对页面的缓存；同一个版本只自动刷新一次，防止缓存没过期时来回刷新
+  let tried = "";
+  try { tried = sessionStorage.getItem("xiaoju.reloadedFor") || ""; } catch { /* 隐私模式 */ }
+  if (tried === version) { showUpdateBar(version); return; }
+  try { sessionStorage.setItem("xiaoju.reloadedFor", version); } catch { /* 隐私模式 */ }
+  location.replace(`${location.pathname}?v=${encodeURIComponent(version)}${location.hash}`);
+}
+
+// 顶部提示条；登录框是模态的，打开时顶部点不到，所以登录框里也显示一个刷新入口
+function showUpdateBar(version) {
+  const bar = $("#update-bar");
+  bar.dataset.version = version;
+  bar.hidden = false;
+  $("#login-update").hidden = false;
+}
+
+function updateNow() {
+  if ((active || queue.length) && !confirm("还有文件在上传，刷新会中断上传。确定刷新？")) return;
+  try { sessionStorage.removeItem("xiaoju.reloadedFor"); } catch { /* 隐私模式 */ }
+  reloadTo($("#update-bar").dataset.version);
+}
+$("#update-btn").addEventListener("click", updateNow);
+$("#login-update-btn").addEventListener("click", updateNow);
+
+checkWebVersion();
+// iPhone 上切到别的 App 再回来，页面不会重新加载：回到前台时再查一次
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkWebVersion(); });

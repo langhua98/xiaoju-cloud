@@ -485,3 +485,21 @@ button.danger { color: var(--danger); }
   .grid-legend b.add { color: #60a5fa; }
 }
 .grid-quiz.shake { animation: shake 0.36s ease; }
+
+/* 网页有新版本 */
+.update-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 14px;
+}
+.update-bar button { background: var(--surface); border-color: var(--surface); color: var(--text); padding: 4px 14px; }
+.update-hint { font-size: 13px; margin: -6px 0 12px; color: var(--danger); }
+.update-hint button.link { padding: 0; color: var(--accent); text-decoration: underline; }
