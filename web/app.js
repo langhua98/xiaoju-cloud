@@ -1316,8 +1316,12 @@ async function download(f) {
   } catch (err) { fail(err); }
 }
 
+// Safari（iPhone / Mac）能直接显示 HEIC 照片，其他浏览器不行
+const isSafari = /Safari\//.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/.test(navigator.userAgent);
+
 function previewKind(mime = "") {
   if (/^image\/(png|jpe?g|gif|webp|avif|bmp|svg\+xml)$/.test(mime)) return "img";
+  if (isSafari && /^image\/hei[cf]$/.test(mime)) return "img";
   if (/^video\/(mp4|webm|ogg|quicktime)$/.test(mime)) return "video";
   if (/^audio\//.test(mime)) return "audio";
   if (mime === "application/pdf" || mime.startsWith("text/")) return "tab";
@@ -1372,6 +1376,10 @@ async function remove(f) {
 const CONCURRENCY = 2;
 // 网络中断、服务端出错（多为 Telegram 限流）时的重试间隔（秒）
 const RETRY_DELAYS = [5, 20, 60];
+// 上传卡住的判定：传文件的过程中这么久没有任何进度（网络断了、手机锁屏或切到后台），中断后重试
+const STALL_MS = 60_000;
+// 文件传完后，服务端加密并写入 Telegram（含限流等待）最多等这么久
+const SERVER_WAIT_MS = 6 * 60_000;
 const ALBUM = "相册";
 
 const queue = [];
@@ -1407,6 +1415,7 @@ function updateSummary() {
   if (queue.length + active) parts.push(`剩余 ${queue.length + active}`);
   if (s.skipped) parts.push(`跳过 ${s.skipped}（已存在）`);
   if (s.failed) parts.push(`失败 ${s.failed}`);
+  if (queue.length + active) parts.push("上传时请保持这个页面在前台");
   $("#upload-summary").textContent = (s.sync ? "同步相册：" : "上传：") + parts.join(" · ");
   $("#uploads").hidden = false;
 }
@@ -1482,28 +1491,84 @@ function uploadOne({ file, name, parent }, status, bar) {
     const q = new URLSearchParams({ name });
     if (parent) q.set("parent_id", parent);
     const xhr = new XMLHttpRequest();
+    let settled = false;
+    let lastProgress = Date.now();
+    let bodySent = false;
+    const settle = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(watchdog);
+      fn(arg);
+    };
+    // 看门狗：上传挂住（既不报错也不结束）时主动中断，交给重试，避免整个队列被堵死。
+    // 手机切到后台时计时器会暂停，回到前台后会立刻检查。
+    const watchdog = setInterval(() => {
+      const idle = Date.now() - lastProgress;
+      if (!bodySent && idle > STALL_MS) {
+        xhr.abort();
+        settle(reject, new HttpError(0, "上传停滞（网络中断或页面进入了后台）"));
+      } else if (bodySent && idle > SERVER_WAIT_MS) {
+        xhr.abort();
+        settle(reject, new HttpError(0, "服务端长时间没有响应"));
+      }
+    }, 5000);
+
     xhr.open("POST", `${state.api}/api/files?${q}`);
     for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     xhr.upload.onprogress = (e) => {
+      lastProgress = Date.now();
       if (!e.lengthComputable) return;
       bar.value = e.loaded / e.total;
       status.textContent = e.loaded < e.total
         ? `${formatSize(e.loaded)} / ${formatSize(e.total)}`
         : "加密并写入 Telegram…";
     };
+    xhr.upload.onload = () => {
+      bodySent = true;
+      lastProgress = Date.now();
+      status.textContent = "加密并写入 Telegram…";
+    };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      if (xhr.status >= 200 && xhr.status < 300) return settle(resolve);
       let data = {};
       try { data = JSON.parse(xhr.responseText) || {}; } catch { /* 非 JSON */ }
-      reject(new HttpError(xhr.status, errorText(xhr.status, data.error, data.code), data.code));
+      settle(reject, new HttpError(xhr.status, errorText(xhr.status, data.error, data.code), data.code));
     };
-    xhr.onerror = () => reject(new HttpError(0, "上传中断（网络错误或连接超时）"));
+    xhr.onerror = () => settle(reject, new HttpError(0, "上传中断（网络错误或连接超时）"));
+    xhr.onabort = () => settle(reject, new HttpError(0, "上传已中断"));
     xhr.send(file);
   });
 }
 
+// ---------- 选择文件时的等待提示 ----------
+// iPhone 选很多照片时，系统会先在手机上转换格式（HEIC → JPEG，视频转码），全部转完才把文件交给网页，
+// 期间没有任何提示，看起来像卡住了。点了选择后显示提示，收到文件或取消选择时隐藏。
+
+const PICK_HINT_DELAY_MS = 1200;
+const PICK_HINT_MAX_MS = 5 * 60_000;
+let pickTimer;
+let pickHideTimer;
+
+function showPicking(on) {
+  clearTimeout(pickTimer);
+  clearTimeout(pickHideTimer);
+  $("#picking").hidden = !on;
+  if (on) pickHideTimer = setTimeout(() => showPicking(false), PICK_HINT_MAX_MS);
+}
+
+for (const sel of ["#file-input", "#album-input"]) {
+  const input = $(sel);
+  // 选择器打开后稍等再显示（桌面上很快选完就不会闪一下）
+  input.addEventListener("click", () => {
+    clearTimeout(pickTimer);
+    pickTimer = setTimeout(() => showPicking(true), PICK_HINT_DELAY_MS);
+  });
+  input.addEventListener("cancel", () => showPicking(false));
+}
+
 $("#file-input").addEventListener("change", (e) => {
+  showPicking(false);
   enqueue([...e.target.files].map((file) => ({ file })));
   e.target.value = "";
 });
@@ -1552,6 +1617,7 @@ async function syncAlbum(files) {
 }
 
 $("#album-input").addEventListener("change", (e) => {
+  showPicking(false);
   const files = [...e.target.files];
   e.target.value = "";
   syncAlbum(files);
