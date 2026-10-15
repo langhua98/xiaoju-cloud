@@ -191,3 +191,88 @@ dialog.preview { width: min(960px, calc(100vw - 32px)); padding: 12px; }
   td.ops .wide { display: none; }
   th, td { padding: 9px 8px; }
 }
+
+/* ---------- 过渡与进度 ---------- */
+
+/* 页面顶部细进度条：加载目录、登录后首次加载时从 0 渐变到 100% */
+.page-progress { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 1000; pointer-events: none; }
+.page-progress > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--bar);
+  box-shadow: 0 0 8px var(--bar);
+  transition: width 0.35s ease, opacity 0.3s ease 0.15s;
+}
+
+/* 弹窗淡入弹出 / 淡出 */
+dialog[open] { animation: pop-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+dialog[open]::backdrop { animation: fade-in 0.24s ease; }
+dialog.closing { animation: pop-out 0.2s ease forwards; }
+dialog.closing::backdrop { animation: fade-out 0.2s ease forwards; }
+
+/* 登录框顶部的流动进度条 */
+#login { overflow: hidden; }
+.login-progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; opacity: 0; transition: opacity 0.2s ease; }
+.login-progress > i { display: block; width: 40%; height: 100%; background: var(--bar); animation: slide 1.1s ease-in-out infinite; }
+#login.busy .login-progress { opacity: 1; }
+#login.busy input { opacity: 0.6; }
+#login-form.shake { animation: shake 0.36s ease; }
+#login .hint, #login .error { transition: opacity 0.25s ease; }
+#login .error:not([hidden]) { animation: fade-in 0.25s ease; }
+
+/* 按钮内的转圈 */
+.spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+button.loading .spinner { display: inline-block; }
+button.loading, button.done { cursor: default; }
+button:disabled { opacity: 0.85; }
+
+/* 主界面淡入 */
+.fade-in { animation: fade-up 0.32s ease both; }
+
+/* 文件列表：首次加载显示骨架，切换目录时旧内容变淡，新内容逐行淡入 */
+#rows { transition: opacity 0.2s ease; }
+#rows.stale { opacity: 0.45; }
+#rows tr.appear { animation: fade-up 0.26s ease both; animation-delay: calc(var(--i, 0) * 25ms); }
+.skeleton td { padding-top: 14px; padding-bottom: 14px; }
+.skeleton span {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--hover) 25%, var(--border) 45%, var(--hover) 65%);
+  background-size: 300% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+
+@keyframes pop-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } }
+@keyframes pop-out { to { opacity: 0; transform: translateY(-8px) scale(0.98); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes shake {
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+
+/* 系统设置了“减少动态效果”时关闭动画 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after, ::backdrop {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+  }
+}

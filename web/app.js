@@ -57,14 +57,103 @@ function fail(err) {
   toast(err.message);
 }
 
+// ---------- 过渡动画 ----------
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 给元素加一个带动画的 class，动画结束（或超时兜底）后移除并 resolve
+function playClass(el, cls, timeout = 500) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      el.removeEventListener("animationend", onEnd);
+      el.classList.remove(cls);
+      resolve();
+    };
+    const onEnd = (e) => { if (e.target === el) finish(); };
+    el.classList.remove(cls);
+    void el.offsetWidth; // 重新触发同名动画
+    el.classList.add(cls);
+    el.addEventListener("animationend", onEnd);
+    setTimeout(finish, timeout);
+  });
+}
+
+async function closeDialog(dialog) {
+  if (!dialog.open) return;
+  await playClass(dialog, "closing", 300);
+  dialog.close();
+}
+
+// 页面顶部细进度条：start() 后先快后慢地涨到 90%，done() 时补满再淡出。支持并发调用。
+const progress = (() => {
+  const wrap = $("#page-progress");
+  const bar = wrap.querySelector("i");
+  let active = 0;
+  let width = 0;
+  let timer = null;
+  let hideTimer = null;
+  const set = (w) => { width = w; bar.style.width = `${w}%`; };
+  return {
+    start() {
+      if (active++ > 0) return;
+      clearTimeout(hideTimer);
+      wrap.hidden = false;
+      bar.style.transition = "none";
+      bar.style.opacity = "1";
+      set(0);
+      void bar.offsetWidth;
+      bar.style.transition = "";
+      set(15);
+      timer = setInterval(() => set(width + (90 - width) * 0.12), 300);
+    },
+    done() {
+      if (active === 0 || --active > 0) return;
+      clearInterval(timer);
+      set(100);
+      bar.style.opacity = "0";
+      hideTimer = setTimeout(() => { wrap.hidden = true; }, 500);
+    },
+  };
+})();
+
 // ---------- 登录 ----------
+
+const LOGIN_HINT = "令牌不会保存，刷新或关闭页面后需要重新输入。";
+// 免费 HF Space 闲置后会休眠，第一次请求要等它唤醒
+const WAKE_HINT = "服务端可能在休眠，正在唤醒，首次访问约需 30 秒…";
+const WAKE_HINT_DELAY_MS = 4000;
+
+function setLoginBusy(busy) {
+  const form = $("#login-form");
+  const btn = $("#login-btn");
+  $("#login").classList.toggle("busy", busy);
+  btn.classList.toggle("loading", busy);
+  btn.disabled = busy;
+  form.token.readOnly = busy;
+  if (!defaultAPI) form.api.readOnly = busy;
+  btn.querySelector(".label").textContent = busy ? "登录中…" : "登录";
+}
+
+function setLoginHint(text) {
+  const hint = $("#login-hint");
+  if (hint.textContent === text) return;
+  hint.style.opacity = "0";
+  setTimeout(() => { hint.textContent = text; hint.style.opacity = ""; }, 150);
+}
 
 function openLogin(message) {
   const form = $("#login-form");
+  const btn = $("#login-btn");
   $("#api-field").hidden = !!defaultAPI;
   form.api.disabled = !!defaultAPI; // 隐藏的必填项会阻止表单提交
   form.api.value = state.api;
   form.token.value = "";
+  setLoginBusy(false);
+  btn.classList.remove("done");
+  $("#login-hint").textContent = LOGIN_HINT;
   const errEl = $("#login-error");
   errEl.textContent = message || "";
   errEl.hidden = !message;
@@ -72,13 +161,21 @@ function openLogin(message) {
   (defaultAPI ? form.token : form.api).focus();
 }
 
-function logout(message) {
+async function logout(message) {
   state.token = "";
   stopBackupPolling();
-  $("#app").hidden = true;
   $("#logout-btn").hidden = true;
-  $("#rows").replaceChildren();
   $("#preview").close();
+  // 主界面淡出后再弹出登录框
+  const app = $("#app");
+  if (!app.hidden) {
+    app.style.transition = "opacity 0.2s ease";
+    app.style.opacity = "0";
+    await sleepMs(200);
+    app.style.transition = app.style.opacity = "";
+  }
+  app.hidden = true;
+  $("#rows").replaceChildren();
   openLogin(message);
 }
 
@@ -90,22 +187,45 @@ $("#login-form").addEventListener("submit", async (e) => {
   const form = e.target;
   const api = defaultAPI || form.api.value.trim().replace(/\/+$/, "");
   const token = form.token.value.trim();
+  const btn = $("#login-btn");
+  if (btn.disabled) return;
   const prev = { api: state.api, token: state.token };
   Object.assign(state, { api, token });
+
+  $("#login-error").hidden = true;
+  setLoginBusy(true);
+  const wakeTimer = setTimeout(() => setLoginHint(WAKE_HINT), WAKE_HINT_DELAY_MS);
+  let root;
   try {
-    await request("GET", "/api/folders/root/children");
+    // 登录校验顺便拿到根目录列表，登录后直接渲染，不用再请求一次
+    root = await request("GET", "/api/folders/root/children");
   } catch (err) {
     Object.assign(state, prev);
+    setLoginBusy(false);
+    setLoginHint(LOGIN_HINT);
     const errEl = $("#login-error");
     errEl.textContent = err.message;
     errEl.hidden = false;
+    playClass(form, "shake", 450);
+    form.token.select();
     return;
+  } finally {
+    clearTimeout(wakeTimer);
   }
   if (!defaultAPI) store.set("xiaoju.api", api);
-  $("#login").close();
+
+  // 成功：按钮显示“登录成功”，稍停后登录框淡出、主界面淡入
+  setLoginBusy(false);
+  btn.disabled = true;
+  btn.classList.add("done");
+  btn.querySelector(".label").textContent = "✓ 登录成功";
+  await sleepMs(350);
+  await closeDialog($("#login"));
+  btn.disabled = false;
+  btn.classList.remove("done");
   $("#logout-btn").hidden = false;
   startBackupPolling();
-  load();
+  load(currentFolderFromHash() ? null : root);
 });
 
 // ---------- 备份进度 ----------
@@ -202,36 +322,83 @@ function renderCrumbs(chain) {
   });
 }
 
-async function load() {
+let loadSeq = 0;
+
+// prefetchedRoot：登录时已经拿到的根目录列表，避免重复请求
+async function load(prefetchedRoot = null) {
   if (!state.api || !state.token) { openLogin(); return; }
-  $("#app").hidden = false;
+  const seq = ++loadSeq;
+  const app = $("#app");
+  if (app.hidden) {
+    app.hidden = false;
+    playClass(app, "fade-in", 500);
+  }
   state.folderId = currentFolderFromHash();
-  $("#loading").hidden = false;
+  const rows = $("#rows");
   $("#empty").hidden = true;
-  $("#rows").replaceChildren();
+  // 已有内容时先变淡（切换目录、刷新），没有内容时显示骨架占位
+  if (rows.querySelector("tr:not(.skeleton)")) rows.classList.add("stale");
+  else if (!prefetchedRoot) showSkeleton();
+  progress.start();
   try {
     const [chain, list] = await Promise.all([
       state.folderId ? crumbsFor(state.folderId) : [],
-      request("GET", `/api/folders/${state.folderId || "root"}/children`),
+      prefetchedRoot && !state.folderId
+        ? prefetchedRoot
+        : request("GET", `/api/folders/${state.folderId || "root"}/children`),
     ]);
+    if (seq !== loadSeq) return; // 期间又切换了目录，丢弃旧结果
     renderCrumbs(chain);
     renderRows(list.items);
   } catch (err) {
+    if (seq !== loadSeq) return;
+    rows.querySelectorAll(".skeleton").forEach((tr) => tr.remove());
     if (err.status === 404 && state.folderId) { location.hash = "#/"; return; }
     fail(err);
   } finally {
-    $("#loading").hidden = true;
+    progress.done();
+    if (seq === loadSeq) rows.classList.remove("stale");
   }
+}
+
+function showSkeleton() {
+  const widths = [[46, 60, 70, 55], [62, 50, 70, 55], [38, 65, 70, 55], [54, 45, 70, 55]];
+  $("#rows").replaceChildren(...widths.map((w) => {
+    const tr = document.createElement("tr");
+    tr.className = "skeleton";
+    ["name", "size", "date", "ops"].forEach((cls, i) => {
+      const td = document.createElement("td");
+      td.className = cls;
+      const bar = document.createElement("span");
+      bar.style.width = `${w[i]}%`;
+      if (cls === "size" || cls === "ops") bar.style.marginLeft = "auto";
+      td.append(bar);
+      tr.append(td);
+    });
+    return tr;
+  }));
 }
 
 function renderRows(items) {
   const rows = $("#rows");
-  rows.replaceChildren(...items.map(rowFor));
+  // 只给新出现的条目做淡入，刷新时已有的行保持不动
+  const before = new Set([...rows.querySelectorAll("tr[data-id]")].map((tr) => tr.dataset.id));
+  let n = 0;
+  rows.replaceChildren(...items.map((f) => {
+    const tr = rowFor(f);
+    if (!before.has(f.id)) {
+      tr.classList.add("appear");
+      tr.style.setProperty("--i", Math.min(n++, 12));
+    }
+    return tr;
+  }));
   $("#empty").hidden = items.length > 0;
+  if (!items.length) playClass($("#empty"), "fade-in", 500);
 }
 
 function rowFor(f) {
   const tr = document.createElement("tr");
+  tr.dataset.id = f.id;
   const isFolder = f.type === "folder";
 
   const name = document.createElement("td");
@@ -430,7 +597,7 @@ function finishBatch() {
 let reloadTimer;
 function scheduleReload() {
   clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(load, 1500);
+  reloadTimer = setTimeout(() => load(), 1500);
 }
 
 async function runJob(job) {
@@ -570,5 +737,5 @@ drop.addEventListener("drop", (e) => {
   if (files.length) enqueue(files.map((file) => ({ file })));
 });
 
-window.addEventListener("hashchange", load);
+window.addEventListener("hashchange", () => load());
 load();
