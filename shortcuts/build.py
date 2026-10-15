@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -56,11 +57,26 @@ def fix_questions(wf):
         q["ActionIndex"] = i
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # urllib 跟随 302 时会把 POST 改成不带请求体的 GET，签名就失败了：不跟随，直接报出跳转地址
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def sign(xml):
     body = json.dumps({"shortcutName": NAME, "shortcut": xml}).encode()
-    req = urllib.request.Request(HUBSIGN, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        signed = resp.read()
+    # 请求头和 Cherri 自带的 Go 客户端一致（有的 CDN 会拦截 Python 默认的 User-Agent）
+    req = urllib.request.Request(HUBSIGN, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "User-Agent": "Go-http-client/1.1",
+    })
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=120) as resp:
+            signed = resp.read()
+    except urllib.error.HTTPError as e:
+        detail = e.read()[:300]
+        sys.exit(f"signing service: HTTP {e.code}, location={e.headers.get('Location')!r}, "
+                 f"server={e.headers.get('Server')!r}, body={detail!r}")
     if not signed.startswith(b"AEA1"):  # 签名后的快捷指令是 Apple Encrypted Archive
         sys.exit(f"signing service did not return a signed shortcut: {signed[:200]!r}")
     return signed
