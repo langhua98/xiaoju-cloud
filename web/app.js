@@ -7,19 +7,30 @@ const store = {
   set(key, v) { try { localStorage.setItem(key, v); } catch { /* 隐私模式下忽略 */ } },
 };
 
-// 内置了服务端地址时只需输入令牌；令牌和会话只放在内存里，刷新或关闭页面即失效。
+// 内置了服务端地址时只需输入令牌。令牌只放在内存里；登录后的会话（12 小时）存在当前标签页（sessionStorage），
+// iPhone 因为内存紧张把页面重新加载、或者网页自动更新后不用重新登录，关闭标签页即失效。
 // 登录：令牌 → Face ID / 指纹（注册了设备时），通过后服务端签发会话（12 小时）。
 // 开启了格子口令时，看照片、视频每随机 3–7 张弹出一道限时格子题，两次机会都没答对就退出登录。
 const defaultAPI = (window.XIAOJU_API_URL || "").replace(/\/+$/, "");
 const state = {
   api: defaultAPI || store.get("xiaoju.api"),
   token: "",   // 访问令牌（登录接口要用）
-  session: "", // 全部验证通过后签发的会话；有值即表示已登录
+  session: tabSession("get"), // 全部验证通过后签发的会话；有值即表示已登录
   loginSteps: [], // 令牌之后还要过的步骤，如 ["passkey"]
   recoveryAvailable: false, // 可以用恢复码代替刷脸
   folderId: null,
 };
 try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
+
+// 当前标签页里的会话：tabSession("get") / tabSession("set", v) / tabSession("clear")
+function tabSession(op, v) {
+  try {
+    if (op === "get") return sessionStorage.getItem("xiaoju.session") || "";
+    if (op === "set") sessionStorage.setItem("xiaoju.session", v);
+    else sessionStorage.removeItem("xiaoju.session");
+  } catch { /* 隐私模式下只放内存 */ }
+  return "";
+}
 
 class HttpError extends Error {
   constructor(status, message, code, data = {}) { super(message); this.status = status; this.code = code; this.data = data; }
@@ -227,6 +238,7 @@ function openLogin(message) {
 async function logout(message) {
   state.token = "";
   state.session = "";
+  tabSession("clear");
   state.loginSteps = [];
   faceOptions = null;
   regOptions = null;
@@ -313,6 +325,12 @@ async function finishLogin(btn) {
   btn.classList.remove("done");
   label.textContent = idle;
   $("#face-step").classList.remove("ok", "verifying");
+  enterApp();
+}
+
+// 已登录：保存会话，显示主界面
+function enterApp() {
+  tabSession("set", state.session);
   $("#logout-btn").hidden = false;
   $("#security-btn").hidden = false;
   startBackupPolling();
@@ -815,7 +833,8 @@ async function openSecurity(hint) {
     $("#grid-sec-actions").hidden = true;
   }
   if (!dlg.open) dlg.showModal();
-  await Promise.all([renderDevices(hint), gridCodesPending ? null : renderGridSec()]);
+  $("#keys-new").replaceChildren();
+  await Promise.all([renderDevices(hint), gridCodesPending ? null : renderGridSec(), renderKeys()]);
 }
 
 async function renderDevices(hint) {
@@ -868,7 +887,7 @@ $("#sec-register").addEventListener("click", async () => {
   setButtonBusy(btn, true, "请完成 Face ID / 指纹…", "在本机开启 Face ID / 指纹");
   try {
     const res = await registerThisDevice();
-    if (res.session) state.session = res.session;
+    if (res.session) { state.session = res.session; tabSession("set", res.session); }
     toast("✓ 本机已开启刷脸登录");
     $("#sec-hint").textContent = "";
     renderDevices();
@@ -1094,6 +1113,72 @@ function reverifyFace(body) {
       mk("div", { className: "dialog-actions" }, cancel, btn));
   });
 }
+
+// ---------- 安全设置：快捷指令批量上传（只能上传的密钥） ----------
+
+async function renderKeys() {
+  let res;
+  try {
+    res = await request("GET", "/api/upload-keys");
+  } catch (err) {
+    fail(err);
+    return;
+  }
+  $("#keys-list").replaceChildren(...res.items.map((k) => {
+    const info = mk("div", {}, k.name, mk("div", {
+      className: "meta",
+      textContent: `创建于 ${formatDate(k.created_at)} · 已上传 ${k.uploads} 个` + (k.last_used_at ? ` · 最近使用 ${formatDate(k.last_used_at)}` : " · 还没用过"),
+    }));
+    const del = mk("button", { type: "button", className: "link danger", textContent: "作废" });
+    del.addEventListener("click", async () => {
+      if (!confirm(`作废「${k.name}」？用这个密钥的快捷指令会立即无法上传。`)) return;
+      try {
+        await request("DELETE", `/api/upload-keys/${k.id}`);
+        toast("已作废");
+        renderKeys();
+      } catch (err) { fail(err); }
+    });
+    return mk("li", {}, info, del);
+  }));
+}
+
+function copyButton(text, label = "复制") {
+  const b = mk("button", { type: "button", textContent: label });
+  b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); toast("已复制"); } catch { toast("复制失败，请长按选中后手动复制"); }
+  });
+  return b;
+}
+
+$("#keys-create").addEventListener("click", async () => {
+  const name = prompt("给这个密钥起个名字（用在哪台设备上）", "iPhone 快捷指令");
+  if (name === null) return;
+  let k;
+  try {
+    k = await request("POST", "/api/upload-keys", { name });
+  } catch (err) { fail(err); return; }
+  const url = state.api + k.endpoint;
+  const code = (t) => mk("code", { textContent: t });
+  const field = (label, value) => mk("div", { className: "key-field" },
+    mk("span", { textContent: label }), mk("code", { textContent: value }), copyButton(value));
+  const box = $("#keys-new");
+  box.replaceChildren(mk("div", { className: "key-box" },
+    mk("p", { className: "hint", textContent: "✓ 已创建。密钥只显示这一次，请现在照下面的步骤填进快捷指令；丢了就作废重建。" }),
+    field("地址", url),
+    field("密钥", k.key),
+    mk("ol", { className: "key-steps" },
+      mk("li", {}, "打开「快捷指令」App，点右上角「＋」新建一个快捷指令，起名如“备份照片”。"),
+      mk("li", {}, "添加操作「选择照片」，点它展开，打开「选择多张」。"),
+      mk("li", {}, "添加「重复每一项」（重复的是上一步的「照片」）。"),
+      mk("li", {}, "在“重复”里面添加「获取 URL 的内容」：URL 粘贴上面的", mk("b", { textContent: "地址" }),
+        "；点「显示更多」，方法选 ", code("POST"), "；", mk("b", { textContent: "头部" }), "添加两项：",
+        code("X-Xiaoju-Upload-Key"), " 填上面的", mk("b", { textContent: "密钥" }), "，",
+        code("X-File-Name"), " 选变量「重复项目」后点它改成「名称」；", mk("b", { textContent: "请求体" }), "选「文件」，文件选变量「重复项目」。"),
+      mk("li", {}, "运行：选好照片就会一张张上传（第一次会问能否连接这个网址，选「始终允许」）。上传期间请别退出快捷指令；中途出错就再运行一次，传过的会自动跳过。")),
+    mk("p", { className: "hint", textContent: "想每天自动备份新照片：在快捷指令「自动化」里新建“特定时间”，把「选择照片」换成「查找照片」（条件：添加日期 是 今天）。" })));
+  playClass(box, "fade-in", 400);
+  renderKeys();
+});
 
 // ---------- 备份进度 ----------
 
@@ -1455,15 +1540,46 @@ const ALBUM = "相册";
 
 const queue = [];
 let active = 0;
-let stats = null; // 本轮上传的统计：{ uploaded, skipped, failed, sync }
+let stats = null; // 本轮上传的统计：{ uploaded, skipped, failed, sync, started, received }
+
+// 上传期间保持屏幕常亮：iPhone 锁屏后网页会被暂停，几百张照片要传十几分钟
+let wakeLock = null;
+let wakeLockPending = false;
+async function keepAwake(on) {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    if (on && !wakeLock && !wakeLockPending && document.visibilityState === "visible") {
+      wakeLockPending = true;
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } else if (!on && wakeLock) {
+      const l = wakeLock;
+      wakeLock = null;
+      await l.release();
+    }
+  } catch { /* 不支持、低电量模式或被系统拒绝 */ } finally {
+    wakeLockPending = false;
+  }
+}
+// 切到后台时系统会自动释放，回到前台后重新申请
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (active || queue.length)) keepAwake(true); });
+
+function formatDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} 分 ${s % 60} 秒` : `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
 
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 
 // items: [{ file, name }]；sync=true 表示来自“同步相册”，同名已存在视为已同步
 function enqueue(items, parent = state.folderId, sync = false) {
-  stats ??= { uploaded: 0, skipped: 0, failed: 0, sync: false };
+  stats ??= { uploaded: 0, skipped: 0, failed: 0, sync: false, started: Date.now() };
   stats.sync ||= sync;
   for (const { file, name } of items) queue.push({ file, name: name || file.name, parent, sync });
+  $("#upload-more").hidden = true;
+  keepAwake(true);
   pump();
 }
 
@@ -1482,11 +1598,17 @@ function pump() {
 function updateSummary() {
   if (!stats) return;
   const s = stats;
+  const left = queue.length + active;
   const parts = [`已上传 ${s.uploaded}`];
-  if (queue.length + active) parts.push(`剩余 ${queue.length + active}`);
+  if (left) parts.push(`剩余 ${left}`);
   if (s.skipped) parts.push(`跳过 ${s.skipped}（已存在）`);
   if (s.failed) parts.push(`失败 ${s.failed}`);
-  if (queue.length + active) parts.push("上传时请保持这个页面在前台");
+  // 传了几个之后按平均速度估算剩余时间
+  if (left && s.uploaded >= 3) {
+    const eta = ((Date.now() - s.started) / s.uploaded) * left;
+    parts.push(eta < 60_000 ? "预计不到 1 分钟" : `预计还要 ${formatDuration(eta)}`);
+  }
+  if (left) parts.push(wakeLock ? "屏幕会保持常亮，请别切走" : "请保持这个页面在前台、不要锁屏");
   $("#upload-summary").textContent = (s.sync ? "同步相册：" : "上传：") + parts.join(" · ");
   $("#uploads").hidden = false;
 }
@@ -1500,9 +1622,14 @@ function finishBatch() {
   if (s.failed) msg += `，失败 ${s.failed} 个（见上方列表）`;
   toast(msg);
   $("#upload-summary").textContent = msg;
+  keepAwake(false);
   refreshBackup();
+  // 同步相册：一次选太多 iPhone 准备得很慢，分批选更顺；已传过的会自动跳过
+  if (s.sync) { $("#upload-more").hidden = false; return; }
   if (!s.failed) setTimeout(() => { if (!stats) $("#uploads").hidden = true; }, 4000);
 }
+
+$("#upload-more").addEventListener("click", () => $("#album-input").click());
 
 let reloadTimer;
 function scheduleReload() {
@@ -1613,35 +1740,65 @@ function uploadOne({ file, name, parent }, status, bar) {
 }
 
 // ---------- 选择文件时的等待提示 ----------
-// iPhone 选很多照片时，系统会先在手机上转换格式（HEIC → JPEG，视频转码），全部转完才把文件交给网页，
-// 期间没有任何提示，看起来像卡住了。点了选择后显示提示，收到文件或取消选择时隐藏。
+// iPhone 选很多照片时，系统要先把每张照片准备好（必要时转换格式、从 iCloud 下载原图），全部完成才把文件交给网页，
+// 期间网页拿不到任何进度，看起来像卡住了。点了选择后显示提示和已等待的时间，收到文件或取消选择时隐藏。
 
 const PICK_HINT_DELAY_MS = 1200;
-const PICK_HINT_MAX_MS = 5 * 60_000;
+const PICK_HINT_MAX_MS = 30 * 60_000;
 let pickTimer;
-let pickHideTimer;
+let pickTick;
+let pickStarted = 0;
 
 function showPicking(on) {
   clearTimeout(pickTimer);
-  clearTimeout(pickHideTimer);
+  clearInterval(pickTick);
   $("#picking").hidden = !on;
-  if (on) pickHideTimer = setTimeout(() => showPicking(false), PICK_HINT_MAX_MS);
+  if (!on) return;
+  const el = $("#picking-time");
+  const tick = () => {
+    const ms = Date.now() - pickStarted;
+    el.textContent = `已等 ${formatDuration(ms)}`;
+    if (ms > PICK_HINT_MAX_MS) showPicking(false);
+  };
+  tick();
+  pickTick = setInterval(tick, 1000);
 }
+$("#picking").addEventListener("click", () => showPicking(false)); // 点一下可以先收起
 
 for (const sel of ["#file-input", "#album-input"]) {
   const input = $(sel);
   // 选择器打开后稍等再显示（桌面上很快选完就不会闪一下）
   input.addEventListener("click", () => {
+    pickStarted = Date.now();
     clearTimeout(pickTimer);
     pickTimer = setTimeout(() => showPicking(true), PICK_HINT_DELAY_MS);
   });
   input.addEventListener("cancel", () => showPicking(false));
 }
 
+// 收到文件时说一下 iPhone 准备了多久、是什么格式（JPEG 多说明照片被转换过，HEIC 是原图）
+function pickedNote(files) {
+  const waited = pickStarted ? Date.now() - pickStarted : 0;
+  pickStarted = 0;
+  const kinds = {};
+  let bytes = 0;
+  for (const f of files) {
+    const ext = (f.name.match(/\.([^.]+)$/)?.[1] || "其他").toUpperCase().replace("JPG", "JPEG");
+    kinds[ext] = (kinds[ext] || 0) + 1;
+    bytes += f.size;
+  }
+  const kindText = Object.entries(kinds).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(" · ");
+  return `收到 ${files.length} 个文件（${formatSize(bytes)}，${kindText}）`
+    + (waited > 3000 ? `，iPhone 准备用了 ${formatDuration(waited)}` : "");
+}
+
 $("#file-input").addEventListener("change", (e) => {
   showPicking(false);
-  enqueue([...e.target.files].map((file) => ({ file })));
+  const files = [...e.target.files];
   e.target.value = "";
+  if (!files.length) return;
+  toast(pickedNote(files));
+  enqueue(files.map((file) => ({ file })));
 });
 
 // ---------- 同步相册 ----------
@@ -1654,7 +1811,7 @@ const withSuffix = (n, i) => n.replace(/(\.[^.]*)?$/, (ext) => ` (${i})${ext}`);
 // 所以每次多选一些也不会重复上传；同名但内容不同的照片自动改名为“名字 (2)”。
 async function syncAlbum(files) {
   if (!files.length) return;
-  toast(`正在检查 ${files.length} 个文件是否已同步…`);
+  toast(`${pickedNote(files)}，正在检查哪些已经同步过…`);
   try {
     const root = await request("GET", "/api/folders/root/children");
     let album = root.items.find((f) => f.type === "folder" && f.name === ALBUM);
@@ -1705,7 +1862,9 @@ drop.addEventListener("drop", (e) => {
 });
 
 window.addEventListener("hashchange", () => load());
-load();
+// 当前标签页里有会话（页面被重新加载）：直接进入；会话过期或被作废时第一个请求会退回登录页
+if (state.session) enterApp();
+else load();
 
 // ---------- 网页版本检查 ----------
 // 部署后已经打开的旧页面不认识服务端的新要求（比如看照片时的格子口令），要换成新版。
@@ -1721,8 +1880,9 @@ async function checkWebVersion() {
     latest = (await resp.json()).version;
   } catch { return; } // 离线等情况：下次再查
   if (!latest || latest === WEB_VERSION) return;
-  // 没登录、也没在上传：直接换新版（令牌和会话只在内存里，登录后刷新要重新登录，所以那时只提示）
-  if (!state.session && !active && !queue.length) reloadTo(latest);
+  // 没在上传、没在答题或看照片时直接换新版（会话存在当前标签页，刷新不用重新登录），否则只提示
+  const busy = active || queue.length || gridGatePending || $("#preview").open || $("#security").open;
+  if (!busy) reloadTo(latest);
   else showUpdateBar(latest);
 }
 

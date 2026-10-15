@@ -1,0 +1,190 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/langhua98/xiaoju-cloud/internal/crypto"
+	"github.com/langhua98/xiaoju-cloud/internal/db"
+	"github.com/langhua98/xiaoju-cloud/internal/meta"
+	"github.com/langhua98/xiaoju-cloud/internal/service"
+	"github.com/langhua98/xiaoju-cloud/internal/storage/local"
+	"github.com/langhua98/xiaoju-cloud/migrations"
+)
+
+func TestSniffMedia(t *testing.T) {
+	for _, c := range []struct{ head, ext string }{
+		{"\xFF\xD8\xFF\xE1....", ".jpg"},
+		{"\x89PNG\r\n\x1a\n....", ".png"},
+		{"\x00\x00\x00\x18ftypheic\x00\x00", ".heic"},
+		{"\x00\x00\x00\x14ftypqt  \x00\x00", ".mov"},
+		{"\x00\x00\x00\x20ftypisom\x00\x00", ".mp4"},
+		{"RIFF\x00\x00\x00\x00WEBPVP8 ", ".webp"},
+		{"hello world", ""},
+	} {
+		if ext, _ := sniffMedia([]byte(c.head)); ext != c.ext {
+			t.Errorf("%q: got %q, want %q", c.head, ext, c.ext)
+		}
+	}
+}
+
+func TestIngestName(t *testing.T) {
+	req := func(q, header string) *http.Request {
+		r := httptest.NewRequest("POST", "/api/ingest"+q, nil)
+		if header != "" {
+			r.Header.Set("X-File-Name", header)
+		}
+		return r
+	}
+	for _, c := range []struct {
+		r    *http.Request
+		ext  string
+		want string
+	}{
+		{req("", "IMG_0001"), ".heic", "IMG_0001.heic"},      // 快捷指令给的名字没有扩展名
+		{req("", "IMG_0001.HEIC"), ".heic", "IMG_0001.HEIC"}, // 有扩展名就不动
+		{req("?name=a%2Fb.jpg", ""), ".jpg", "a_b.jpg"},      // 不能带路径
+		{req("", "%E5%9B%BE.png"), ".png", "图.png"},          // URL 编码的中文名
+	} {
+		if got := ingestName(c.r, c.ext); got != c.want {
+			t.Errorf("got %q, want %q", got, c.want)
+		}
+	}
+	if got := ingestName(req("", ""), ".jpg"); !strings.HasPrefix(got, "照片 ") || !strings.HasSuffix(got, ".jpg") {
+		t.Errorf("default name: %q", got)
+	}
+	if got := ingestName(req("", strings.Repeat("长", 120)+".jpg"), ""); len(got) > 200 || !strings.HasSuffix(got, ".jpg") {
+		t.Errorf("long name not truncated safely: %d bytes", len(got))
+	}
+	if stripCopySuffix("IMG_1 (2).jpg") != "IMG_1.jpg" || withCopySuffix("IMG_1.jpg", 3) != "IMG_1 (3).jpg" {
+		t.Error("copy suffix")
+	}
+}
+
+// 集成测试：上传密钥只能往“相册”里传文件；已传过的跳过；不能用来看文件；作废后立即失效。
+func TestIngestWithUploadKey(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, _ := store.EnsureUser(ctx, "it-ingest-"+uuid.NewString()[:8]) // 每次用新用户，相册从空开始
+	driver, _ := local.New(t.TempDir())
+	master, _ := crypto.NewKey()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := service.New(store, driver, service.Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: log})
+	srv := New(svc, Options{UserID: userID, Token: "tok", Log: log})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	call := func(method, path, body string, hdr ...string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		for i := 0; i+1 < len(hdr); i += 2 {
+			req.Header.Set(hdr[i], hdr[i+1])
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	tokenH := []string{"X-Xiaoju-Token", "tok"}
+
+	code, out := call("POST", "/api/upload-keys", `{"name":"我的 iPhone"}`, tokenH...)
+	if code != 201 || !strings.HasPrefix(out["key"].(string), "xju_") {
+		t.Fatalf("create key: %d %v", code, out)
+	}
+	key := out["key"].(string)
+	keyID := out["id"].(string)
+	t.Cleanup(func() { store.DeleteUploadKey(context.Background(), uuid.MustParse(keyID)) })
+	keyH := []string{"X-Xiaoju-Upload-Key", key}
+
+	jpeg := "\xFF\xD8\xFF\xE0" + strings.Repeat("x", 2500) // 跨多个分块
+	ingest := func(name, body string, hdr ...string) (int, map[string]any) {
+		return call("POST", "/api/ingest", body, append(append([]string{"X-File-Name", name}, keyH...), hdr...)...)
+	}
+	if code, out := ingest("IMG_0001", jpeg); code != 201 || out["name"] != "IMG_0001.jpg" || out["result"] != "uploaded" {
+		t.Fatalf("ingest: %d %v", code, out)
+	}
+	if code, out := ingest("IMG_0001", jpeg); code != 200 || out["result"] != "skipped" {
+		t.Fatalf("same photo again must be skipped: %d %v", code, out)
+	}
+	if code, out := ingest("img_0001.JPG", jpeg); code != 200 || out["result"] != "skipped" {
+		t.Fatalf("case-insensitive duplicate: %d %v", code, out)
+	}
+	if code, out := ingest("IMG_0001", jpeg+"y"); code != 201 || out["name"] != "IMG_0001 (2).jpg" {
+		t.Fatalf("same name, different content: %d %v", code, out)
+	}
+	if code, out := call("POST", "/api/ingest", "data", "X-Xiaoju-Upload-Key", "xju_wrong"); code != 401 || out["code"] != "upload_key_invalid" {
+		t.Fatalf("wrong key: %d %v", code, out)
+	}
+	// 密钥不能用来看文件、管理密钥
+	if code, _ := call("GET", "/api/folders/root/children", "", keyH...); code != 401 {
+		t.Fatalf("upload key must not list files: %d", code)
+	}
+	if code, _ := call("GET", "/api/upload-keys", "", keyH...); code != 401 {
+		t.Fatalf("upload key must not manage keys: %d", code)
+	}
+
+	// 文件都在“相册”里，内容能正确解密
+	_, root := call("GET", "/api/folders/root/children", "", tokenH...)
+	var albumID string
+	for _, it := range root["items"].([]any) {
+		if m := it.(map[string]any); m["name"] == AlbumFolder {
+			albumID = m["id"].(string)
+		}
+	}
+	_, album := call("GET", "/api/folders/"+albumID+"/children", "", tokenH...)
+	if n := len(album["items"].([]any)); n != 2 {
+		t.Fatalf("album has %d files, want 2", n)
+	}
+	first := album["items"].([]any)[1].(map[string]any)
+	if first["mime"] != "image/jpeg" {
+		t.Fatalf("mime from content: %v", first)
+	}
+	req, _ := http.NewRequest("GET", ts.URL+"/api/files/"+first["id"].(string)+"/content", nil)
+	req.Header.Set("X-Xiaoju-Token", "tok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(got) != jpeg {
+		t.Fatalf("content mismatch: %d bytes", len(got))
+	}
+
+	_, list := call("GET", "/api/upload-keys", "", tokenH...)
+	k := list["items"].([]any)[0].(map[string]any)
+	if k["uploads"] != float64(2) || k["last_used_at"] == nil || k["key"] != nil {
+		t.Fatalf("key list: %v", k)
+	}
+	if code, _ := call("DELETE", "/api/upload-keys/"+keyID, "", tokenH...); code != 204 {
+		t.Fatalf("revoke: %d", code)
+	}
+	if code, _ := ingest("IMG_0002", jpeg); code != 401 {
+		t.Fatalf("revoked key still works: %d", code)
+	}
+}

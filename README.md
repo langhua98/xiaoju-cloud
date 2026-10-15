@@ -100,11 +100,16 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 1. 仓库 **Settings → Pages → Build and deployment → Source** 选 **GitHub Actions**；
 2. 服务端设置 `XIAOJU_CORS_ORIGINS=https://<用户名>.github.io`（允许该网页跨域调用 API）；
 3. 可选：仓库变量 `XIAOJU_API_URL` 设为服务端地址，网页会默认填好；
-4. 打开网页，输入 `XIAOJU_ADMIN_TOKEN` 登录（服务端地址取自 `config.js`，为空时才需要填写）。令牌只保存在当前页面内存中，刷新或关闭页面后需重新输入。
+4. 打开网页，输入 `XIAOJU_ADMIN_TOKEN` 登录（服务端地址取自 `config.js`，为空时才需要填写）。令牌只保存在当前页面内存中；
+   登录后的会话（12 小时）保存在当前标签页，刷新页面不用重新登录，关闭标签页即失效。
 
 部署在 HF Space 时 Space 需要是公开的，见 [部署文档](docs/deploy-huggingface.md#网页前端)。
 
 **同步相册**：在相册选择器里一次多选照片 / 视频，自动传到根目录的“相册”文件夹；文件名和大小相同的视为已同步并跳过，同名不同内容自动改名为“名字 (2)”。上传 2 个并发，网络中断或服务端出错（多为 Telegram 限流）时自动重试 3 次。
+上传期间屏幕保持常亮（支持屏幕唤醒锁的浏览器），显示预计剩余时间，传完可以“继续选下一批”。
+
+> iPhone 上一次选几百张时，点“添加”后系统要先把每张照片准备好（必要时转换格式、从 iCloud 下载原图）才交给网页，
+> 网页拿不到进度，只能显示已经等了多久。一次选 100 张左右最顺；几百上千张请用下面的「快捷指令批量上传」。
 
 **自动更新**：发布时工作流给网页打上提交号（`version.json`、资源地址的 `?v=`）。已经打开的旧页面在启动和切回前台时检查版本：
 没登录时自动换成新版；已登录时顶部提示“网页有新版本”（令牌和会话只在内存里，刷新后要重新登录）。
@@ -184,6 +189,26 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 | `GET` | `/api/auth/grid` | 是否开启、剩余恢复码（需要会话） |
 | `POST` | `/api/auth/grid/setup/begin`、`/setup/finish` | `{"rule":{"mul","add","monday_bonus"}}` 按新规则出练习题；`{"id","answer"}` 答对后开启，返回恢复码 |
 | `DELETE` | `/api/auth/grid` | `{"ticket","id","answer"}` 或 `{"ticket","recovery"}` 关闭（需要会话 + 当场刷脸 + 答题） |
+
+## 快捷指令批量上传
+
+不经过 Safari 的照片选择器：iPhone「快捷指令」从相册一张张读出原图，直接传进根目录的“相册”文件夹，几百上千张也不会卡住，
+还可以设成每天自动备份新照片。用的是**只能上传**的密钥：只能往“相册”里添加文件，不能列目录、下载或删除，
+所以看照片仍然要刷脸和格子口令。
+
+1. 网页「🔐 安全」→「新建上传密钥」，记下显示的**地址**（`https://<Space>.hf.space/api/ingest`）和**密钥**（`xju_…`，只显示一次）；
+2. 「快捷指令」App 新建快捷指令：
+   - 「选择照片」（打开“选择多张”）
+   - 「重复每一项」，里面放「获取 URL 的内容」：URL 填地址，方法 `POST`，
+     头部 `X-Xiaoju-Upload-Key` = 密钥、`X-File-Name` = 「重复项目」的「名称」，请求体选「文件」= 「重复项目」；
+3. 运行。中途出错再运行一次即可：文件名（去掉“ (2)”这类序号、不分大小写）和大小都相同的直接跳过，不会重复写入 Telegram。
+   每天自动备份：「自动化」→“特定时间”，把「选择照片」换成「查找照片」（添加日期 是 今天）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/ingest` | 头部 `X-Xiaoju-Upload-Key`（或 `Authorization: Bearer xju_…`）、`X-File-Name`（或 `?name=`，没有扩展名时按内容补上），请求体是文件原始内容；新文件 `201 {"result":"uploaded"}`，已存在 `200 {"result":"skipped"}` |
+| `GET` / `POST` | `/api/upload-keys` | 列出 / 新建上传密钥（需要会话；新建时返回一次 `key`） |
+| `DELETE` | `/api/upload-keys/{id}` | 作废密钥 |
 
 ## 对账与清理残块
 
