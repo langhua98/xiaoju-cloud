@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +110,11 @@ type Challenge struct {
 	ExpiresAt   time.Time      `json:"expires_at"`
 	Attempt     int            `json:"attempt,omitempty"` // 抽查：第几次机会（1 或 2）
 	Seconds     int            `json:"seconds,omitempty"` // 抽查：限时秒数
+	// Digits 是答案的位数：页面点满这么多个数字就自动提交，不需要确认按钮
+	Digits int `json:"digits"`
 }
+
+func digitsOf(n int) int { return len(strconv.Itoa(n)) }
 
 type gridChallenge struct {
 	id       string
@@ -135,6 +140,7 @@ type Grid struct {
 	mu          sync.Mutex
 	rule        *GridRule              // nil 表示未开启
 	setup       *gridChallenge         // 开启时的练习题
+	setupRule   GridRule               // 练习题按这个新规则作答
 	rounds      map[string]*checkRound // 会话 ID → 正在进行的抽查
 	fails       int                    // 恢复码连续输错次数
 	lockedUntil time.Time
@@ -233,6 +239,7 @@ func (g *Grid) NewCheck(key string) (Challenge, error) {
 	}
 	r.cur = c
 	ch.Attempt, ch.Seconds = r.attempt, int(limit/time.Second)
+	ch.Digits = digitsOf(g.rule.Answer(c.cells, c.weekday))
 	return ch, nil
 }
 
@@ -260,8 +267,11 @@ func (g *Grid) Check(key, id string, answer int, timedOut bool) error {
 	return nil
 }
 
-// NewSetupChallenge 出开启时的练习题（按提交的新规则作答，不限时，3 分钟内有效）。
-func (g *Grid) NewSetupChallenge() (Challenge, error) {
+// NewSetupChallenge 按准备开启的新规则出一道练习题（不限时，3 分钟内有效）。
+func (g *Grid) NewSetupChallenge(rule GridRule) (Challenge, error) {
+	if err := rule.Validate(); err != nil {
+		return Challenge{}, err
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.rule != nil {
@@ -271,7 +281,8 @@ func (g *Grid) NewSetupChallenge() (Challenge, error) {
 	if err != nil {
 		return Challenge{}, err
 	}
-	g.setup = c
+	g.setup, g.setupRule = c, rule
+	ch.Digits = digitsOf(rule.Answer(c.cells, c.weekday))
 	return ch, nil
 }
 
@@ -335,18 +346,15 @@ func (g *Grid) UseRecoveryCode(ctx context.Context, code string) error {
 	return nil
 }
 
-// Setup 开启格子口令：必须先答对一道按新规则出的练习题，防止设错把自己锁在外面。
+// Setup 开启格子口令：必须先答对 NewSetupChallenge 按新规则出的练习题，防止设错把自己锁在外面。
 // 返回一组新的恢复码（只返回这一次）。
-func (g *Grid) Setup(ctx context.Context, id string, rule GridRule, answer int) ([]string, error) {
-	if err := rule.Validate(); err != nil {
-		return nil, err
-	}
+func (g *Grid) Setup(ctx context.Context, id string, answer int) ([]string, error) {
 	g.mu.Lock()
 	if g.rule != nil {
 		g.mu.Unlock()
 		return nil, ErrGridEnabled
 	}
-	c := g.setup
+	c, rule := g.setup, g.setupRule
 	g.setup = nil // 一道题只能答一次
 	g.mu.Unlock()
 	if c == nil || c.id != id || g.now().After(c.deadline) {

@@ -123,15 +123,22 @@ func TestGridViewChecks(t *testing.T) {
 		}
 	})
 
-	_, ch := call(ts, "POST", "/api/auth/grid/setup/begin", "", h...)
 	ruleJSON, _ := json.Marshal(rule)
-	setup := func(id string, ans int) (int, map[string]any) {
-		return call(ts, "POST", "/api/auth/grid/setup/finish", fmt.Sprintf(`{"id":%q,"rule":%s,"answer":%d}`, id, ruleJSON, ans), h...)
+	begin := func() map[string]any {
+		_, ch := call(ts, "POST", "/api/auth/grid/setup/begin", fmt.Sprintf(`{"rule":%s}`, ruleJSON), h...)
+		if ch["digits"] != float64(len(fmt.Sprint(answer(ch)))) {
+			t.Fatalf("practice digits: %v", ch)
+		}
+		return ch
 	}
+	setup := func(id string, ans int) (int, map[string]any) {
+		return call(ts, "POST", "/api/auth/grid/setup/finish", fmt.Sprintf(`{"id":%q,"answer":%d}`, id, ans), h...)
+	}
+	ch := begin()
 	if code, out := setup(ch["id"].(string), answer(ch)+1); code != 403 || out["code"] != "wrong_answer" {
 		t.Fatalf("setup with wrong practice answer: %d %v", code, out)
 	}
-	_, ch = call(ts, "POST", "/api/auth/grid/setup/begin", "", h...)
+	ch = begin()
 	code, out := setup(ch["id"].(string), answer(ch))
 	if code != 200 || len(out["recovery_codes"].([]any)) != 10 {
 		t.Fatalf("setup: %d %v", code, out)
@@ -181,7 +188,7 @@ func TestGridViewChecks(t *testing.T) {
 
 	// 第一次答错 → 换新格子、20 秒 → 答对后又能看
 	_, ch = call(ts, "POST", "/api/auth/grid/challenge", "", h...)
-	if ch["attempt"] != float64(1) || ch["seconds"] != float64(15) {
+	if ch["attempt"] != float64(1) || ch["seconds"] != float64(15) || ch["digits"] != float64(len(fmt.Sprint(answer(ch)))) {
 		t.Fatalf("first chance: %v", ch)
 	}
 	if code, out := call(ts, "POST", "/api/auth/grid/verify", fmt.Sprintf(`{"id":%q,"answer":%d}`, ch["id"], answer(ch)+1), h...); code != 403 || out["code"] != "wrong_answer" {

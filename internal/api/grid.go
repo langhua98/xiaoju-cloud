@@ -136,13 +136,19 @@ func (s *Server) gridStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/auth/grid/setup/begin：开启前出一道练习题（不限时）。
+// POST /api/auth/grid/setup/begin {rule}：按准备开启的规则出一道练习题（不限时）。
 func (s *Server) gridSetupBegin(w http.ResponseWriter, r *http.Request) {
 	if s.grid == nil {
 		s.gridFail(w, auth.ErrGridDisabled)
 		return
 	}
-	ch, err := s.grid.NewSetupChallenge()
+	var req struct {
+		Rule auth.GridRule `json:"rule"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	ch, err := s.grid.NewSetupChallenge(req.Rule)
 	if err != nil {
 		s.gridFail(w, err)
 		return
@@ -150,16 +156,15 @@ func (s *Server) gridSetupBegin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ch)
 }
 
-// POST /api/auth/grid/setup/finish {id, rule, answer}：按新规则答对练习题后开启，返回恢复码（只显示这一次）。
+// POST /api/auth/grid/setup/finish {id, answer}：答对练习题后开启，返回恢复码（只显示这一次）。
 func (s *Server) gridSetupFinish(w http.ResponseWriter, r *http.Request) {
 	if s.grid == nil {
 		s.gridFail(w, auth.ErrGridDisabled)
 		return
 	}
 	var req struct {
-		ID     string        `json:"id"`
-		Rule   auth.GridRule `json:"rule"`
-		Answer *int          `json:"answer"`
+		ID     string `json:"id"`
+		Answer *int   `json:"answer"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -168,7 +173,7 @@ func (s *Server) gridSetupFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "answer required")
 		return
 	}
-	codes, err := s.grid.Setup(r.Context(), req.ID, req.Rule, *req.Answer)
+	codes, err := s.grid.Setup(r.Context(), req.ID, *req.Answer)
 	if err != nil {
 		s.gridFail(w, err)
 		return

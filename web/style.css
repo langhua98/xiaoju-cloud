@@ -365,98 +365,165 @@ button.wide { width: 100%; padding: 10px 14px; }
 .login-steps li.done { color: #16a34a; }
 .login-steps li.current { color: var(--accent); font-weight: 600; }
 
-.grid-gate { text-align: center; }
-.grid-gate h2 { margin-top: 4px; }
-
-/* 抽查题的倒计时 */
-.grid-chance { font-size: 13px; margin: 0 0 6px; color: var(--muted); text-align: center; }
-.grid-chance.last { color: var(--danger); font-weight: 600; }
-.grid-timer {
+/* 答题卡片：深色、带科技感，浅色模式下也保持深色 */
+.gq {
+  --gq-line: rgb(79 227 255 / 0.2);
+  --gq-glow: #4fe3ff;
+  --gq-text: #e8f7ff;
+  --gq-muted: rgb(232 247 255 / 0.55);
+  --gq-warn: #ffb547;
+  --gq-bad: #ff5d7d;
+  --gq-ok: #3ef0a4;
   position: relative;
-  width: min(256px, 100%);
-  height: 22px;
-  margin: 0 auto 10px;
-  border-radius: 999px;
-  background: var(--hover);
   overflow: hidden;
+  padding: 18px 18px 14px;
+  border: 1px solid var(--gq-line);
+  border-radius: 22px;
+  background:
+    linear-gradient(rgb(79 227 255 / 0.045) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, rgb(79 227 255 / 0.045) 1px, transparent 1px) 0 0 / 24px 24px,
+    radial-gradient(130% 90% at 50% -10%, #12324a 0%, #08111c 48%, #05080d 100%);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.45), inset 0 0 50px rgb(79 227 255 / 0.05);
+  color: var(--gq-text);
+  text-align: left;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-.grid-timer i {
+/* 四角取景框 */
+.gq::before {
+  content: "";
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 100%;
-  background: var(--accent);
-  opacity: 0.35;
-  transition: width 0.2s linear;
+  inset: 9px;
+  pointer-events: none;
+  opacity: 0.6;
+  background:
+    linear-gradient(var(--gq-glow), var(--gq-glow)) top left / 14px 2px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) top left / 2px 14px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) top right / 14px 2px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) top right / 2px 14px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) bottom left / 14px 2px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) bottom left / 2px 14px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) bottom right / 14px 2px,
+    linear-gradient(var(--gq-glow), var(--gq-glow)) bottom right / 2px 14px;
+  background-repeat: no-repeat;
 }
-.grid-timer span {
-  position: relative;
-  display: block;
-  font: 600 13px/22px ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-align: center;
+/* 扫描线 */
+.gq::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -25%;
+  height: 25%;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgb(79 227 255 / 0.07), transparent);
+  animation: gq-scan 3.6s linear infinite;
 }
-.grid-timer.urgent i { background: var(--danger); opacity: 0.45; }
-.grid-timer.urgent span { color: var(--danger); }
+@keyframes gq-scan { to { transform: translateY(520%); } }
 
-.grid-board {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  width: min(256px, 100%);
-  margin: 0 auto 8px;
-  transition: opacity 0.2s ease;
+.gq-head { display: flex; align-items: center; justify-content: space-between; min-height: 46px; margin: 0 4px 14px; }
+.gq-title { display: flex; align-items: center; gap: 8px; color: var(--gq-glow); font-size: 14px; font-weight: 600; letter-spacing: 0.2em; }
+.gq-title svg { width: 20px; height: 20px; filter: drop-shadow(0 0 6px rgb(79 227 255 / 0.6)); }
+.gq-day {
+  margin-left: 2px;
+  padding: 3px 8px;
+  border: 1px solid var(--gq-line);
+  border-radius: 999px;
+  color: var(--gq-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: 0.05em;
 }
-.grid-board.loading { opacity: 0.35; }
-.grid-board > * {
+.gq-day:empty { display: none; }
+
+.gq-ring { position: relative; width: 46px; height: 46px; }
+.gq-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.gq-ring circle { fill: none; stroke-width: 3; }
+.gq-ring .track { stroke: rgb(232 247 255 / 0.1); }
+.gq-ring .bar {
+  stroke: var(--gq-glow);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.2s linear, stroke 0.2s ease;
+  filter: drop-shadow(0 0 4px rgb(79 227 255 / 0.7));
+}
+.gq-ring b { position: absolute; inset: 0; display: grid; place-items: center; font: 600 15px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gq.last .gq-ring .bar { stroke: var(--gq-warn); filter: drop-shadow(0 0 4px rgb(255 181 71 / 0.7)); }
+.gq-ring.urgent .bar { stroke: var(--gq-bad); filter: drop-shadow(0 0 5px rgb(255 93 125 / 0.8)); }
+.gq-ring.urgent b { color: var(--gq-bad); animation: gq-blink 1s steps(2, start) infinite; }
+@keyframes gq-blink { 50% { opacity: 0.35; } }
+
+.gq-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; width: min(288px, 100%); margin: 0 auto; }
+.gq-grid button {
   aspect-ratio: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--hover);
-  font: 600 24px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--text);
   padding: 0;
-}
-.grid-when { color: var(--muted); font-size: 13px; margin: 0 0 12px; text-align: center; }
-.grid-board.loading > button { pointer-events: none; }
-/* 答题时每格是一个数字键 */
-.grid-quiz .grid-board > button {
+  border: 1px solid var(--gq-line);
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgb(255 255 255 / 0.08), rgb(255 255 255 / 0.015));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  color: var(--gq-text);
+  font: 600 30px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-shadow: 0 0 14px rgb(79 227 255 / 0.45);
   cursor: pointer;
   touch-action: manipulation; /* 连点同一格时不触发双击缩放 */
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
-  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.1s ease;
+  transition: transform 0.08s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
-.grid-quiz .grid-board > button:hover { border-color: var(--accent); }
-.grid-quiz .grid-board > button:active { transform: scale(0.94); }
-.grid-quiz .grid-board > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.grid-quiz .grid-board > button.tap { animation: tap 0.26s ease; }
-@keyframes tap { 0% { background: var(--accent); border-color: var(--accent); color: var(--accent-text); } }
+/* 手机上点过的按钮会一直停在 :hover，只在有鼠标的设备上加悬停效果 */
+@media (hover: hover) {
+  .gq-grid button:hover { border-color: rgb(79 227 255 / 0.55); background-color: rgb(79 227 255 / 0.06); }
+}
+.gq-grid button:active { transform: scale(0.93); }
+.gq-grid button:focus-visible { outline: 2px solid var(--gq-glow); outline-offset: 2px; }
+.gq-grid button.hit { animation: gq-hit 0.35s ease-out; }
+@keyframes gq-hit {
+  0% { background-color: rgb(79 227 255 / 0.4); border-color: var(--gq-glow); box-shadow: 0 0 24px rgb(79 227 255 / 0.65), inset 0 0 14px rgb(79 227 255 / 0.45); }
+}
+.gq-grid.loading button { pointer-events: none; color: var(--gq-muted); text-shadow: none; }
+.gq.busy .gq-grid button { pointer-events: none; }
 
-.grid-answer { display: flex; gap: 8px; justify-content: center; align-items: stretch; margin-bottom: 4px; }
-.grid-display {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 8.5em;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: 0.15em;
-}
-.grid-display.empty { font: 13px/1.2 system-ui, sans-serif; letter-spacing: 0; color: var(--muted); }
-.grid-display.shake { animation: shake 0.36s ease; }
-.grid-del { min-width: 44px; font-size: 18px; touch-action: manipulation; }
-.grid-quiz .error { text-align: center; }
-.grid-quiz .face-add input { letter-spacing: 0.08em; text-transform: none; }
+.gq-slots { display: flex; justify-content: center; gap: 10px; height: 4px; margin: 18px 0 10px; }
+.gq-slots i { width: 30px; border-radius: 2px; background: rgb(232 247 255 / 0.16); transition: background-color 0.15s ease, box-shadow 0.15s ease; }
+.gq-slots i.on { background: var(--gq-glow); box-shadow: 0 0 10px var(--gq-glow); }
+.gq.busy .gq-slots i.on { animation: gq-pulse 0.8s ease-in-out infinite; }
+@keyframes gq-pulse { 50% { opacity: 0.35; } }
+
+.gq-status { min-height: 18px; margin: 0; color: var(--gq-muted); font-size: 13px; text-align: center; }
+.gq-status.warn { color: var(--gq-warn); }
+.gq-status.bad { color: var(--gq-bad); }
+
+.gq.wrong { animation: shake 0.36s ease; border-color: var(--gq-bad); box-shadow: 0 24px 70px rgb(0 0 0 / 0.45), 0 0 34px rgb(255 93 125 / 0.3); }
+.gq.ok { border-color: var(--gq-ok); box-shadow: 0 24px 70px rgb(0 0 0 / 0.45), 0 0 38px rgb(62 240 164 / 0.35); }
+.gq.ok .gq-slots i { background: var(--gq-ok); box-shadow: 0 0 10px var(--gq-ok); animation: none; }
+
+.gq-rec { margin-top: 10px; color: var(--gq-muted); font-size: 13px; text-align: center; }
+.gq-rec summary { cursor: pointer; list-style: none; }
+.gq-rec summary::-webkit-details-marker { display: none; }
+.gq-rec .row { display: flex; gap: 8px; margin-top: 8px; }
+.gq-rec input { margin: 0; border-color: var(--gq-line); background: rgb(255 255 255 / 0.05); color: var(--gq-text); letter-spacing: 0.08em; }
+.gq-rec button { border-color: var(--gq-line); background: rgb(79 227 255 / 0.12); color: var(--gq-text); }
+
+/* 看照片时弹出的验证：只有卡片本身，背景模糊 */
+dialog.grid-gate { width: min(360px, calc(100vw - 32px)); padding: 0; border: 0; background: transparent; overflow: visible; }
+dialog.grid-gate::backdrop { background: rgb(2 6 12 / 0.72); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 
 /* 安全设置里的格子口令 */
 .grid-sec { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
-.grid-sec .grid-quiz { margin-bottom: 8px; }
+.grid-sec .gq { margin-bottom: 8px; }
+/* 开启时点选乘数格、加数格的 4×4 示意格 */
+.grid-board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: min(256px, 100%); margin: 0 auto 8px; }
+.grid-board > * {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--text);
+}
 .sec-footer { margin-top: 16px; }
 button.danger { color: var(--danger); }
 .grid-pick .grid-board > button { font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; }
@@ -484,7 +551,6 @@ button.danger { color: var(--danger); }
   .grid-pick .grid-board > button.add { background: #3b82f6; border-color: #3b82f6; }
   .grid-legend b.add { color: #60a5fa; }
 }
-.grid-quiz.shake { animation: shake 0.36s ease; }
 
 /* 网页有新版本 */
 .update-bar {

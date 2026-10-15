@@ -110,11 +110,11 @@ func newTestGrid(t *testing.T, now *time.Time) (*Grid, *memGridStore) {
 // enable 按 testRule 开启格子口令，返回恢复码
 func enable(t *testing.T, g *Grid) []string {
 	t.Helper()
-	ch, err := g.NewSetupChallenge()
+	ch, err := g.NewSetupChallenge(testRule)
 	if err != nil {
 		t.Fatal(err)
 	}
-	codes, err := g.Setup(context.Background(), ch.ID, testRule, testRule.Answer(ch.Grid, ch.Weekday))
+	codes, err := g.Setup(context.Background(), ch.ID, testRule.Answer(ch.Grid, ch.Weekday))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,14 +130,17 @@ func TestGridSetup(t *testing.T) {
 		t.Fatalf("check before setup: %v", err)
 	}
 	// 练习题答错：不开启，题目作废
-	ch, _ := g.NewSetupChallenge()
-	if ch.Seconds != 0 || ch.Attempt != 0 {
-		t.Fatalf("practice must not be timed: %+v", ch)
+	if _, err := g.NewSetupChallenge(GridRule{Mul: 3, Add: 3}); !errors.Is(err, ErrGridRule) {
+		t.Fatalf("invalid rule: %v", err)
 	}
-	if _, err := g.Setup(ctx, ch.ID, testRule, testRule.Answer(ch.Grid, ch.Weekday)+1); !errors.Is(err, ErrGridWrong) {
+	ch, _ := g.NewSetupChallenge(testRule)
+	if ch.Seconds != 0 || ch.Attempt != 0 || ch.Digits != len(fmt.Sprint(testRule.Answer(ch.Grid, ch.Weekday))) {
+		t.Fatalf("practice must be untimed and carry the answer length: %+v", ch)
+	}
+	if _, err := g.Setup(ctx, ch.ID, testRule.Answer(ch.Grid, ch.Weekday)+1); !errors.Is(err, ErrGridWrong) {
 		t.Fatalf("wrong practice answer: %v", err)
 	}
-	if _, err := g.Setup(ctx, ch.ID, testRule, testRule.Answer(ch.Grid, ch.Weekday)); !errors.Is(err, ErrGridChallenge) {
+	if _, err := g.Setup(ctx, ch.ID, testRule.Answer(ch.Grid, ch.Weekday)); !errors.Is(err, ErrGridChallenge) {
 		t.Fatalf("practice challenge reused: %v", err)
 	}
 	if g.Enabled() {
@@ -150,7 +153,7 @@ func TestGridSetup(t *testing.T) {
 	if bytes.Contains(st.rule, []byte("monday")) {
 		t.Fatal("rule must be stored encrypted")
 	}
-	if _, err := g.NewSetupChallenge(); !errors.Is(err, ErrGridEnabled) {
+	if _, err := g.NewSetupChallenge(testRule); !errors.Is(err, ErrGridEnabled) {
 		t.Fatalf("setup while enabled: %v", err)
 	}
 	// 重启后从数据库恢复规则
@@ -170,6 +173,9 @@ func TestGridCheckTwoChances(t *testing.T) {
 	ch, err := g.NewCheck("s1")
 	if err != nil || ch.Attempt != 1 || ch.Seconds != 15 || ch.Weekday != 3 || ch.IssuedLocal != "2026-10-14 12:00" {
 		t.Fatalf("first challenge: %v %+v", err, ch)
+	}
+	if ch.Digits != len(fmt.Sprint(right(ch))) {
+		t.Fatalf("digits = %d for answer %d", ch.Digits, right(ch))
 	}
 	if err := g.Check("s1", ch.ID, right(ch), false); err != nil {
 		t.Fatalf("correct answer: %v", err)

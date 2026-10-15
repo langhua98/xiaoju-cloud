@@ -159,8 +159,8 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 - 弹出一张**随机的 4×4 数字格**（每次都不一样），按你自己设定的规则心算出答案：
   `答案 = 乘数格 × 星期 + 加数格`，周一再加一个你定的数；**周日算 7**。
-- 答案不用键盘输入，**依次点格子里的数字凑出来**（如答案 23：先点任意一个 2，再点任意一个 3），点错用 ⌫ 删除。
-  每张格子都保证 0–9 至少各出现一次，任何答案都点得出来。
+- 答案**直接点格子里的数字**（如答案 23：先点任意一个 2，再点任意一个 3），点满位数自动提交，没有确认按钮；
+  格子下方的小横线表示答案有几位。每张格子都保证 0–9 至少各出现一次，任何答案都点得出来。
 - **两次机会**：第一次限时 15 秒；答错或超时，换一张新格子、限时 20 秒（多给 5 秒）；第二次也没答对，**立即退出登录**
   （会话在服务端作废，记在数据库里，服务重启也不会恢复），重新输令牌、刷脸才能再进。
 - 弹窗不能关掉跳过；题出了不答、刷新重来，都算用掉一次机会。
@@ -177,12 +177,12 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/api/files/{id}/link`、`GET /api/files/{id}/content` | 照片、视频额度用完时返回 `403 {"code":"grid_required"}` |
-| `POST` | `/api/auth/grid/challenge` | 出一道抽查题 `{id, grid, weekday, issued_local, attempt, seconds, …}`（需要会话） |
+| `POST` | `/api/auth/grid/challenge` | 出一道抽查题 `{id, grid, weekday, attempt, seconds, digits, …}`（`digits` 是答案位数；需要会话） |
 | `POST` | `/api/auth/grid/verify` | `{"id","answer"}` 或 `{"id","timeout":true}`：答对 `{"ok":true}`；第一次没答对 `403 wrong_answer / timeout`；第二次没答对 `401 grid_logout`（会话已作废） |
 | `POST` | `/api/auth/passkey/login/finish` | 刷脸通过后返回会话，以及 5 分钟有效的 `ticket`（“刚刚刷过脸”，关闭格子口令时要用） |
 | `POST` | `/api/auth/recovery/passkey` | `{"code"}` 用恢复码代替刷脸 → 会话 |
 | `GET` | `/api/auth/grid` | 是否开启、剩余恢复码（需要会话） |
-| `POST` | `/api/auth/grid/setup/begin`、`/setup/finish` | 出练习题；`{"id","rule":{"mul","add","monday_bonus"},"answer"}` 答对后开启，返回恢复码 |
+| `POST` | `/api/auth/grid/setup/begin`、`/setup/finish` | `{"rule":{"mul","add","monday_bonus"}}` 按新规则出练习题；`{"id","answer"}` 答对后开启，返回恢复码 |
 | `DELETE` | `/api/auth/grid` | `{"ticket","id","answer"}` 或 `{"ticket","recovery"}` 关闭（需要会话 + 当场刷脸 + 答题） |
 
 ## 对账与清理残块

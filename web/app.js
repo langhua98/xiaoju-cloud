@@ -52,8 +52,8 @@ async function request(method, path, body) {
 const CODE_TEXT = {
   passkey_required: "需要刷脸验证，请重新登录",
   second_factor_required: "需要完成登录验证，请重新登录",
-  wrong_answer: "答案不对。换了一张新格子，最后一次机会，多给你 5 秒",
-  timeout: "时间到了。换了一张新格子，最后一次机会，多给你 5 秒",
+  wrong_answer: "答错了 · 最后一次机会，多 5 秒",
+  timeout: "超时了 · 最后一次机会，多 5 秒",
   grid_logout: "格子口令两次都没答对，已退出登录",
   grid_required: "需要先答一道格子题",
   challenge_expired: "这道题已过期，已换一道新题",
@@ -566,60 +566,44 @@ function busyButton(label, className = "") {
     mk("span", { className: "spinner", ariaHidden: "true" }), mk("span", { className: "label", textContent: label }));
 }
 
-// 出题时间按服务端时区显示（星期以它为准），如“出题时间：10月15日 周三 23:58”
-function issuedText(ch) {
-  const [d, t] = ch.issued_local.split(" ");
-  const [, m, day] = d.split("-");
-  let tz = "";
-  try {
-    if (Intl.DateTimeFormat().resolvedOptions().timeZone !== ch.timezone) tz = `（${ch.timezone} 时间）`;
-  } catch { /* 忽略 */ }
-  return `出题时间：${+m}月${+day}日 ${WEEKDAY[ch.weekday]} ${t}${tz}`;
-}
+const prefersReducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+const RING_C = 2 * Math.PI * 19; // 倒计时圆环周长（r = 19）
 
-const MAX_ANSWER_DIGITS = 3; // 最大答案 9 × 1 + 9 + 99 = 117
-
-// 画格子。传了 onTap 时每格是一个可点的数字键（答题），否则只是展示。
-function renderBoard(board, cells, onTap) {
-  board.replaceChildren(...cells.map((n) => {
-    if (!onTap) return mk("div", { textContent: String(n) });
-    const b = mk("button", { type: "button", textContent: String(n), ariaLabel: `数字 ${n}` });
-    b.addEventListener("click", () => {
-      if (onTap(n)) playClass(b, "tap", 260);
-    });
-    return b;
-  }));
-}
-
-// 答题组件：点格子里的数字依次凑出答案，可选“用恢复码代替”。
-//   timed                  → 抽查题：按服务端给的秒数倒计时，到点自动交“超时”；答错 / 超时换新题（第二次机会）
+// 答题组件（深色卡片）：点格子里的数字依次凑出答案，点满 ch.digits 位自动提交，没有确认按钮。
+//   label                  → 左上角标题
+//   timed                  → 抽查题：圆环倒计时，到点自动交“超时”；答错 / 超时自动换新题（第二次机会）
+//   recovery               → 允许用恢复码代替
 //   load()                 → 出一道题
-//   submit(payload, btn)   → payload 为 {id, answer}、{id, timeout: true} 或 {recovery}
+//   submit(payload)        → payload 为 {id, answer}、{id, timeout: true} 或 {recovery}
 //   onError(err) → true    表示已处理
-function mountGridQuiz(root, { load, submit, timed = false, recovery = false, submitLabel = "确认", onError }) {
-  const board = mk("div", { className: "grid-board loading", role: "group", ariaLabel: "数字格：点数字输入答案" });
-  renderBoard(board, Array(16).fill("·"));
-  const chance = mk("p", { className: "grid-chance", hidden: !timed });
-  const timerBar = mk("i");
-  const timerText = mk("span");
-  const timer = mk("div", { className: "grid-timer", hidden: !timed, role: "timer" }, timerBar, timerText);
-  const when = mk("p", { className: "grid-when", textContent: "正在出题…" });
-  const errEl = mk("p", { className: "error", hidden: true });
-  const display = mk("output", { className: "grid-display empty", ariaLive: "polite", ariaLabel: "已输入的答案" });
-  const del = mk("button", { type: "button", className: "grid-del", textContent: "⌫", ariaLabel: "删除最后一位", title: "删除最后一位", disabled: true });
-  const btn = busyButton(submitLabel, "primary");
-  btn.type = "button";
-  btn.disabled = true;
-  root.className = "grid-quiz";
-  root.replaceChildren(chance, timer, board, when, errEl, mk("div", { className: "grid-answer" }, display, del, btn));
+function mountGridQuiz(root, { load, submit, label = "安全验证", timed = false, recovery = false, onError }) {
+  const svg = (markup) => { const t = document.createElement("template"); t.innerHTML = markup.trim(); return t.content.firstChild; };
+  const day = mk("em", { className: "gq-day" });
+  const head = mk("div", { className: "gq-head" },
+    mk("div", { className: "gq-title" },
+      svg('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>'),
+      mk("span", { textContent: label }), day));
+  const ring = svg(`<div class="gq-ring" role="timer"><svg viewBox="0 0 44 44" aria-hidden="true"><circle class="track" cx="22" cy="22" r="19"/><circle class="bar" cx="22" cy="22" r="19" stroke-dasharray="${RING_C}" stroke-dashoffset="0"/></svg><b></b></div>`);
+  if (timed) head.append(ring);
+  const grid = mk("div", { className: "gq-grid loading", role: "group", ariaLabel: "数字格：依次点出答案" });
+  const cells = Array.from({ length: 16 }, () => {
+    const b = mk("button", { type: "button", textContent: "·" });
+    b.addEventListener("click", () => tap(b));
+    grid.append(b);
+    return b;
+  });
+  const slots = mk("div", { className: "gq-slots", ariaLive: "polite" });
+  const status = mk("p", { className: "gq-status" });
+  root.className = "gq" + (timed ? " timed" : "");
+  root.replaceChildren(head, grid, slots, status);
 
   let recInput, recBtn;
   if (recovery) {
     recInput = mk("input", { maxLength: 9, autocomplete: "off", autocapitalize: "off", spellcheck: false, placeholder: "xxxx-xxxx", ariaLabel: "恢复码" });
-    recBtn = busyButton("使用恢复码");
+    recBtn = busyButton("确定");
     recBtn.type = "button";
-    root.append(mk("details", { className: "face-add" },
-      mk("summary", { textContent: "规则忘了？用恢复码代替" }),
+    root.append(mk("details", { className: "gq-rec" },
+      mk("summary", { textContent: "规则忘了？用恢复码" }),
       mk("div", { className: "row" }, recInput, recBtn)));
   }
 
@@ -628,121 +612,130 @@ function mountGridQuiz(root, { load, submit, timed = false, recovery = false, su
   let busy = false;
   let locked = false;
   let ticker = null;
-  const ready = () => ch && !busy && !locked;
-  const paint = () => {
-    display.textContent = digits || "点格子里的数字";
-    display.classList.toggle("empty", !digits);
-    del.disabled = !digits || !ready();
-    btn.disabled = !digits || !ready();
-    if (recBtn) recBtn.disabled = busy || locked;
-  };
-  const showError = (msg) => {
-    errEl.textContent = msg;
-    errEl.hidden = false;
-    playClass(root, "shake", 450);
-  };
-  const lock = (msg) => {
-    locked = true;
-    stopTimer();
-    board.classList.add("loading");
-    paint();
-    showError(msg);
-  };
+  const ready = () => ch && !busy && !locked && !grid.classList.contains("loading");
 
-  function stopTimer() {
-    clearInterval(ticker);
-    ticker = null;
-  }
+  const setStatus = (text, kind = "") => { status.textContent = text; status.className = "gq-status" + (kind ? " " + kind : ""); };
+  const paintSlots = () => {
+    const n = ch?.digits || 0;
+    slots.replaceChildren(...Array.from({ length: n }, (_, i) => mk("i", { className: i < digits.length ? "on" : "" })));
+    slots.ariaLabel = n ? `已输入 ${digits.length} 位，共 ${n} 位` : "";
+  };
+  const flag = (cls, ms = 450) => playClass(root, cls, ms);
+
+  function stopTimer() { clearInterval(ticker); ticker = null; }
   // 倒计时到点：把“超时”交给服务端（算用掉一次机会）
   function startTimer(seconds) {
     stopTimer();
+    const bar = ring.querySelector(".bar");
+    const num = ring.querySelector("b");
     const total = seconds * 1000;
     const end = Date.now() + total;
     const tick = () => {
       if (!root.isConnected) { stopTimer(); return; }
       const left = Math.max(0, end - Date.now());
-      timerBar.style.width = `${(left / total) * 100}%`;
-      timerText.textContent = `${Math.ceil(left / 1000)} 秒`;
-      timer.classList.toggle("urgent", left <= 5000);
+      bar.setAttribute("stroke-dashoffset", String(RING_C * (1 - left / total)));
+      num.textContent = String(Math.ceil(left / 1000));
+      ring.classList.toggle("urgent", left <= 5000);
       if (left === 0) {
         stopTimer();
-        if (ch && !locked) send({ id: ch.id, timeout: true }, btn, submitLabel);
+        if (ch && !locked && !busy) send({ id: ch.id, timeout: true });
       }
     };
     tick();
     ticker = setInterval(tick, 200);
   }
 
-  function tap(n) {
-    if (!ready()) return false;
-    if (digits.length >= MAX_ANSWER_DIGITS) { playClass(display, "shake", 450); return false; }
-    digits += n;
-    paint();
-    return true;
+  function tap(b) {
+    if (!ready() || digits.length >= ch.digits) return;
+    digits += b.textContent;
+    playClass(b, "hit", 350);
+    paintSlots();
+    if (digits.length === ch.digits) send({ id: ch.id, answer: Number(digits) });
   }
-  del.addEventListener("click", () => { digits = digits.slice(0, -1); paint(); });
+
+  // 新题出来时数字先滚动一下再定格（“解码”效果），期间不能点
+  function reveal(values) {
+    return new Promise((resolve) => {
+      if (prefersReducedMotion()) { cells.forEach((b, i) => { b.textContent = values[i]; }); resolve(); return; }
+      let n = 0;
+      const t = setInterval(() => {
+        n++;
+        cells.forEach((b, i) => {
+          b.textContent = n >= 6 + (i % 4) ? values[i] : String(Math.floor(Math.random() * 10));
+        });
+        if (n >= 10) { clearInterval(t); resolve(); }
+      }, 45);
+    });
+  }
 
   async function next() {
     ch = null;
     digits = "";
     stopTimer();
-    paint();
-    board.classList.add("loading");
+    grid.classList.add("loading");
+    paintSlots();
+    let c;
     try {
-      ch = await load();
+      c = await load();
     } catch (err) {
       handle(err);
       return;
     }
-    renderBoard(board, ch.grid, tap);
-    when.textContent = issuedText(ch);
-    board.classList.remove("loading");
-    playClass(board, "fade-in", 400);
-    paint();
-    if (timed) {
-      chance.textContent = ch.attempt > 1 ? `最后一次机会 · 限时 ${ch.seconds} 秒` : `限时 ${ch.seconds} 秒`;
-      chance.classList.toggle("last", ch.attempt > 1);
-      startTimer(ch.seconds);
-    }
-    board.querySelector("button").focus({ preventScroll: true });
+    ch = c;
+    day.textContent = WEEKDAY[c.weekday];
+    day.title = `出题时间 ${c.issued_local}（${c.timezone}），星期按这个算`;
+    root.classList.toggle("last", c.attempt > 1);
+    if (c.attempt > 1 && !status.textContent) setStatus("最后一次机会", "warn");
+    paintSlots();
+    await reveal(c.grid.map(String));
+    if (ch !== c || !root.isConnected) return;
+    grid.classList.remove("loading");
+    if (timed) startTimer(c.seconds);
+    cells[0].focus({ preventScroll: true });
   }
 
   function handle(err) {
     if (onError && onError(err)) return;
-    if (err.code === "locked") { lock(err.message); return; }
-    showError(err.message);
+    if (err.code === "locked") {
+      locked = true;
+      stopTimer();
+      grid.classList.add("loading");
+      if (recBtn) recBtn.disabled = true;
+      setStatus(err.message, "bad");
+      flag("wrong");
+      return;
+    }
+    setStatus(err.message, ["wrong_answer", "timeout"].includes(err.code) ? "warn" : "bad");
+    flag("wrong");
     if (["wrong_answer", "timeout", "challenge_expired"].includes(err.code)) next();
   }
 
-  async function send(payload, b, label) {
+  async function send(payload, b = null) {
     if (locked || busy) return;
     stopTimer();
     busy = true;
-    paint();
-    setButtonBusy(b, true, "验证中…", label);
+    root.classList.add("busy");
+    if (b) setButtonBusy(b, true);
     try {
-      await submit(payload, b);
+      await submit(payload);
+      root.classList.add("ok");
+      setStatus("");
     } catch (err) {
+      digits = "";
+      paintSlots();
       handle(err);
     } finally {
       busy = false;
-      setButtonBusy(b, false, "验证中…", label);
-      paint();
+      root.classList.remove("busy");
+      if (b) setButtonBusy(b, false);
     }
   }
 
-  btn.addEventListener("click", () => {
-    if (ready() && digits) {
-      errEl.hidden = true;
-      send({ id: ch.id, answer: Number(digits) }, btn, submitLabel);
-    }
-  });
   if (recBtn) {
     recBtn.addEventListener("click", () => {
       const code = recInput.value.trim();
       if (!code) { recInput.focus(); return; }
-      errEl.hidden = true;
-      send({ recovery: code }, recBtn, "使用恢复码");
+      send({ recovery: code }, recBtn);
     });
     recInput.addEventListener("keydown", (e) => { if (e.key === "Enter") recBtn.click(); });
   }
@@ -772,6 +765,8 @@ function gridGate() {
     load: () => request("POST", "/api/auth/grid/challenge"),
     async submit(payload) {
       await request("POST", "/api/auth/grid/verify", payload);
+      $("#grid-gate-quiz").classList.add("ok"); // 亮一下绿色再关
+      await sleepMs(420);
       await done(true);
     },
     onError(err) {
@@ -988,17 +983,17 @@ function gridSetupPractice(rule) {
   const quiz = mk("div");
   const back = mk("button", { type: "button", className: "link", textContent: "← 重新选格子" });
   back.addEventListener("click", () => gridSetupPick({ ...rule }));
-  body.replaceChildren(mk("p", { className: "hint", textContent: "按你刚设定的规则算一下这道题，答对才会开启。" }), quiz, back);
+  body.replaceChildren(mk("p", { className: "hint", textContent: "按刚设定的规则做一道练习题（不限时），答对就开启。" }), quiz, back);
   mountGridQuiz(quiz, {
-    recovery: false,
-    submitLabel: "确认开启",
-    load: () => request("POST", "/api/auth/grid/setup/begin"),
+    label: "练习",
+    load: () => request("POST", "/api/auth/grid/setup/begin", { rule }),
     async submit({ id, answer }) {
-      const res = await request("POST", "/api/auth/grid/setup/finish", { id, rule, answer });
+      const res = await request("POST", "/api/auth/grid/setup/finish", { id, answer });
+      await sleepMs(300);
       gridShowCodes(res.recovery_codes);
     },
     onError(err) {
-      if (err.code === "wrong_answer") err.message = "答案和你设定的规则对不上，已换一道新题，再算一次";
+      if (err.code === "wrong_answer") err.message = "和设定的规则对不上，换一题再试";
       if (err.status === 401) { fail(err); return true; }
       return false;
     },
@@ -1048,11 +1043,11 @@ async function gridDisable() {
   }
   // 题出了就要答（和抽查一样两次机会、两次都没答对退出登录），所以这里不再提供取消
   const quiz = mk("div");
-  body.replaceChildren(mk("p", { className: "hint", textContent: "最后一步：答对一道格子题确认关闭（规则忘了可以用恢复码）。关闭后恢复码全部作废。" }), quiz);
+  body.replaceChildren(mk("p", { className: "hint", textContent: "答对这道题就关闭（关闭后恢复码全部作废）。" }), quiz);
   mountGridQuiz(quiz, {
+    label: "确认关闭",
     timed: true,
     recovery: true,
-    submitLabel: "确认关闭",
     load: () => request("POST", "/api/auth/grid/challenge"),
     async submit(payload) {
       await request("DELETE", "/api/auth/grid", { ticket, ...payload });
