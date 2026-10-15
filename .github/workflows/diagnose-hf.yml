@@ -1,0 +1,49 @@
+name: Diagnose Hugging Face Space
+
+# 手动运行：查询线上服务的备份状态和网盘统计，并打印 Space 最近的运行日志（只输出备份、警告和错误相关的行）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query service and logs
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+          XIAOJU_ADMIN_TOKEN: ${{ secrets.XIAOJU_ADMIN_TOKEN }}
+        run: |
+          # Secrets 里可能带有换行符，去掉
+          clean() { printf %s "$1" | tr -d '\r\n'; }
+          SPACE=$(clean "$HF_SPACE_ID")
+          TOKEN=$(clean "$XIAOJU_ADMIN_TOKEN")
+          HF=$(clean "$HF_TOKEN")
+          HOST="https://$(echo "$SPACE" | tr '/_.' '---' | tr 'A-Z' 'a-z').hf.space"
+          echo "space: $SPACE ($HOST)"
+
+          api() {
+            curl -sS --retry 3 --retry-delay 10 --max-time 120 -H "X-Xiaoju-Token: $TOKEN" "$HOST$1"
+            echo
+          }
+          echo "::group::backup status"
+          api /api/backup/status
+          echo "::endgroup::"
+          echo "::group::drive stats"
+          api /api/stats
+          echo "::endgroup::"
+
+          echo "::group::space run logs (backup / warnings / errors, last 200)"
+          curl -sS -N --max-time 30 -H "Authorization: Bearer $HF" \
+            "https://huggingface.co/api/spaces/$SPACE/logs/run" 2>/dev/null \
+            | sed -n 's/^data: //p' \
+            | python3 -c 'import sys, json
+          for line in sys.stdin:
+              try: print(json.loads(line).get("data", "").rstrip())
+              except ValueError: print(line.rstrip())' \
+            | grep -E "backup|WARN|ERROR|Startup|listening" | tail -200 || true
+          echo "::endgroup::"

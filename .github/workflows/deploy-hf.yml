@@ -9,6 +9,7 @@ on:
       - "docs/**"
       - "web/**"
       - ".github/workflows/pages.yml"
+      - ".github/workflows/diagnose-hf.yml"
 
 concurrency:
   group: deploy-hf
