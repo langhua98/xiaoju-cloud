@@ -72,6 +72,29 @@ input {
 }
 .brand { font-weight: 600; font-size: 17px; color: var(--text); text-decoration: none; }
 .brand::before { content: "🍊 "; }
+.topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* 双备份进度 */
+.backup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: help;
+}
+.backup-badge .meter {
+  width: 64px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+.backup-badge .meter > i { display: block; height: 100%; background: var(--bar); }
+.backup-badge.done { color: var(--text); }
+.backup-badge.warn { color: var(--danger); }
+@media (max-width: 480px) { .backup-badge .meter { display: none; } }
 
 main { max-width: 1000px; margin: 0 auto; padding: 16px; }
 .toolbar {
@@ -157,6 +180,7 @@ dialog.preview { width: min(960px, calc(100vw - 32px)); padding: 12px; }
   border-radius: 8px;
   max-width: calc(100vw - 32px);
   font-size: 14px;
+  white-space: pre-line;
 }
 
 @media (max-width: 640px) {

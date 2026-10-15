@@ -74,6 +74,7 @@ function openLogin(message) {
 
 function logout(message) {
   state.token = "";
+  stopBackupPolling();
   $("#app").hidden = true;
   $("#logout-btn").hidden = true;
   $("#rows").replaceChildren();
@@ -103,8 +104,73 @@ $("#login-form").addEventListener("submit", async (e) => {
   if (!defaultAPI) store.set("xiaoju.api", api);
   $("#login").close();
   $("#logout-btn").hidden = false;
+  startBackupPolling();
   load();
 });
+
+// ---------- 备份进度 ----------
+
+const BACKUP_POLL_MS = 30_000;
+let backupTimer = null;
+
+function startBackupPolling() {
+  stopBackupPolling();
+  refreshBackup();
+  backupTimer = setInterval(() => { if (!document.hidden) refreshBackup(); }, BACKUP_POLL_MS);
+}
+
+function stopBackupPolling() {
+  clearInterval(backupTimer);
+  backupTimer = null;
+  $("#backup-badge").hidden = true;
+}
+
+async function refreshBackup() {
+  if (!state.token) return;
+  const el = $("#backup-badge");
+  let st;
+  try {
+    st = await request("GET", "/api/backup/status");
+  } catch {
+    el.hidden = true; // 旧版服务端没有这个接口，或网络暂时不通：不显示
+    return;
+  }
+  if (!state.token) return; // 请求期间已退出
+  renderBackup(el, st);
+  el.hidden = false;
+}
+
+// 手机上没有悬停提示，点一下显示详情
+$("#backup-badge").addEventListener("click", (e) => { if (e.currentTarget.title) toast(e.currentTarget.title); });
+
+function renderBackup(el, st) {
+  el.className = "backup-badge";
+  el.replaceChildren();
+  if (!st.enabled) {
+    el.classList.add("warn");
+    el.textContent = st.error ? "⚠️ 备份异常" : "⚠️ 未启用备份";
+    el.title = st.error
+      ? `备份频道连接失败，新文件暂时只存了一份：\n${st.error}`
+      : "服务端没有配置备份频道，文件只存了一份";
+    return;
+  }
+  const detail = `已备份 ${st.backed_up} / ${st.parts} 个分块（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）`;
+  if (st.backed_up >= st.parts) {
+    el.classList.add("done");
+    el.textContent = "✅ 已双备份";
+    el.title = `${detail}\n所有文件都在两个 Telegram 账号的频道里各存了一份`;
+    return;
+  }
+  // 按字节算进度；没完成时最多显示 99%
+  const pct = st.bytes > 0 ? Math.min(99, Math.floor((st.backed_up_bytes / st.bytes) * 100)) : 0;
+  const meter = document.createElement("span");
+  meter.className = "meter";
+  const fill = document.createElement("i");
+  fill.style.width = `${pct}%`;
+  meter.append(fill);
+  el.append(meter, `备份中 ${pct}%`);
+  el.title = `${detail}\n后台正在自动复制到备份频道，关掉页面也会继续`;
+}
 
 // ---------- 目录浏览 ----------
 
@@ -300,6 +366,7 @@ async function remove(f) {
     await request("DELETE", `/api/files/${f.id}${permanent ? "?permanent=1" : ""}`);
     toast(permanent ? "已永久删除" : "已移入回收站");
     load();
+    if (permanent) refreshBackup();
   } catch (err) { fail(err); }
 }
 
@@ -356,6 +423,7 @@ function finishBatch() {
   if (s.failed) msg += `，失败 ${s.failed} 个（见上方列表）`;
   toast(msg);
   $("#upload-summary").textContent = msg;
+  refreshBackup();
   if (!s.failed) setTimeout(() => { if (!stats) $("#uploads").hidden = true; }, 4000);
 }
 
