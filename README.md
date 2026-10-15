@@ -84,6 +84,8 @@ make run
 | `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
 
+开启了 Face ID / 指纹或格子口令后，上面这些文件接口需要 `X-Xiaoju-Session` 会话（登录接口见下方「刷脸登录」「格子口令」）。
+
 ```bash
 T="Authorization: Bearer change-me"
 curl -H "$T" --data-binary @movie.mp4 "http://localhost:8080/api/files?name=movie.mp4"
@@ -146,6 +148,31 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 - 统计、备份状态、对账这些不涉及文件内容的运维接口，令牌依然可用（诊断工作流靠它）。
 - 绑定的域名默认取 `XIAOJU_CORS_ORIGINS` 里第一个来源（如 `https://<用户名>.github.io`），也可以用
   `XIAOJU_WEBAUTHN_RP_ID` / `XIAOJU_WEBAUTHN_ORIGINS` 指定。网页换了域名，已注册的设备需要重新注册。
+
+## 格子口令
+
+刷脸之后的第三步验证。和刷脸都开启时，登录要依次通过 **令牌 → Face ID / 指纹 → 格子口令**。
+
+- 登录时页面出一张**随机的 4×4 数字格**（每次都不一样），按你自己设定的规则心算出答案：
+  `答案 = 乘数格 × 星期 + 加数格`，周一再加一个你定的数；**周日算 7**。
+- 星期按**出题那一刻**计算（时区默认北京时间，可用 `XIAOJU_TIMEZONE` 修改），页面上会显示出题时间；跨零点作答不受影响。
+- 规则（哪两个格子、周一加几）在「🔐 安全」→「开启格子口令」里点选设置，必须先答对一道练习题才会开启。
+  规则用主密钥加密后存进数据库，**代码和数据库明文里都没有**，仓库公开也不会泄露。
+- 防猜：一道题只能答一次（答错就换新题），题目 3 分钟内有效，新出题后旧题作废；连续答错 3 次锁定 1 小时（服务重启会解锁），日志里有告警。
+- 开启时生成 **10 个恢复码**（只显示一次）。每次登录最多用一个，代替“刷脸”或“格子口令”中的一步；两样都丢了只能用下面的紧急重置。
+- 关闭格子口令要当场重新刷脸并答对一道题（或用恢复码），防止被盗的会话拆掉验证；关闭后恢复码全部作废。
+- 紧急重置：`XIAOJU_PASSKEY_RESET=1` 会同时清空刷脸设备和格子口令。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/auth/session` | 令牌正确后返回还要过的步骤 `steps`（如 `["passkey","grid"]`）；没有任何步骤时直接返回会话 |
+| `POST` | `/api/auth/passkey/login/finish` | 刷脸通过后，开启了格子口令时返回 `{"next":"grid","ticket":…}`（5 分钟有效的过渡票据，不能当会话用） |
+| `POST` | `/api/auth/grid/challenge` | `{"ticket"}` → 出一道题 `{id, grid, weekday, issued_local, …}` |
+| `POST` | `/api/auth/grid/verify` | `{"ticket","id","answer"}` 或 `{"ticket","recovery"}` → 会话 |
+| `POST` | `/api/auth/recovery/passkey` | `{"code"}` 用恢复码代替刷脸 → 过渡票据 |
+| `GET` | `/api/auth/grid` | 是否开启、剩余恢复码（需要会话） |
+| `POST` | `/api/auth/grid/setup/begin`、`/setup/finish` | 出练习题；`{"id","rule":{"mul","add","monday_bonus"},"answer"}` 答对后开启，返回恢复码 |
+| `DELETE` | `/api/auth/grid` | `{"ticket","id","answer"}` 关闭（需要会话 + 当场刷脸 + 答题） |
 
 ## 对账与清理残块
 

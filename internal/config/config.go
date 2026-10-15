@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -31,8 +32,10 @@ type Config struct {
 	// 刷脸（通行密钥）：绑定网页所在的域名。默认取 CORSOrigins 里第一个具体来源。
 	WebAuthnRPID    string
 	WebAuthnOrigins []string
-	// PasskeyReset 为 true 时启动时清空所有已注册设备（设备全部丢失时的紧急恢复）。
+	// PasskeyReset 为 true 时启动时清空所有已注册设备和格子口令（全部丢失时的紧急恢复）。
 	PasskeyReset bool
+	// Location 是格子口令判断“出题时是星期几”用的时区（XIAOJU_TIMEZONE，默认 Asia/Shanghai）。
+	Location *time.Location
 
 	LocalDir string
 
@@ -94,6 +97,10 @@ func Load() (*Config, error) {
 	c.PasskeyReset, _ = strconv.ParseBool(os.Getenv("XIAOJU_PASSKEY_RESET"))
 
 	var err error
+	tz := env("XIAOJU_TIMEZONE", "Asia/Shanghai")
+	if c.Location, err = time.LoadLocation(tz); err != nil {
+		return nil, fmt.Errorf("XIAOJU_TIMEZONE: %w", err)
+	}
 	if c.PartSize, err = envInt64("XIAOJU_PART_SIZE", 256*MiB); err != nil {
 		return nil, err
 	}

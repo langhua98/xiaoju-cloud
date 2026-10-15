@@ -37,6 +37,7 @@ func TestPasskeyAccessControl(t *testing.T) {
 	}
 	store := meta.NewStore(pool)
 	store.DeleteAllPasskeys(ctx)
+	store.DeleteGridRule(ctx)
 	t.Cleanup(func() { store.DeleteAllPasskeys(context.Background()) })
 	userID, _ := store.EnsureUser(ctx, "it-passkeys")
 	driver, _ := local.New(t.TempDir())
@@ -100,7 +101,7 @@ func TestPasskeyAccessControl(t *testing.T) {
 	}
 	srv, ts := newServer()
 	code, out = call(ts, "GET", "/api/folders/root/children", "", tokenH...)
-	if code != 401 || out["code"] != "passkey_required" {
+	if code != 401 || out["code"] != "second_factor_required" {
 		t.Fatalf("token-only file access must require face: %d %v", code, out)
 	}
 	if code, _ := call(ts, "GET", "/api/folders/root/children", ""); code != 401 {

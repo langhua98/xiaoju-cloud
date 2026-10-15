@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	_ "time/tzdata" // 内置时区数据：格子口令按 XIAOJU_TIMEZONE 判断星期，不依赖系统是否装了 tzdata
 
 	"github.com/langhua98/xiaoju-cloud/internal/api"
 	"github.com/langhua98/xiaoju-cloud/internal/auth"
@@ -136,13 +137,21 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	grid, err := auth.NewGrid(ctx, store, cfg.MasterKey, cfg.Location)
+	if err != nil {
+		return err
+	}
 	if cfg.PasskeyReset {
 		n, err := passkeys.ResetAll(ctx)
 		if err != nil {
 			return err
 		}
-		log.Warn("XIAOJU_PASSKEY_RESET is set: removed all registered face / fingerprint devices; unset it after re-registering", "removed", n)
+		if err := grid.Disable(ctx); err != nil {
+			return err
+		}
+		log.Warn("XIAOJU_PASSKEY_RESET is set: removed all face / fingerprint devices and the grid passcode; unset it after re-registering", "removed", n)
 	}
+	log.Info("grid passcode", "enabled", grid.Enabled(), "timezone", cfg.Location.String())
 	if passkeys.Available() {
 		log.Info("face / fingerprint login available", "rp_id", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins, "required", passkeys.Required())
 	} else {
@@ -150,7 +159,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 
 	handler := api.New(svc, api.Options{
-		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log, Passkeys: passkeys,
+		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log, Passkeys: passkeys, Grid: grid,
 	}).Handler()
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

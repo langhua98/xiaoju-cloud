@@ -34,6 +34,7 @@ type Server struct {
 	corsOrigins []string
 	log         *slog.Logger
 	passkeys    *auth.Passkeys
+	grid        *auth.Grid
 	sessions    *auth.Sessions
 }
 
@@ -46,17 +47,19 @@ type Options struct {
 	Log         *slog.Logger
 	// Passkeys 为 nil 时不启用刷脸（仅凭令牌访问）。
 	Passkeys *auth.Passkeys
+	// Grid 为 nil 时不支持格子口令。
+	Grid *auth.Grid
 }
 
 func New(svc *service.Service, opt Options) *Server {
 	return &Server{
 		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
-		passkeys: opt.Passkeys, sessions: auth.NewSessions(opt.Token),
+		passkeys: opt.Passkeys, grid: opt.Grid, sessions: auth.NewSessions(opt.Token),
 	}
 }
 
 // 接口按访问级别分三组：
-//   - 文件接口：需要会话（令牌 + 刷脸后签发）；还没有注册任何设备时，仅凭令牌也可以（兼容旧客户端和脚本）
+//   - 文件接口：需要会话（令牌 + 刷脸 + 格子口令后签发）；一个第二步验证都没开启时，仅凭令牌也可以（兼容旧客户端和脚本）
 //   - 运维接口（统计、备份状态、对账）：令牌或会话都可以，不涉及文件内容，方便自动化诊断
 //   - 登录接口：需要令牌
 func (s *Server) Handler() http.Handler {
@@ -79,6 +82,10 @@ func (s *Server) Handler() http.Handler {
 	files("GET /api/auth/passkeys", s.listPasskeys)
 	files("DELETE /api/auth/passkeys/{id}", s.deletePasskey)
 	files("POST /api/auth/passkeys/add-code", s.newAddCode)
+	files("GET /api/auth/grid", s.gridStatus)
+	files("POST /api/auth/grid/setup/begin", s.gridSetupBegin)
+	files("POST /api/auth/grid/setup/finish", s.gridSetupFinish)
+	files("DELETE /api/auth/grid", s.gridDisable)
 
 	ops("GET /api/backup/status", s.backupStatus)
 	ops("GET /api/stats", s.stats)
@@ -91,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 	login("POST /api/auth/passkey/login/finish", s.passkeyLoginFinish)
 	login("POST /api/auth/passkey/register/begin", s.passkeyRegisterBegin)
 	login("POST /api/auth/passkey/register/finish", s.passkeyRegisterFinish)
+	login("POST /api/auth/grid/challenge", s.gridChallenge)
+	login("POST /api/auth/grid/verify", s.gridVerify)
+	login("POST /api/auth/recovery/passkey", s.recoveryPasskey)
 
 	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。

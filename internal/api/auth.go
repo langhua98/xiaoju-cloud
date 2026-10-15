@@ -30,13 +30,28 @@ func (s *Server) sessionOK(r *http.Request) bool {
 // passkeyRequired：已经注册过 Face ID / 指纹设备后，仅凭令牌不能访问文件。
 func (s *Server) passkeyRequired() bool { return s.passkeys != nil && s.passkeys.Required() }
 
+// gridRequired：开启了格子口令。
+func (s *Server) gridRequired() bool { return s.grid != nil && s.grid.Enabled() }
+
+// loginSteps 返回令牌之后还要通过的验证，按顺序：先刷脸，再格子口令。两个都开启时两个都要过。
+func (s *Server) loginSteps() []string {
+	steps := []string{}
+	if s.passkeyRequired() {
+		steps = append(steps, "passkey")
+	}
+	if s.gridRequired() {
+		steps = append(steps, "grid")
+	}
+	return steps
+}
+
 func (s *Server) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case s.sessionOK(r), s.tokenOK(r) && !s.passkeyRequired():
+		case s.sessionOK(r), s.tokenOK(r) && len(s.loginSteps()) == 0:
 			next.ServeHTTP(w, r)
 		case s.tokenOK(r):
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "face verification required", "code": "passkey_required"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "second factor verification required", "code": "second_factor_required"})
 		default:
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 		}
@@ -68,18 +83,29 @@ func (s *Server) writeSession(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, map[string]any{"session": tok, "expires_at": exp})
 }
 
-// POST /api/auth/session：令牌正确后的第一步。还没注册设备时直接签发会话；
-// 已注册时返回 passkey_required，前端接着走刷脸。
+// POST /api/auth/session：令牌正确后的第一步。没有开启任何第二步验证时直接签发会话；
+// 否则返回 steps（如 ["passkey","grid"]），前端依次走刷脸、格子口令。
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
-	available := s.passkeys != nil && s.passkeys.Available()
-	if s.passkeyRequired() {
-		writeJSON(w, http.StatusOK, map[string]any{"passkey_required": true, "passkeys_available": available})
+	steps := s.loginSteps()
+	resp := map[string]any{
+		"steps":              steps,
+		"passkey_required":   s.passkeyRequired(),
+		"grid_required":      s.gridRequired(),
+		"passkeys_available": s.passkeys != nil && s.passkeys.Available(),
+	}
+	if len(steps) == 0 {
+		resp["session"], resp["expires_at"] = s.sessions.Issue()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// afterPasskey：刷脸通过（或用恢复码代替）后，开启了格子口令就发过渡票据进入下一步，否则直接签发会话。
+func (s *Server) afterPasskey(w http.ResponseWriter, recovered bool) {
+	if s.gridRequired() {
+		writeJSON(w, http.StatusOK, map[string]any{"next": "grid", "ticket": s.sessions.IssueTicket(recovered)})
 		return
 	}
-	tok, exp := s.sessions.Issue()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"passkey_required": false, "passkeys_available": available, "session": tok, "expires_at": exp,
-	})
+	s.writeSession(w)
 }
 
 func (s *Server) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +131,7 @@ func (s *Server) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		s.passkeyFail(w, err)
 		return
 	}
-	s.writeSession(w)
+	s.afterPasskey(w, false)
 }
 
 type registerBeginReq struct {
@@ -151,7 +177,11 @@ func (s *Server) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("passkey registered")
-	s.writeSession(w)
+	if s.sessionOK(r) {
+		s.writeSession(w) // 已登录状态下给本机加设备
+		return
+	}
+	s.afterPasskey(w, false) // 新设备凭添加码注册：开启了格子口令时还要答题
 }
 
 func (s *Server) listPasskeys(w http.ResponseWriter, r *http.Request) {

@@ -338,3 +338,84 @@ button.wide { width: 100%; padding: 10px 14px; }
 .dialog-actions.wrap { flex-wrap: wrap; }
 
 @keyframes sweep { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(80px); } }
+
+/* ---------- 格子口令 ---------- */
+
+.login-steps {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.login-steps li { display: flex; align-items: center; gap: 6px; }
+.login-steps li + li::before { content: ""; width: 18px; height: 1px; background: var(--border); }
+.login-steps li.done { color: #16a34a; }
+.login-steps li.current { color: var(--accent); font-weight: 600; }
+
+.grid-step { text-align: center; }
+.grid-step h2 { margin-top: 4px; }
+.grid-step button.link { margin-top: 10px; }
+#grid-step.shake { animation: shake 0.36s ease; }
+
+.grid-board {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  width: min(232px, 100%);
+  margin: 0 auto 8px;
+  transition: opacity 0.2s ease;
+}
+.grid-board.loading { opacity: 0.35; }
+.grid-board > * {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--hover);
+  font: 600 24px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  padding: 0;
+}
+.grid-when { color: var(--muted); font-size: 13px; margin: 0 0 12px; text-align: center; }
+.grid-answer { display: flex; gap: 8px; justify-content: center; margin-bottom: 4px; }
+.grid-answer input { width: 6.5em; margin: 0; text-align: center; font-size: 18px; letter-spacing: 0.1em; }
+.grid-quiz .error { text-align: center; }
+.grid-quiz .face-add input { letter-spacing: 0.08em; text-transform: none; }
+
+/* 安全设置里的格子口令 */
+.grid-sec { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.grid-sec .grid-quiz { margin-bottom: 8px; }
+.sec-footer { margin-top: 16px; }
+button.danger { color: var(--danger); }
+.grid-pick .grid-board > button { font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.grid-pick .grid-board > button.mul { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.grid-pick .grid-board > button.add { background: #2563eb; border-color: #2563eb; color: #fff; }
+.grid-pick label { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 8px 0 0; }
+.grid-pick label input { width: 5em; margin: 0; text-align: center; }
+.grid-legend { font-size: 13px; text-align: center; margin: 0 0 8px; }
+.grid-legend b.mul { color: var(--accent); }
+.grid-legend b.add { color: #2563eb; }
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 16px;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  list-style: none;
+  background: var(--hover);
+  border-radius: 8px;
+  font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.grid-sec .check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 8px 0; }
+.grid-sec .check input { width: auto; margin: 0; }
+@media (prefers-color-scheme: dark) {
+  .grid-pick .grid-board > button.add { background: #3b82f6; border-color: #3b82f6; }
+  .grid-legend b.add { color: #60a5fa; }
+}
+.grid-quiz.shake { animation: shake 0.36s ease; }
