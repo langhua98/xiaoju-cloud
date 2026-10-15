@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "web/**"
+      - "shortcuts/**"
       - ".github/workflows/pages.yml"
 
 concurrency:
@@ -33,6 +34,17 @@ jobs:
         run: |
           printf 'window.XIAOJU_API_URL = %s;\n' "$(jq -Rn --arg v "$XIAOJU_API_URL" '$v')" > web/config.js
           cat web/config.js
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Build iPhone shortcut
+        # 签名靠第三方服务（HubSign），失败时网页照常发布，只是安全设置里不显示“安装快捷指令”（仍可手动搭建）
+        continue-on-error: true
+        env:
+          XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
+        run: |
+          go install github.com/electrikmilk/cherri@v1.3.2
+          python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --out web/xiaoju-backup.shortcut ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"}
       - name: Stamp version
         # 网页带上提交号：已经打开的旧页面发现版本变了会自动刷新或提示刷新（见 app.js checkWebVersion）；
         # 资源地址的 ?v= 也换成提交号，每次部署浏览器都会重新下载

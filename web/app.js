@@ -1142,6 +1142,16 @@ async function renderKeys() {
   }));
 }
 
+const SHORTCUT_FILE = "xiaoju-backup.shortcut";
+
+// 网页旁边有没有签好名的快捷指令（GitHub Pages 发布时生成）
+async function shortcutAvailable() {
+  try {
+    const resp = await fetch(SHORTCUT_FILE, { method: "HEAD", cache: "no-store" });
+    return resp.ok;
+  } catch { return false; }
+}
+
 function copyButton(text, label = "复制") {
   const b = mk("button", { type: "button", textContent: label });
   b.addEventListener("click", async () => {
@@ -1162,20 +1172,33 @@ $("#keys-create").addEventListener("click", async () => {
   const field = (label, value) => mk("div", { className: "key-field" },
     mk("span", { textContent: label }), mk("code", { textContent: value }), copyButton(value));
   const box = $("#keys-new");
+  const manual = mk("ol", { className: "key-steps" },
+    mk("li", {}, "打开「快捷指令」App，点右上角「＋」新建一个快捷指令，起名如“备份照片”。"),
+    mk("li", {}, "添加操作「选择照片」，点它展开，打开「选择多张」。"),
+    mk("li", {}, "添加「重复每一项」（重复的是上一步的「照片」）。"),
+    mk("li", {}, "在“重复”里面添加「获取 URL 的内容」：URL 粘贴上面的", mk("b", { textContent: "地址" }),
+      "；点「显示更多」，方法选 ", code("POST"), "；", mk("b", { textContent: "头部" }), "添加两项：",
+      code("X-Xiaoju-Upload-Key"), " 填上面的", mk("b", { textContent: "密钥" }), "，",
+      code("X-File-Name"), " 选变量「重复项目」后点它改成「名称」；", mk("b", { textContent: "请求体" }), "选「文件」，文件选变量「重复项目」。"),
+    mk("li", {}, "运行：选好照片就会一张张上传（第一次会问能否连接这个网址，选「始终允许」）。上传期间请别退出快捷指令；中途出错就再运行一次，传过的会自动跳过。"));
+  // 发布网页时自动构建并签名好的快捷指令（签名服务不可用时没有这个文件，只能手动搭建）
+  const install = mk("div", { className: "key-install", hidden: true },
+    mk("a", { className: "button primary", href: SHORTCUT_FILE, textContent: "安装快捷指令" }),
+    mk("ol", { className: "key-steps" },
+      mk("li", {}, "先点上面密钥旁边的「复制」，再点「安装快捷指令」（Safari 问是否下载就选「下载」，然后在下载列表里点开）。"),
+      mk("li", {}, "在快捷指令 App 里点「添加快捷指令」：地址不用改，", mk("b", { textContent: "密钥" }), "那一栏粘贴刚才复制的密钥。"),
+      mk("li", {}, "以后打开「备份照片到小桔云盘」，选照片就会一张张上传，传完会通知上传了几张、跳过了几张。第一次会问能否连接这个网址，选「始终允许」。")));
   box.replaceChildren(mk("div", { className: "key-box" },
-    mk("p", { className: "hint", textContent: "✓ 已创建。密钥只显示这一次，请现在照下面的步骤填进快捷指令；丢了就作废重建。" }),
+    mk("p", { className: "hint", textContent: "✓ 已创建。密钥只显示这一次，请现在填进快捷指令；丢了就作废重建。" }),
     field("地址", url),
     field("密钥", k.key),
-    mk("ol", { className: "key-steps" },
-      mk("li", {}, "打开「快捷指令」App，点右上角「＋」新建一个快捷指令，起名如“备份照片”。"),
-      mk("li", {}, "添加操作「选择照片」，点它展开，打开「选择多张」。"),
-      mk("li", {}, "添加「重复每一项」（重复的是上一步的「照片」）。"),
-      mk("li", {}, "在“重复”里面添加「获取 URL 的内容」：URL 粘贴上面的", mk("b", { textContent: "地址" }),
-        "；点「显示更多」，方法选 ", code("POST"), "；", mk("b", { textContent: "头部" }), "添加两项：",
-        code("X-Xiaoju-Upload-Key"), " 填上面的", mk("b", { textContent: "密钥" }), "，",
-        code("X-File-Name"), " 选变量「重复项目」后点它改成「名称」；", mk("b", { textContent: "请求体" }), "选「文件」，文件选变量「重复项目」。"),
-      mk("li", {}, "运行：选好照片就会一张张上传（第一次会问能否连接这个网址，选「始终允许」）。上传期间请别退出快捷指令；中途出错就再运行一次，传过的会自动跳过。")),
-    mk("p", { className: "hint", textContent: "想每天自动备份新照片：在快捷指令「自动化」里新建“特定时间”，把「选择照片」换成「查找照片」（条件：添加日期 是 今天）。" })));
+    install,
+    mk("details", { className: "key-manual" }, mk("summary", { textContent: "自己动手搭建快捷指令" }), manual),
+    mk("p", { className: "hint", textContent: "想每天自动备份新照片：在快捷指令「自动化」里新建“特定时间”，运行这个快捷指令；把里面的「选择照片」换成「查找照片」（条件：添加日期 是 今天）。" })));
+  shortcutAvailable().then((ok) => {
+    install.hidden = !ok;
+    if (!ok) box.querySelector(".key-manual").open = true;
+  });
   playClass(box, "fade-in", 400);
   renderKeys();
 });

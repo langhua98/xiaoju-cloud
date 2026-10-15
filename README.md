@@ -197,7 +197,10 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 所以看照片仍然要刷脸和格子口令。
 
 1. 网页「🔐 安全」→「新建上传密钥」，记下显示的**地址**（`https://<Space>.hf.space/api/ingest`）和**密钥**（`xju_…`，只显示一次）；
-2. 「快捷指令」App 新建快捷指令：
+2. **直接安装**：点「安装快捷指令」，在快捷指令 App 里「添加快捷指令」，安装时粘贴密钥即可。
+   这个文件由 `shortcuts/backup.cherri` 在发布网页时自动编译（[Cherri](https://github.com/electrikmilk/cherri)），
+   并交给 RoutineHub 的 HubSign 服务签名（iOS 15 起快捷指令文件必须签名才能导入；文件里只有默认上传地址，不含密钥）。
+   签名服务不可用时网页照常发布，只是不显示安装按钮。也可以**自己搭建**，「快捷指令」App 新建快捷指令：
    - 「选择照片」（打开“选择多张”）
    - 「重复每一项」，里面放「获取 URL 的内容」：URL 填地址，方法 `POST`，
      头部 `X-Xiaoju-Upload-Key` = 密钥、`X-File-Name` = 「重复项目」的「名称」，请求体选「文件」= 「重复项目」；

@@ -1,0 +1,32 @@
+name: Build iPhone shortcut
+
+# 改了快捷指令时在任意分支上编译 + 签名一次，签好的文件作为构建产物上传（检查签名服务是否可用）。
+# 正式发布由 pages.yml 在部署网页时完成。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "shortcuts/**"
+      - ".github/workflows/shortcut.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Install Cherri
+        run: go install github.com/electrikmilk/cherri@v1.3.2
+      - name: Build and sign
+        env:
+          XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
+        run: python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --out xiaoju-backup.shortcut ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xiaoju-backup-shortcut
+          path: xiaoju-backup.shortcut

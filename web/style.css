@@ -584,3 +584,7 @@ button.danger { color: var(--danger); }
 .key-steps { margin: 10px 0; padding-left: 20px; line-height: 1.6; }
 .key-steps li + li { margin-top: 6px; }
 .key-steps code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface); padding: 1px 4px; border-radius: 4px; }
+.key-install { margin: 10px 0 4px; }
+.key-install .button { display: inline-block; margin-bottom: 4px; text-decoration: none; }
+.key-manual { margin: 6px 0; }
+.key-manual summary { cursor: pointer; color: var(--muted); font-size: 13px; }
