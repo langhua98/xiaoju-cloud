@@ -3,6 +3,8 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -12,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -35,6 +38,11 @@ const AlbumFolder = "相册"
 //
 // 文件名去掉自动加的序号后相同、大小也相同的视为已经传过，直接跳过：
 // 返回 200 {"result":"skipped"}；新上传返回 201 {"result":"uploaded"}。同名不同内容自动改名为“名字 (2)”。
+//
+// 大文件（视频）收完后写 Telegram 可能要好几分钟，而快捷指令等回复超过约 60 秒就算超时。所以先把整个文件
+// 收完、加密存进临时文件再写；写了 ingestHeartbeat 还没写完，就先回 200，之后每隔 ingestHeartbeat 发一个
+// 空格让连接保持活跃，写完再发 JSON（前面的空格不影响解析；这种情况下出错是 200 {"result":"error"}）。
+// 文件收完后即使客户端断开也会写完，下次运行会当作已传过跳过。
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	body := bufio.NewReaderSize(r.Body, 64<<10)
@@ -71,23 +79,106 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		mimeType = "application/octet-stream"
 	}
 	// 同名不同内容：改名“名字 (2)”。Upload 在读请求体之前就检查重名，所以可以换个名字重试
+	uploadCtx := context.WithoutCancel(ctx) // 文件收完后客户端断开也要写完
 	for i := 1; ; i++ {
 		n := name
 		if i > 1 {
 			n = withCopySuffix(name, i)
 		}
-		f, err := s.svc.Upload(ctx, service.UploadRequest{UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Body: body})
-		if errors.Is(err, meta.ErrConflict) && i < 100 {
+		var hb *heartbeat
+		f, err := s.svc.Upload(uploadCtx, service.UploadRequest{
+			UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Body: body,
+			Spool: true, OnSpooled: func() { hb = startHeartbeat(w) },
+		})
+		started := hb.end() // 之后只有这里写回复
+		// 重名在读请求体之前就会发现（hb 还没创建），可以换个名字重试
+		if errors.Is(err, meta.ErrConflict) && hb == nil && i < 100 {
 			continue
 		}
 		if err != nil {
-			s.fail(w, err)
+			if !started {
+				s.fail(w, err)
+				return
+			}
+			s.log.Error("ingest failed after the body was received", "name", n, "err", err)
+			json.NewEncoder(w).Encode(map[string]any{"result": "error", "error": "服务端写入失败，请稍后再运行一次（传过的会自动跳过）"})
 			return
 		}
 		s.log.Info("ingested", "name", f.Name, "size", f.Size, "client", clientIP(r))
-		writeJSON(w, http.StatusCreated, map[string]any{"result": "uploaded", "name": f.Name, "size": f.Size})
+		resp := map[string]any{"result": "uploaded", "name": f.Name, "size": f.Size}
+		if started {
+			json.NewEncoder(w).Encode(resp)
+		} else {
+			writeJSON(w, http.StatusCreated, resp)
+		}
 		return
 	}
+}
+
+// ingestHeartbeat 是写 Telegram 期间给客户端发空格的间隔（要明显短于快捷指令约 60 秒的等待上限）。
+var ingestHeartbeat = 10 * time.Second
+
+// heartbeat：过了 ingestHeartbeat 还没写完就先回 200，然后定时发空格。
+type heartbeat struct {
+	w       http.ResponseWriter
+	rc      *http.ResponseController
+	timer   *time.Timer
+	mu      sync.Mutex
+	started bool // 已经回了 200
+	stopped bool
+	done    chan struct{}
+}
+
+func startHeartbeat(w http.ResponseWriter) *heartbeat {
+	hb := &heartbeat{w: w, rc: http.NewResponseController(w), done: make(chan struct{})}
+	hb.timer = time.AfterFunc(ingestHeartbeat, hb.begin)
+	return hb
+}
+
+func (hb *heartbeat) begin() {
+	hb.mu.Lock()
+	defer hb.mu.Unlock()
+	if hb.stopped {
+		return
+	}
+	hb.started = true
+	hb.w.Header().Set("Content-Type", "application/json")
+	hb.w.Header().Set("X-Accel-Buffering", "no") // 让代理别缓冲
+	hb.w.WriteHeader(http.StatusOK)
+	hb.w.Write([]byte(" "))
+	hb.rc.Flush()
+	go func() {
+		t := time.NewTicker(ingestHeartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				hb.mu.Lock()
+				if !hb.stopped {
+					hb.w.Write([]byte(" "))
+					hb.rc.Flush()
+				}
+				hb.mu.Unlock()
+			case <-hb.done:
+				return
+			}
+		}
+	}()
+}
+
+// end 停止心跳，返回是否已经回了 200（这时只能接着写 JSON，不能再设状态码）。hb 为 nil 时返回 false。
+func (hb *heartbeat) end() bool {
+	if hb == nil {
+		return false
+	}
+	hb.mu.Lock()
+	defer hb.mu.Unlock()
+	if !hb.stopped {
+		hb.stopped = true
+		hb.timer.Stop()
+		close(hb.done)
+	}
+	return hb.started
 }
 
 // clientIP 取上传者的地址（记日志用；HF Space 在代理后面，看 X-Forwarded-For）。

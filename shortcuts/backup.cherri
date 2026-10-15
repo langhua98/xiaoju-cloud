@@ -1,9 +1,10 @@
 // “备份照片到小桔云盘”快捷指令（Cherri 语言，https://github.com/electrikmilk/cherri）。
 // 由 shortcuts/build.py 编译、签名，发布网页时一起放到 GitHub Pages（xiaoju-backup.shortcut）。
-// 从相册多选照片 / 视频，一张张传进网盘根目录的“相册”文件夹（只进不出，不需要密钥），传过的自动跳过。
+// 从相册多选照片 / 视频，一个个传进网盘根目录的“相册”文件夹（只进不出，不需要密钥），传过的自动跳过。
 #include 'actions/photos'
 #include 'actions/images'
 #include 'actions/scripting'
+#include 'actions/media'
 #define name 备份照片到小桔云盘
 #define color orange
 #define glyph cloud
@@ -25,35 +26,34 @@ action 'downloadurl' uploadFile(
 @photos = selectPhotos(true)
 @uploaded = 0
 @skipped = 0
-@videos = 0
 for photo in photos {
-    // 视频跳过：快捷指令导出某些视频（录屏、慢动作、原片在 iCloud）会直接报错并停下（“produced no file
-    // representation for type public.mpeg-4”），而且没法捕获。“媒体类型”只读照片库记录，不需要导出文件。
+    @name = getImageDetail(photo, "Name")
+    // 视频先用「编码视频」（Passthrough：原尺寸、不重新压缩）导出成文件再传。直接拿相册里的视频项上传，
+    // 某些视频（录屏、慢动作、原片在 iCloud）会报“produced no file representation for type public.mpeg-4”并停下。
+    // “媒体类型”只读照片库记录，不需要导出文件；中文系统里可能显示成“视频”或“影片”。
     @mediaType = getImageDetail(photo, "Media Type")
     @kind = "{mediaType}"
+    @file = photo
     if kind == "Video" {
-        @videos += 1
+        @file = encodeVideo(photo)
     } else if kind == "视频" {
-        @videos += 1
+        @file = encodeVideo(photo)
+    } else if kind == "影片" {
+        @file = encodeVideo(photo)
+    }
+    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}"})
+    // 返回的是 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
+    // 不能直接 resp['result']——那会编译成读取文件属性
+    @respDict = getDictionary(resp)
+    @resultValue = getValue(respDict, "result")
+    @result = "{resultValue}"
+    if result == "uploaded" {
+        @uploaded += 1
+    } else if result == "skipped" {
+        @skipped += 1
     } else {
-        @name = getImageDetail(photo, "Name")
-        @resp = uploadFile(uploadURL, photo, {"X-File-Name": "{name}"})
-        // 返回的是 JSON：先转成词典再取 result（uploaded / skipped），不能直接 resp['result']——那会编译成读取文件属性
-        @respDict = getDictionary(resp)
-        @resultValue = getValue(respDict, "result")
-        @result = "{resultValue}"
-        if result == "uploaded" {
-            @uploaded += 1
-        } else if result == "skipped" {
-            @skipped += 1
-        } else {
-            alert("{name} 没传上去：{resp}\n\n已上传 {uploaded} 张。检查网络后再运行一次，传过的会自动跳过。", "上传失败")
-            stop()
-        }
+        alert("{name} 没传上去：{resp}\n\n已上传 {uploaded} 个。检查网络后再运行一次，传过的会自动跳过。", "上传失败")
+        stop()
     }
 }
-if videos > 0 {
-    showNotification("上传 {uploaded} 张，跳过 {skipped} 张（以前传过）。{videos} 个视频没传：视频请用网页的「同步相册」", "照片备份完成")
-} else {
-    showNotification("上传 {uploaded} 张，跳过 {skipped} 张（以前传过）", "照片备份完成")
-}
+showNotification("上传 {uploaded} 个，跳过 {skipped} 个（以前传过）", "照片备份完成")

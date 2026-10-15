@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/db"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
+	"github.com/langhua98/xiaoju-cloud/internal/storage"
 	"github.com/langhua98/xiaoju-cloud/internal/storage/local"
 	"github.com/langhua98/xiaoju-cloud/migrations"
 )
@@ -163,4 +165,42 @@ func TestIngest(t *testing.T) {
 	if string(got) != jpeg {
 		t.Fatalf("content mismatch: %d bytes", len(got))
 	}
+
+	// 大文件写存储端很慢：先回 200，期间发空格保持连接，最后才是 JSON
+	ingestHeartbeat = 20 * time.Millisecond
+	t.Cleanup(func() { ingestHeartbeat = 10 * time.Second })
+	slow := service.New(store, slowDriver{driver, 120 * time.Millisecond}, service.Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: log})
+	ts2 := httptest.NewServer(New(slow, Options{UserID: userID, Token: "tok", Log: log}).Handler())
+	defer ts2.Close()
+	video := "\x00\x00\x00\x14ftypqt  " + strings.Repeat("v", 2990) // 3 个分块，写入约 360ms
+	req, _ = http.NewRequest("POST", ts2.URL+"/api/ingest", strings.NewReader(video))
+	req.Header.Set("X-File-Name", "VID_0001")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("response with heartbeats must still be valid JSON: %v %q", err, raw)
+	}
+	spaces := len(raw) - len(strings.TrimLeft(string(raw), " "))
+	if resp.StatusCode != 200 || spaces < 3 || out["result"] != "uploaded" || out["name"] != "VID_0001.mov" {
+		t.Fatalf("slow ingest: %d, %d heartbeat spaces, %v", resp.StatusCode, spaces, out)
+	}
+	if code, out := ingest("VID_0001", video); code != 200 || out["result"] != "skipped" {
+		t.Fatalf("video re-run must be skipped: %d %v", code, out)
+	}
+}
+
+// slowDriver 模拟写 Telegram 很慢（大视频）
+type slowDriver struct {
+	storage.Driver
+	delay time.Duration
+}
+
+func (d slowDriver) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
+	time.Sleep(d.delay)
+	return d.Driver.Put(ctx, req)
 }

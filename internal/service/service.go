@@ -63,6 +63,11 @@ type UploadRequest struct {
 	Name     string
 	Mime     string
 	Body     io.Reader
+	// Spool 为 true 时先把整个请求体读完、加密存进临时文件，再写存储端，
+	// 读完时调用 OnSpooled（批量上传接口在这之后给客户端发心跳，免得客户端等回复超时）。
+	// 临时目录需要能放下整个文件的密文。
+	Spool     bool
+	OnSpooled func()
 }
 
 // Upload 把 Body 按 partSize 切块：每块先加密写入临时文件（便于失败重试、长度已知），
@@ -84,7 +89,11 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 	}
 
 	var uploaded, uploadedBackup []storage.Location
+	var sealed []*sealedPart
 	defer func() {
+		for _, sp := range sealed {
+			sp.remove()
+		}
 		if err == nil {
 			return
 		}
@@ -105,88 +114,133 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		}
 	}()
 
-	fileHash := sha256.New()
-	body := io.TeeReader(req.Body, fileHash)
-	var total int64
-	for partNo := 0; ; partNo++ {
-		part, loc, perr := s.uploadPart(ctx, f.ID, partNo, dek, body)
-		if perr != nil {
-			return nil, perr
-		}
-		if part == nil {
-			break // 输入已读完
+	store := func(sp *sealedPart) error {
+		part, loc, err := s.storePart(ctx, f.ID, sp)
+		if err != nil {
+			return err
 		}
 		uploaded = append(uploaded, loc)
 		if part.HasBackup() {
 			uploadedBackup = append(uploadedBackup, backupLocation(part))
 		}
-		if err := s.store.AddPart(ctx, part); err != nil {
-			return nil, err
+		return s.store.AddPart(ctx, part)
+	}
+
+	fileHash := sha256.New()
+	body := io.TeeReader(req.Body, fileHash)
+	var total int64
+	for partNo := 0; ; partNo++ {
+		sp, perr := s.sealPart(partNo, dek, body)
+		if perr != nil {
+			return nil, perr
 		}
-		total += part.Size
-		if part.Size < s.partSize {
+		if sp == nil {
+			break // 输入已读完
+		}
+		total += sp.size
+		if req.Spool {
+			sealed = append(sealed, sp) // 先全部读完，下面再写存储端
+		} else {
+			err := store(sp)
+			sp.remove()
+			if err != nil {
+				return nil, err
+			}
+		}
+		if sp.size < s.partSize {
 			break
+		}
+	}
+	if req.Spool {
+		if req.OnSpooled != nil {
+			req.OnSpooled()
+		}
+		for _, sp := range sealed {
+			if err := store(sp); err != nil {
+				return nil, err
+			}
+			sp.remove()
 		}
 	}
 	return s.store.ActivateFile(ctx, f.ID, total, fileHash.Sum(nil))
 }
 
-// uploadPart 读取最多 partSize 字节、加密后上传。输入为空时返回 (nil, _, nil)。
-func (s *Service) uploadPart(ctx context.Context, fileID uuid.UUID, partNo int, dek []byte, body io.Reader) (*meta.Part, storage.Location, error) {
+// sealedPart 是加密好、存在临时文件里等着写存储端的一个分块。
+type sealedPart struct {
+	no   int
+	tmp  *os.File
+	size int64
+	iv   []byte
+	sum  []byte // 密文 sha256
+}
+
+func (sp *sealedPart) remove() {
+	if sp.tmp != nil {
+		sp.tmp.Close()
+		os.Remove(sp.tmp.Name())
+		sp.tmp = nil
+	}
+}
+
+// sealPart 读取最多 partSize 字节，加密写入临时文件。输入为空时返回 (nil, nil)。
+func (s *Service) sealPart(partNo int, dek []byte, body io.Reader) (_ *sealedPart, err error) {
 	tmp, err := os.CreateTemp(s.tempDir, "xiaoju-part-*")
 	if err != nil {
-		return nil, storage.Location{}, err
+		return nil, err
 	}
+	sp := &sealedPart{no: partNo, tmp: tmp}
 	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		if err != nil || sp.size == 0 {
+			sp.remove()
+		}
 	}()
-
-	iv, err := crypto.NewIV()
-	if err != nil {
-		return nil, storage.Location{}, err
+	if sp.iv, err = crypto.NewIV(); err != nil {
+		return nil, err
 	}
-	stream, err := crypto.NewCTRAt(dek, iv, 0)
+	stream, err := crypto.NewCTRAt(dek, sp.iv, 0)
 	if err != nil {
-		return nil, storage.Location{}, err
+		return nil, err
 	}
 	partHash := sha256.New()
 	enc := &cipher.StreamWriter{S: stream, W: io.MultiWriter(tmp, partHash)}
-	n, err := io.Copy(enc, io.LimitReader(body, s.partSize))
-	if err != nil {
-		return nil, storage.Location{}, fmt.Errorf("read upload body: %w", err)
+	if sp.size, err = io.Copy(enc, io.LimitReader(body, s.partSize)); err != nil {
+		return nil, fmt.Errorf("read upload body: %w", err)
 	}
-	if n == 0 {
-		return nil, storage.Location{}, nil // 空文件没有分块
+	if sp.size == 0 {
+		return nil, nil // 空文件没有分块
 	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+	sp.sum = partHash.Sum(nil)
+	return sp, nil
+}
+
+// storePart 把加密好的分块写进存储端（和备份端）。
+func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPart) (*meta.Part, storage.Location, error) {
+	if _, err := sp.tmp.Seek(0, io.SeekStart); err != nil {
 		return nil, storage.Location{}, err
 	}
-
-	sum := partHash.Sum(nil)
 	req := storage.PutRequest{
-		Name:    partName(fileID, partNo),
-		Caption: caption(fileID, partNo, sum),
-		Body:    tmp,
-		Size:    n,
+		Name:    partName(fileID, sp.no),
+		Caption: caption(fileID, sp.no, sp.sum),
+		Body:    sp.tmp,
+		Size:    sp.size,
 	}
 	loc, err := s.driver.Put(ctx, req)
 	if err != nil {
 		return nil, storage.Location{}, err
 	}
 	part := &meta.Part{
-		FileID: fileID, PartNo: partNo, Storage: s.driver.Name(),
+		FileID: fileID, PartNo: sp.no, Storage: s.driver.Name(),
 		ChannelID: loc.ChannelID, MessageID: loc.MessageID,
-		Size: n, IV: iv, SHA256: sum,
+		Size: sp.size, IV: sp.iv, SHA256: sp.sum,
 	}
 
 	// 双备份：同一份密文再写进备份频道。失败不影响本次上传，后台同步任务会补上。
 	if s.backup != nil {
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		if _, err := sp.tmp.Seek(0, io.SeekStart); err != nil {
 			return nil, storage.Location{}, err
 		}
 		if bloc, err := s.backup.Put(ctx, req); err != nil {
-			s.log.Warn("backup upload failed; will retry in background", "file", fileID, "part", partNo, "err", err)
+			s.log.Warn("backup upload failed; will retry in background", "file", fileID, "part", sp.no, "err", err)
 		} else {
 			part.BackupChannelID, part.BackupMessageID = &bloc.ChannelID, &bloc.MessageID
 		}
