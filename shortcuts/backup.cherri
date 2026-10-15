@@ -25,20 +25,35 @@ action 'downloadurl' uploadFile(
 @photos = selectPhotos(true)
 @uploaded = 0
 @skipped = 0
+@videos = 0
 for photo in photos {
-    @name = getImageDetail(photo, "Name")
-    @resp = uploadFile(uploadURL, photo, {"X-File-Name": "{name}"})
-    // 返回的是 JSON：先转成词典再取 result（uploaded / skipped），不能直接 resp['result']——那会编译成读取文件属性
-    @respDict = getDictionary(resp)
-    @resultValue = getValue(respDict, "result")
-    @result = "{resultValue}"
-    if result == "uploaded" {
-        @uploaded += 1
-    } else if result == "skipped" {
-        @skipped += 1
+    // 视频跳过：快捷指令导出某些视频（录屏、慢动作、原片在 iCloud）会直接报错并停下（“produced no file
+    // representation for type public.mpeg-4”），而且没法捕获。“媒体类型”只读照片库记录，不需要导出文件。
+    @mediaType = getImageDetail(photo, "Media Type")
+    @kind = "{mediaType}"
+    if kind == "Video" {
+        @videos += 1
+    } else if kind == "视频" {
+        @videos += 1
     } else {
-        alert("{name} 没传上去：{resp}\n\n已上传 {uploaded} 张。检查网络后再运行一次，传过的会自动跳过。", "上传失败")
-        stop()
+        @name = getImageDetail(photo, "Name")
+        @resp = uploadFile(uploadURL, photo, {"X-File-Name": "{name}"})
+        // 返回的是 JSON：先转成词典再取 result（uploaded / skipped），不能直接 resp['result']——那会编译成读取文件属性
+        @respDict = getDictionary(resp)
+        @resultValue = getValue(respDict, "result")
+        @result = "{resultValue}"
+        if result == "uploaded" {
+            @uploaded += 1
+        } else if result == "skipped" {
+            @skipped += 1
+        } else {
+            alert("{name} 没传上去：{resp}\n\n已上传 {uploaded} 张。检查网络后再运行一次，传过的会自动跳过。", "上传失败")
+            stop()
+        }
     }
 }
-showNotification("上传 {uploaded} 张，跳过 {skipped} 张（以前传过）", "照片备份完成")
+if videos > 0 {
+    showNotification("上传 {uploaded} 张，跳过 {skipped} 张（以前传过）。{videos} 个视频没传：视频请用网页的「同步相册」", "照片备份完成")
+} else {
+    showNotification("上传 {uploaded} 张，跳过 {skipped} 张（以前传过）", "照片备份完成")
+}
