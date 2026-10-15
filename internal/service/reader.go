@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/langhua98/xiaoju-cloud/internal/crypto"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
@@ -17,24 +18,45 @@ import (
 type FileReader struct {
 	ctx    context.Context
 	driver storage.Driver
+	backup storage.Driver // 可选：主存储读取失败时改读备份
+	log    *slog.Logger
 	dek    []byte
 	parts  []meta.Part
 	starts []int64 // 每个分块在整个文件中的起始偏移
 	size   int64
 
+	useBackup []bool // 哪些分块已经切换到备份读取
+
 	pos    int64
 	cur    io.ReadCloser // 当前分块从 curPos 开始的解密流
+	curIdx int
 	curPos int64
 	curEnd int64 // 当前分块在文件中的结束偏移
 }
 
 func NewFileReader(ctx context.Context, driver storage.Driver, dek []byte, parts []meta.Part) *FileReader {
-	r := &FileReader{ctx: ctx, driver: driver, dek: dek, parts: parts, starts: make([]int64, len(parts))}
+	r := &FileReader{
+		ctx: ctx, driver: driver, dek: dek, parts: parts,
+		starts: make([]int64, len(parts)), useBackup: make([]bool, len(parts)),
+	}
 	for i, p := range parts {
 		r.starts[i] = r.size
 		r.size += p.Size
 	}
 	return r
+}
+
+// fallback 在分块 i 读取失败时切换到备份；返回 false 表示没有可用的备份（或请求已取消）。
+func (r *FileReader) fallback(i int, cause error) bool {
+	if r.backup == nil || r.useBackup[i] || !r.parts[i].HasBackup() || r.ctx.Err() != nil {
+		return false
+	}
+	r.useBackup[i] = true
+	if r.log != nil {
+		r.log.Warn("primary storage read failed; reading from backup",
+			"file", r.parts[i].FileID, "part", r.parts[i].PartNo, "err", cause)
+	}
+	return true
 }
 
 func (r *FileReader) Size() int64 { return r.size }
@@ -46,6 +68,9 @@ func (r *FileReader) Read(p []byte) (int, error) {
 		}
 		if r.cur == nil || r.curPos != r.pos {
 			if err := r.open(); err != nil {
+				if r.fallback(r.partIndex(r.pos), err) {
+					continue
+				}
 				return 0, err
 			}
 		}
@@ -55,9 +80,18 @@ func (r *FileReader) Read(p []byte) (int, error) {
 		if errors.Is(err, io.EOF) {
 			r.closeCur()
 			if r.pos < r.curEnd {
-				return n, io.ErrUnexpectedEOF // 存储端返回的数据比记录的分块短
+				err = io.ErrUnexpectedEOF // 存储端返回的数据比记录的分块短
+			} else {
+				err = nil
 			}
-			err = nil
+		}
+		if err != nil && r.fallback(r.curIdx, err) {
+			// 已读到的数据是正确的明文，交给调用方；之后从当前位置改读备份
+			r.closeCur()
+			if n > 0 {
+				return n, nil
+			}
+			continue
 		}
 		if n > 0 || err != nil {
 			return n, err
@@ -69,9 +103,13 @@ func (r *FileReader) Read(p []byte) (int, error) {
 func (r *FileReader) open() error {
 	r.closeCur()
 	i := r.partIndex(r.pos)
-	part := r.parts[i]
+	part := &r.parts[i]
 	off := r.pos - r.starts[i]
-	rc, err := r.driver.ReadRange(r.ctx, storage.Location{ChannelID: part.ChannelID, MessageID: part.MessageID}, off, part.Size-off)
+	driver, loc := r.driver, storage.Location{ChannelID: part.ChannelID, MessageID: part.MessageID}
+	if r.useBackup[i] {
+		driver, loc = r.backup, backupLocation(part)
+	}
+	rc, err := driver.ReadRange(r.ctx, loc, off, part.Size-off)
 	if err != nil {
 		return fmt.Errorf("read part %d: %w", part.PartNo, err)
 	}
@@ -84,6 +122,7 @@ func (r *FileReader) open() error {
 		io.Reader
 		io.Closer
 	}{&cipher.StreamReader{S: stream, R: rc}, rc}
+	r.curIdx = i
 	r.curPos = r.pos
 	r.curEnd = r.starts[i] + part.Size
 	return nil

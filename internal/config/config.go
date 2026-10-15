@@ -39,7 +39,15 @@ type Telegram struct {
 	ChannelID   int64
 	SessionFile string
 	Transport   string // tcp | websocket
+
+	// 备份：另一个账号的 Bot 和频道。两项都设置时启用双备份。
+	BackupBotToken    string
+	BackupChannelID   int64
+	BackupSessionFile string
 }
+
+// BackupEnabled 报告是否配置了备份频道。
+func (t Telegram) BackupEnabled() bool { return t.BackupBotToken != "" || t.BackupChannelID != 0 }
 
 func Load() (*Config, error) {
 	c := &Config{
@@ -54,6 +62,9 @@ func Load() (*Config, error) {
 			BotToken:    os.Getenv("TG_BOT_TOKEN"),
 			SessionFile: env("TG_SESSION_FILE", "./data/tg-session.json"),
 			Transport:   env("TG_TRANSPORT", "tcp"),
+
+			BackupBotToken:    os.Getenv("TG_BACKUP_BOT_TOKEN"),
+			BackupSessionFile: env("TG_BACKUP_SESSION_FILE", "./data/tg-backup-session.json"),
 		},
 	}
 
@@ -75,6 +86,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("TG_CHANNEL_ID"); v != "" {
 		if c.Telegram.ChannelID, err = strconv.ParseInt(v, 10, 64); err != nil {
 			return nil, fmt.Errorf("TG_CHANNEL_ID: %w", err)
+		}
+	}
+	if v := os.Getenv("TG_BACKUP_CHANNEL_ID"); v != "" {
+		if c.Telegram.BackupChannelID, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return nil, fmt.Errorf("TG_BACKUP_CHANNEL_ID: %w", err)
 		}
 	}
 	if v := os.Getenv("XIAOJU_MASTER_KEY"); v != "" {
@@ -128,6 +144,14 @@ func (c *Config) ValidateTelegram() error {
 	}
 	if t.Transport != "tcp" && t.Transport != "websocket" {
 		return fmt.Errorf("unknown TG_TRANSPORT %q (want tcp or websocket)", t.Transport)
+	}
+	if t.BackupEnabled() {
+		if t.BackupBotToken == "" || t.BackupChannelID == 0 {
+			return errors.New("TG_BACKUP_BOT_TOKEN and TG_BACKUP_CHANNEL_ID must be set together")
+		}
+		if t.BackupBotToken == t.BotToken {
+			return errors.New("TG_BACKUP_BOT_TOKEN must be a different bot (created by another Telegram account)")
+		}
 	}
 	return nil
 }

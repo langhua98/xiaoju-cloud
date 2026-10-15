@@ -61,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/files/{id}/content", s.download)
 	api.HandleFunc("POST /api/files/{id}/link", s.createLink)
 	api.HandleFunc("DELETE /api/files/{id}", s.deleteFile)
+	api.HandleFunc("GET /api/backup/status", s.backupStatus)
 	mux.Handle("/api/", s.cors(s.auth(api)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
@@ -290,6 +291,16 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/backup/status 返回双备份是否启用，以及已备份的分块数和字节数。
+func (s *Server) backupStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.BackupStatus(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {

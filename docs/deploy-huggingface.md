@@ -67,6 +67,18 @@ GitHub Actions ──上传源码 + 写入 Secrets──▶ HF 私有 Space（xi
 
 之后每次推送到 `main`（文档改动除外）都会自动重新部署。没有设置 `HF_TOKEN` 时部署步骤会直接跳过。
 
+## 可选：双备份
+
+用**另一个 Telegram 账号**创建备份 Bot 和私有频道（Bot 设为频道管理员），然后在 GitHub Secrets 中添加：
+
+| Secret | 值 |
+|---|---|
+| `TG_BACKUP_BOT_TOKEN` | 第二个账号在 @BotFather 创建的 Bot 的 token |
+| `TG_BACKUP_CHANNEL_ID` | 第二个账号的私有频道 ID（`-100` 开头） |
+
+重新运行工作流，日志出现 `backup channel connected` 和 `backup sync started` 即生效；旧文件会在后台逐步复制到备份频道，
+进度见 `GET /api/backup/status`。说明见 README“双备份”。
+
 ## 使用
 
 Space 是私有的，请求需同时带 HF token（给 HF 网关）和本服务的令牌：

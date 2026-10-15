@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"testing"
 
@@ -81,5 +82,95 @@ func TestFileReaderEmpty(t *testing.T) {
 	b, err := io.ReadAll(r)
 	if err != nil || len(b) != 0 {
 		t.Fatalf("empty read: %v %d", err, len(b))
+	}
+}
+
+// mirrorParts 把主驱动里的分块密文复制到备份驱动，并在分块记录里填上备份位置。
+func mirrorParts(t *testing.T, primary, backup storage.Driver, parts []meta.Part) {
+	t.Helper()
+	for i := range parts {
+		p := &parts[i]
+		rc, err := primary.ReadRange(context.Background(), storage.Location{ChannelID: p.ChannelID, MessageID: p.MessageID}, 0, p.Size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loc, err := backup.Put(context.Background(), storage.PutRequest{Name: "b", Body: rc, Size: p.Size})
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.BackupChannelID, p.BackupMessageID = &loc.ChannelID, &loc.MessageID
+	}
+}
+
+// flakyDriver 模拟主存储故障：broken 中的分块要么无法打开，要么读到 failAfter 字节后出错。
+type flakyDriver struct {
+	storage.Driver
+	broken    map[int64]bool
+	failAfter int64 // <0 表示直接打不开
+}
+
+var errFlaky = errors.New("simulated storage failure")
+
+func (d *flakyDriver) ReadRange(ctx context.Context, loc storage.Location, off, n int64) (io.ReadCloser, error) {
+	if !d.broken[loc.MessageID] {
+		return d.Driver.ReadRange(ctx, loc, off, n)
+	}
+	if d.failAfter < 0 {
+		return nil, errFlaky
+	}
+	rc, err := d.Driver.ReadRange(ctx, loc, off, n)
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(io.LimitReader(rc, d.failAfter), errReader{}), rc}, nil
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errFlaky }
+
+func TestFileReaderFallsBackToBackup(t *testing.T) {
+	primary, _ := local.New(t.TempDir())
+	backup, _ := local.New(t.TempDir())
+	dek, _ := crypto.NewKey()
+	plain := make([]byte, 10_000)
+	rand.Read(plain)
+	parts := writeParts(t, primary, dek, plain, 3000)
+	mirrorParts(t, primary, backup, parts)
+
+	for _, failAfter := range []int64{-1, 0, 100} {
+		// 第 2、4 块在主存储里坏了
+		flaky := &flakyDriver{Driver: primary, failAfter: failAfter, broken: map[int64]bool{
+			parts[1].MessageID: true, parts[3].MessageID: true,
+		}}
+		r := NewFileReader(context.Background(), flaky, dek, parts)
+		r.backup = backup
+		got, err := io.ReadAll(r)
+		if err != nil || !bytes.Equal(got, plain) {
+			t.Fatalf("failAfter=%d: err=%v equal=%v", failAfter, err, bytes.Equal(got, plain))
+		}
+
+		// Range 读取跨越坏块
+		r = NewFileReader(context.Background(), flaky, dek, parts)
+		r.backup = backup
+		r.Seek(2990, io.SeekStart)
+		buf := make([]byte, 3020)
+		if _, err := io.ReadFull(r, buf); err != nil || !bytes.Equal(buf, plain[2990:6010]) {
+			t.Fatalf("failAfter=%d range: err=%v", failAfter, err)
+		}
+	}
+
+	// 没有备份时错误照常返回
+	flaky := &flakyDriver{Driver: primary, failAfter: -1, broken: map[int64]bool{parts[0].MessageID: true}}
+	noBackup := append([]meta.Part(nil), parts...)
+	noBackup[0].BackupChannelID, noBackup[0].BackupMessageID = nil, nil
+	r := NewFileReader(context.Background(), flaky, dek, noBackup)
+	r.backup = backup
+	if _, err := io.ReadAll(r); !errors.Is(err, errFlaky) {
+		t.Fatalf("want simulated failure without backup, got %v", err)
 	}
 }

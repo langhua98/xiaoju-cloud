@@ -109,6 +109,13 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// 备份频道连不上时主服务照常运行，原因通过 /api/backup/status 和日志暴露
+	var backupErr string
+	backup, backupDone, err := newBackupDriver(ctx, cfg, log)
+	if err != nil {
+		log.Error("backup disabled: cannot connect backup channel", "err", err)
+		backupErr = err.Error()
+	}
 
 	store := meta.NewStore(pool)
 	userID, err := store.EnsureUser(ctx, "admin")
@@ -117,7 +124,11 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	svc := service.New(store, driver, service.Options{
 		MasterKey: cfg.MasterKey, PartSize: cfg.PartSize, TempDir: cfg.TempDir, Log: log,
+		Backup: backup, BackupError: backupErr,
 	})
+	if backup != nil {
+		go svc.RunBackupSync(ctx, 5*time.Minute)
+	}
 
 	handler := api.New(svc, api.Options{
 		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
@@ -138,6 +149,8 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		return err
 	case err := <-tgDone:
 		return fmt.Errorf("telegram client stopped: %w", err)
+	case err := <-backupDone:
+		return fmt.Errorf("backup telegram client stopped: %w", err)
 	case <-ctx.Done():
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -164,6 +177,12 @@ func checkTelegram(ctx context.Context, cfg *config.Config, log *slog.Logger) er
 		return err
 	}
 	log.Info("telegram check passed: bot logged in and storage channel is accessible")
+	if t.BackupEnabled() {
+		if _, _, err := newBackupDriver(ctx, cfg, log); err != nil {
+			return err
+		}
+		log.Info("telegram backup check passed: backup bot logged in and backup channel is accessible")
+	}
 	return nil
 }
 
@@ -222,5 +241,30 @@ func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (stora
 	if err != nil {
 		return nil, nil, err
 	}
+	return d, done, nil
+}
+
+// newBackupDriver 用另一个账号的 Bot 连接备份频道；未配置备份时返回 nil。
+func newBackupDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (storage.Driver, <-chan error, error) {
+	t := cfg.Telegram
+	if cfg.Storage != "telegram" || !t.BackupEnabled() {
+		return nil, nil, nil
+	}
+	if telegram.NormalizeChannelID(t.BackupChannelID) == telegram.NormalizeChannelID(t.ChannelID) {
+		return nil, nil, errors.New("TG_BACKUP_CHANNEL_ID must be a different channel from TG_CHANNEL_ID")
+	}
+	blog := log.With("client", "backup")
+	tgAPI, done, err := telegram.Start(ctx, telegram.ClientConfig{
+		AppID: t.AppID, AppHash: t.AppHash, BotToken: t.BackupBotToken, SessionFile: t.BackupSessionFile,
+		Transport: t.Transport,
+	}, blog)
+	if err != nil {
+		return nil, nil, fmt.Errorf("backup: %w", err)
+	}
+	d, err := telegram.New(ctx, tgAPI, t.BackupChannelID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("backup: %w", err)
+	}
+	log.Info("backup channel connected")
 	return d, done, nil
 }

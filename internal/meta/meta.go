@@ -50,7 +50,13 @@ type Part struct {
 	Size      int64
 	IV        []byte
 	SHA256    []byte
+	// 备份频道中的位置；nil 表示还没有备份。
+	BackupChannelID *int64
+	BackupMessageID *int64
 }
+
+// HasBackup 报告该分块是否已经有备份。
+func (p *Part) HasBackup() bool { return p.BackupMessageID != nil }
 
 type Store struct {
 	db *pgxpool.Pool
@@ -110,10 +116,54 @@ func (s *Store) CreateUpload(ctx context.Context, f *File) (*File, error) {
 
 func (s *Store) AddPart(ctx context.Context, p *Part) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO file_parts (file_id, part_no, storage, channel_id, message_id, size, iv, sha256)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		p.FileID, p.PartNo, p.Storage, p.ChannelID, p.MessageID, p.Size, p.IV, p.SHA256)
+		INSERT INTO file_parts (file_id, part_no, storage, channel_id, message_id, size, iv, sha256,
+		                        backup_channel_id, backup_message_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		p.FileID, p.PartNo, p.Storage, p.ChannelID, p.MessageID, p.Size, p.IV, p.SHA256,
+		p.BackupChannelID, p.BackupMessageID)
 	return err
+}
+
+// SetPartBackup 记录分块在备份频道中的位置。
+func (s *Store) SetPartBackup(ctx context.Context, fileID uuid.UUID, partNo int, channelID, messageID int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE file_parts SET backup_channel_id = $3, backup_message_id = $4
+		WHERE file_id = $1 AND part_no = $2`, fileID, partNo, channelID, messageID)
+	return err
+}
+
+// ListPartsMissingBackup 返回最早的一批还没有备份的分块（只看已上传完成的文件）。
+func (s *Store) ListPartsMissingBackup(ctx context.Context, limit int) ([]Part, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+partColumns+` FROM file_parts p
+		JOIN files f ON f.id = p.file_id AND f.status = 'active'
+		WHERE p.backup_message_id IS NULL
+		ORDER BY p.created_at, p.file_id, p.part_no
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanPart)
+}
+
+type BackupStats struct {
+	Parts       int64 `json:"parts"`
+	BackedUp    int64 `json:"backed_up"`
+	Bytes       int64 `json:"bytes"`
+	BackedBytes int64 `json:"backed_up_bytes"`
+}
+
+// BackupStats 统计已上传完成文件的分块备份进度。
+func (s *Store) BackupStats(ctx context.Context) (BackupStats, error) {
+	var st BackupStats
+	err := s.db.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE p.backup_message_id IS NOT NULL),
+		       COALESCE(sum(p.size), 0),
+		       COALESCE(sum(p.size) FILTER (WHERE p.backup_message_id IS NOT NULL), 0)
+		FROM file_parts p JOIN files f ON f.id = p.file_id AND f.status = 'active'`).
+		Scan(&st.Parts, &st.BackedUp, &st.Bytes, &st.BackedBytes)
+	return st, err
 }
 
 func (s *Store) ActivateFile(ctx context.Context, id uuid.UUID, size int64, sha []byte) (*File, error) {
@@ -161,18 +211,23 @@ func (s *Store) ListChildren(ctx context.Context, userID uuid.UUID, parentID *uu
 	return out, rows.Err()
 }
 
+const partColumns = `p.file_id, p.part_no, p.storage, p.channel_id, p.message_id, p.size, p.iv, p.sha256,
+	p.backup_channel_id, p.backup_message_id`
+
+func scanPart(r pgx.CollectableRow) (Part, error) {
+	var p Part
+	err := r.Scan(&p.FileID, &p.PartNo, &p.Storage, &p.ChannelID, &p.MessageID, &p.Size, &p.IV, &p.SHA256,
+		&p.BackupChannelID, &p.BackupMessageID)
+	return p, err
+}
+
 func (s *Store) ListParts(ctx context.Context, fileID uuid.UUID) ([]Part, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT file_id, part_no, storage, channel_id, message_id, size, iv, sha256
-		FROM file_parts WHERE file_id = $1 ORDER BY part_no`, fileID)
+		SELECT `+partColumns+` FROM file_parts p WHERE p.file_id = $1 ORDER BY p.part_no`, fileID)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Part, error) {
-		var p Part
-		err := r.Scan(&p.FileID, &p.PartNo, &p.Storage, &p.ChannelID, &p.MessageID, &p.Size, &p.IV, &p.SHA256)
-		return p, err
-	})
+	return pgx.CollectRows(rows, scanPart)
 }
 
 // Trash 把条目移入回收站（软删除）。

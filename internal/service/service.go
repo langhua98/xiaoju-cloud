@@ -23,6 +23,8 @@ import (
 type Service struct {
 	store     *meta.Store
 	driver    storage.Driver
+	backup    storage.Driver // 可选：备份存储（另一个账号的频道），每个分块再写一份
+	backupErr string         // 配置了备份但连接失败时的原因
 	masterKey []byte
 	partSize  int64
 	tempDir   string
@@ -34,12 +36,18 @@ type Options struct {
 	PartSize  int64
 	TempDir   string
 	Log       *slog.Logger
+	// Backup 不为 nil 时启用双备份：上传时同时写入，主存储读取失败时改读备份。
+	Backup storage.Driver
+	// BackupError 记录备份已配置但无法连接的原因，用于状态接口展示。
+	BackupError string
 }
 
 func New(store *meta.Store, driver storage.Driver, opt Options) *Service {
 	return &Service{
 		store:     store,
 		driver:    driver,
+		backup:    opt.Backup,
+		backupErr: opt.BackupError,
 		masterKey: opt.MasterKey,
 		partSize:  opt.PartSize,
 		tempDir:   opt.TempDir,
@@ -75,7 +83,7 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		return nil, err
 	}
 
-	var uploaded []storage.Location
+	var uploaded, uploadedBackup []storage.Location
 	defer func() {
 		if err == nil {
 			return
@@ -85,6 +93,11 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		if len(uploaded) > 0 {
 			if derr := s.driver.Delete(cleanup, uploaded); derr != nil {
 				s.log.Error("cleanup uploaded parts", "file", f.ID, "err", derr)
+			}
+		}
+		if len(uploadedBackup) > 0 {
+			if derr := s.backup.Delete(cleanup, uploadedBackup); derr != nil {
+				s.log.Error("cleanup uploaded backup parts", "file", f.ID, "err", derr)
 			}
 		}
 		if derr := s.store.DeleteRow(cleanup, f.ID); derr != nil {
@@ -104,6 +117,9 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 			break // 输入已读完
 		}
 		uploaded = append(uploaded, loc)
+		if part.HasBackup() {
+			uploadedBackup = append(uploadedBackup, backupLocation(part))
+		}
 		if err := s.store.AddPart(ctx, part); err != nil {
 			return nil, err
 		}
@@ -148,20 +164,42 @@ func (s *Service) uploadPart(ctx context.Context, fileID uuid.UUID, partNo int, 
 	}
 
 	sum := partHash.Sum(nil)
-	loc, err := s.driver.Put(ctx, storage.PutRequest{
-		Name:    fmt.Sprintf("%s.part%04d", fileID, partNo),
+	req := storage.PutRequest{
+		Name:    partName(fileID, partNo),
 		Caption: caption(fileID, partNo, sum),
 		Body:    tmp,
 		Size:    n,
-	})
+	}
+	loc, err := s.driver.Put(ctx, req)
 	if err != nil {
 		return nil, storage.Location{}, err
 	}
-	return &meta.Part{
+	part := &meta.Part{
 		FileID: fileID, PartNo: partNo, Storage: s.driver.Name(),
 		ChannelID: loc.ChannelID, MessageID: loc.MessageID,
 		Size: n, IV: iv, SHA256: sum,
-	}, loc, nil
+	}
+
+	// 双备份：同一份密文再写进备份频道。失败不影响本次上传，后台同步任务会补上。
+	if s.backup != nil {
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, storage.Location{}, err
+		}
+		if bloc, err := s.backup.Put(ctx, req); err != nil {
+			s.log.Warn("backup upload failed; will retry in background", "file", fileID, "part", partNo, "err", err)
+		} else {
+			part.BackupChannelID, part.BackupMessageID = &bloc.ChannelID, &bloc.MessageID
+		}
+	}
+	return part, loc, nil
+}
+
+func partName(fileID uuid.UUID, partNo int) string {
+	return fmt.Sprintf("%s.part%04d", fileID, partNo)
+}
+
+func backupLocation(p *meta.Part) storage.Location {
+	return storage.Location{ChannelID: *p.BackupChannelID, MessageID: *p.BackupMessageID}
 }
 
 // caption 写入消息说明，数据库丢失时可以扫描频道重建 文件ID→分块 的映射（文件名等仍需数据库）。
@@ -187,7 +225,10 @@ func (s *Service) Open(ctx context.Context, userID, id uuid.UUID) (*meta.File, *
 	if err != nil {
 		return nil, nil, err
 	}
-	return f, NewFileReader(ctx, s.driver, dek, parts), nil
+	r := NewFileReader(ctx, s.driver, dek, parts)
+	r.backup = s.backup
+	r.log = s.log
+	return f, r, nil
 }
 
 var ErrFolderPurge = errors.New("permanent delete of folders is not supported yet; move to trash instead")
@@ -206,11 +247,22 @@ func (s *Service) Purge(ctx context.Context, userID, id uuid.UUID) error {
 		return err
 	}
 	locs := make([]storage.Location, 0, len(parts))
-	for _, p := range parts {
+	var backupLocs []storage.Location
+	for i := range parts {
+		p := &parts[i]
 		locs = append(locs, storage.Location{ChannelID: p.ChannelID, MessageID: p.MessageID})
+		if p.HasBackup() {
+			backupLocs = append(backupLocs, backupLocation(p))
+		}
 	}
 	if err := s.driver.Delete(ctx, locs); err != nil {
 		return err
+	}
+	// 备份删除失败只记录日志：主存储已删，不能因为备份端的问题让文件“删不掉”
+	if s.backup != nil && len(backupLocs) > 0 {
+		if err := s.backup.Delete(ctx, backupLocs); err != nil {
+			s.log.Warn("delete backup parts failed", "file", f.ID, "err", err)
+		}
 	}
 	return s.store.DeleteRow(ctx, f.ID)
 }

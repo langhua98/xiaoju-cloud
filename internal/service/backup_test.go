@@ -1,0 +1,192 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/langhua98/xiaoju-cloud/internal/crypto"
+	"github.com/langhua98/xiaoju-cloud/internal/db"
+	"github.com/langhua98/xiaoju-cloud/internal/meta"
+	"github.com/langhua98/xiaoju-cloud/internal/storage/local"
+	"github.com/langhua98/xiaoju-cloud/migrations"
+)
+
+// 集成测试：需要 PostgreSQL，设置 XIAOJU_TEST_DATABASE_URL 后运行。
+func TestBackupIntegration(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	store := meta.NewStore(pool)
+	userID, err := store.EnsureUser(ctx, "backup-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryDir, backupDir := t.TempDir(), t.TempDir()
+	primary, _ := local.New(primaryDir)
+	backup, _ := local.New(backupDir)
+	master, _ := crypto.NewKey()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	opts := Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: log}
+
+	upload := func(svc *Service, name string, data []byte) *meta.File {
+		t.Helper()
+		f, err := svc.Upload(ctx, UploadRequest{UserID: userID, Name: name, Body: bytes.NewReader(data)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	read := func(svc *Service, id meta.File) []byte {
+		t.Helper()
+		_, r, err := svc.Open(ctx, userID, id.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		b, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	status := func(svc *Service) BackupStatus {
+		t.Helper()
+		st, err := svc.BackupStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	// 1. 启用备份之前上传的旧文件：没有备份
+	plainOld := randBytes(2500)
+	noBackup := New(store, primary, opts)
+	old := upload(noBackup, "old.bin", plainOld)
+	if st := status(noBackup); st.Enabled || st.Parts != 3 || st.BackedUp != 0 {
+		t.Fatalf("before backup: %+v", st)
+	}
+
+	// 2. 启用备份后上传：双写
+	optsB := opts
+	optsB.Backup = backup
+	svc := New(store, primary, optsB)
+	plainNew := randBytes(1500)
+	fresh := upload(svc, "new.bin", plainNew)
+	parts, _ := store.ListParts(ctx, fresh.ID)
+	for _, p := range parts {
+		if !p.HasBackup() {
+			t.Fatalf("new upload part %d has no backup", p.PartNo)
+		}
+	}
+
+	// 3. 后台同步补齐旧文件
+	if n, err := svc.SyncBackupOnce(ctx); err != nil || n != 3 {
+		t.Fatalf("sync: copied %d, err %v", n, err)
+	}
+	if st := status(svc); !st.Enabled || st.Parts != 5 || st.BackedUp != 5 || st.BackedBytes != 4000 {
+		t.Fatalf("after sync: %+v", st)
+	}
+	if n, _ := svc.SyncBackupOnce(ctx); n != 0 {
+		t.Fatalf("second sync copied %d", n)
+	}
+
+	// 4. 主存储的数据全部丢失后，从备份读取
+	removeAll(t, primaryDir)
+	if got := read(svc, *old); !bytes.Equal(got, plainOld) {
+		t.Fatal("old file not readable from backup")
+	}
+	if got := read(svc, *fresh); !bytes.Equal(got, plainNew) {
+		t.Fatal("new file not readable from backup")
+	}
+
+	// 5. 主存储数据被篡改时，同步拒绝写入备份
+	tampered := upload(noBackup, "tampered.bin", randBytes(500))
+	tp, _ := store.ListParts(ctx, tampered.ID)
+	path := filepath.Join(primaryDir, strconv.FormatInt(tp[0].MessageID, 10))
+	b, _ := os.ReadFile(path)
+	b[0] ^= 0xff
+	os.WriteFile(path, b, 0o600)
+	if n, err := svc.SyncBackupOnce(ctx); err == nil || n != 0 {
+		t.Fatalf("tampered sync: copied %d, err %v", n, err)
+	}
+	if tp, _ = store.ListParts(ctx, tampered.ID); tp[0].HasBackup() {
+		t.Fatal("tampered part must not be marked as backed up")
+	}
+
+	// 6. 永久删除同时删除备份
+	before := countFiles(t, backupDir)
+	if err := svc.Purge(ctx, userID, fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	if after := countFiles(t, backupDir); after != before-len(parts) {
+		t.Fatalf("backup files after purge: %d, want %d", after, before-len(parts))
+	}
+}
+
+// isolatedDB 在独立的 schema 里运行测试：备份同步会扫描全库缺少备份的分块，
+// 不能和其他并行运行的集成测试共用表。
+func isolatedDB(t *testing.T, ctx context.Context, url string) *pgxpool.Pool {
+	t.Helper()
+	admin, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admin.Close)
+	schema := "test_" + hex.EncodeToString(randBytes(6))
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") })
+
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	pool, err := db.Connect(ctx, url+sep+"search_path="+schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
+}
+
+func removeAll(t *testing.T, dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func countFiles(t *testing.T, dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
+}
