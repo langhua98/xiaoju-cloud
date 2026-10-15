@@ -8,13 +8,15 @@ const store = {
 };
 
 // 内置了服务端地址时只需输入令牌；令牌和会话只放在内存里，刷新或关闭页面即失效。
-// 登录最多三步：令牌 → Face ID / 指纹（注册了设备时）→ 格子口令（开启了时），全部通过后服务端签发会话（12 小时）。
+// 登录：令牌 → Face ID / 指纹（注册了设备时），通过后服务端签发会话（12 小时）。
+// 开启了格子口令时，看照片、视频每随机 3–7 张弹出一道限时格子题，两次机会都没答对就退出登录。
 const defaultAPI = (window.XIAOJU_API_URL || "").replace(/\/+$/, "");
 const state = {
   api: defaultAPI || store.get("xiaoju.api"),
   token: "",   // 访问令牌（登录接口要用）
   session: "", // 全部验证通过后签发的会话；有值即表示已登录
-  loginSteps: [], // 令牌之后还要过的步骤，如 ["passkey", "grid"]
+  loginSteps: [], // 令牌之后还要过的步骤，如 ["passkey"]
+  recoveryAvailable: false, // 可以用恢复码代替刷脸
   folderId: null,
 };
 try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
@@ -50,7 +52,10 @@ async function request(method, path, body) {
 const CODE_TEXT = {
   passkey_required: "需要刷脸验证，请重新登录",
   second_factor_required: "需要完成登录验证，请重新登录",
-  wrong_answer: "答案不对，已换一道新题",
+  wrong_answer: "答案不对。换了一张新格子，最后一次机会，多给你 5 秒",
+  timeout: "时间到了。换了一张新格子，最后一次机会，多给你 5 秒",
+  grid_logout: "格子口令两次都没答对，已退出登录",
+  grid_required: "需要先答一道格子题",
   challenge_expired: "这道题已过期，已换一道新题",
   recovery_invalid: "恢复码不对，或者已经用过了",
   recovery_used: "这次登录已经用过一个恢复码了，这一步请答题",
@@ -80,6 +85,7 @@ function toast(msg) {
 }
 
 function fail(err) {
+  if (err.code === "grid_cancelled") return; // 格子口令没通过，已经退出登录
   if (err.status === 401) { logout(err.message); return; }
   toast(err.message);
 }
@@ -174,9 +180,9 @@ function setLoginHint(text) {
   setTimeout(() => { hint.textContent = text; hint.style.opacity = ""; }, 150);
 }
 
-const STEP_LABEL = { token: "令牌", passkey: "刷脸", grid: "格子口令" };
+const STEP_LABEL = { token: "令牌", passkey: "刷脸" };
 
-// 顶部步骤条：令牌 ✓ — 刷脸 ✓ — 格子口令 ●（只有一步时不显示）
+// 顶部步骤条：令牌 ✓ — 刷脸 ●（只有一步时不显示）
 function renderLoginSteps(step) {
   const el = $("#login-steps");
   const all = ["token", ...state.loginSteps];
@@ -192,7 +198,7 @@ function renderLoginSteps(step) {
 }
 
 function showLoginStep(step) {
-  const panels = { token: $("#login-form"), passkey: $("#face-step"), grid: $("#grid-step") };
+  const panels = { token: $("#login-form"), passkey: $("#face-step") };
   for (const [k, el] of Object.entries(panels)) el.hidden = k !== step;
   renderLoginSteps(step);
   playClass(panels[step], "step-in", 400);
@@ -213,8 +219,6 @@ function openLogin(message) {
   errEl.hidden = !message;
   form.hidden = false;
   $("#face-step").hidden = true;
-  $("#grid-step").hidden = true;
-  $("#grid-quiz").replaceChildren();
   $("#login-steps").hidden = true;
   if (!$("#login").open) $("#login").showModal();
   (defaultAPI ? form.token : form.api).focus();
@@ -226,6 +230,7 @@ async function logout(message) {
   state.loginSteps = [];
   faceOptions = null;
   regOptions = null;
+  closeGridGate();
   stopBackupPolling();
   $("#logout-btn").hidden = true;
   $("#security-btn").hidden = true;
@@ -248,7 +253,7 @@ $("#logout-btn").addEventListener("click", () => logout());
 // 未登录时不允许用 Esc 关掉登录框
 $("#login").addEventListener("cancel", (e) => { if (!state.session) e.preventDefault(); });
 
-// 第一步：校验令牌。开启了刷脸 / 格子口令时依次进入，否则直接拿到会话
+// 第一步：校验令牌。已注册刷脸设备时进入刷脸，否则直接拿到会话
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.target;
@@ -280,10 +285,10 @@ $("#login-form").addEventListener("submit", async (e) => {
   if (!defaultAPI) store.set("xiaoju.api", api);
   setLoginBusy(false);
 
+  state.recoveryAvailable = !!res.recovery_available;
   if (!res.session) {
     state.loginSteps = res.steps || ["passkey"];
-    if (state.loginSteps[0] === "passkey") enterFaceStep();
-    else enterGridStep("", false);
+    enterFaceStep();
     return;
   }
   state.loginSteps = [];
@@ -406,7 +411,7 @@ function enterFaceStep(message) {
   $("#face-step").classList.remove("ok", "verifying");
   $("#face-add").open = false;
   $("#add-code").value = "";
-  $("#face-recovery").hidden = !state.loginSteps.includes("grid");
+  $("#face-recovery").hidden = !state.recoveryAvailable;
   $("#face-recovery").open = false;
   $("#face-recovery-code").value = "";
   if (!webauthnSupported()) {
@@ -422,13 +427,8 @@ function enterFaceStep(message) {
   if (message) showFaceError(message);
 }
 
-// 刷脸（或恢复码）通过后：开启了格子口令时服务端返回过渡票据，进入第三步；否则直接登录
-async function afterFace(res, btn, recovered = false) {
-  if (res.next === "grid") {
-    $("#face-step").classList.remove("ok", "verifying");
-    enterGridStep(res.ticket, recovered);
-    return;
-  }
+// 刷脸（或恢复码）通过后登录
+async function afterFace(res, btn) {
   state.session = res.session;
   await finishLogin(btn);
 }
@@ -457,7 +457,6 @@ $("#face-btn").addEventListener("click", async () => {
     step.classList.remove("verifying");
     step.classList.add("ok");
     setButtonBusy(btn, false, "正在验证…", "使用 Face ID / 指纹解锁");
-    if (res.next === "grid") await sleepMs(350); // 让“✓”停留一下再进入下一步
     await afterFace(res, btn);
   } catch (err) {
     step.classList.remove("verifying");
@@ -499,7 +498,7 @@ $("#add-code").addEventListener("input", async (e) => {
   }
 });
 
-// 刷脸设备丢了：用一个恢复码代替刷脸，之后还要答格子口令
+// 刷脸设备丢了：用一个恢复码代替刷脸（恢复码在开启格子口令时生成）
 $("#face-recovery-btn").addEventListener("click", async () => {
   const btn = $("#face-recovery-btn");
   const code = $("#face-recovery-code").value.trim();
@@ -511,7 +510,7 @@ $("#face-recovery-btn").addEventListener("click", async () => {
     const res = await request("POST", "/api/auth/recovery/passkey", { code });
     setButtonBusy(btn, false, "验证中…", "使用恢复码");
     toast("已用掉一个恢复码。登录后记得在「🔐 安全」里给本机重新开启刷脸");
-    await afterFace(res, btn, true);
+    await afterFace(res, btn);
   } catch (err) {
     setButtonBusy(btn, false, "验证中…", "使用恢复码");
     if (err.status === 401 && !err.code) { logout("令牌已失效，请重新输入"); return; }
@@ -524,14 +523,12 @@ function backToToken() {
   faceOptions = null;
   state.token = "";
   state.loginSteps = [];
-  $("#grid-quiz").replaceChildren();
   $("#login-form").token.value = "";
   $("#login-error").hidden = true;
   showLoginStep("token");
   $("#login-form").token.focus();
 }
 $("#face-back").addEventListener("click", backToToken);
-$("#grid-back").addEventListener("click", backToToken);
 
 // 预取的注册参数（和刷脸一样，让点击能直接调起系统验证）
 let regOptions = null;
@@ -594,13 +591,18 @@ function renderBoard(board, cells, onTap) {
   }));
 }
 
-// 答题组件：点格子里的数字依次凑出答案，可选“用恢复码代替这一步”。答错 / 过期自动换新题。
+// 答题组件：点格子里的数字依次凑出答案，可选“用恢复码代替”。
+//   timed                  → 抽查题：按服务端给的秒数倒计时，到点自动交“超时”；答错 / 超时换新题（第二次机会）
 //   load()                 → 出一道题
-//   submit(payload, btn)   → payload 为 {id, answer} 或 {recovery}
+//   submit(payload, btn)   → payload 为 {id, answer}、{id, timeout: true} 或 {recovery}
 //   onError(err) → true    表示已处理
-function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确认", onError }) {
+function mountGridQuiz(root, { load, submit, timed = false, recovery = false, submitLabel = "确认", onError }) {
   const board = mk("div", { className: "grid-board loading", role: "group", ariaLabel: "数字格：点数字输入答案" });
   renderBoard(board, Array(16).fill("·"));
+  const chance = mk("p", { className: "grid-chance", hidden: !timed });
+  const timerBar = mk("i");
+  const timerText = mk("span");
+  const timer = mk("div", { className: "grid-timer", hidden: !timed, role: "timer" }, timerBar, timerText);
   const when = mk("p", { className: "grid-when", textContent: "正在出题…" });
   const errEl = mk("p", { className: "error", hidden: true });
   const display = mk("output", { className: "grid-display empty", ariaLive: "polite", ariaLabel: "已输入的答案" });
@@ -609,7 +611,7 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   btn.type = "button";
   btn.disabled = true;
   root.className = "grid-quiz";
-  root.replaceChildren(board, when, errEl, mk("div", { className: "grid-answer" }, display, del, btn));
+  root.replaceChildren(chance, timer, board, when, errEl, mk("div", { className: "grid-answer" }, display, del, btn));
 
   let recInput, recBtn;
   if (recovery) {
@@ -617,7 +619,7 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
     recBtn = busyButton("使用恢复码");
     recBtn.type = "button";
     root.append(mk("details", { className: "face-add" },
-      mk("summary", { textContent: "用恢复码代替这一步" }),
+      mk("summary", { textContent: "规则忘了？用恢复码代替" }),
       mk("div", { className: "row" }, recInput, recBtn)));
   }
 
@@ -625,6 +627,7 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   let digits = "";
   let busy = false;
   let locked = false;
+  let ticker = null;
   const ready = () => ch && !busy && !locked;
   const paint = () => {
     display.textContent = digits || "点格子里的数字";
@@ -636,20 +639,43 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   const showError = (msg) => {
     errEl.textContent = msg;
     errEl.hidden = false;
-    playClass(root.closest("#grid-step") || root, "shake", 450);
+    playClass(root, "shake", 450);
   };
   const lock = (msg) => {
     locked = true;
-    if (recBtn) recBtn.disabled = true;
+    stopTimer();
     board.classList.add("loading");
     paint();
     showError(msg);
   };
 
+  function stopTimer() {
+    clearInterval(ticker);
+    ticker = null;
+  }
+  // 倒计时到点：把“超时”交给服务端（算用掉一次机会）
+  function startTimer(seconds) {
+    stopTimer();
+    const total = seconds * 1000;
+    const end = Date.now() + total;
+    const tick = () => {
+      if (!root.isConnected) { stopTimer(); return; }
+      const left = Math.max(0, end - Date.now());
+      timerBar.style.width = `${(left / total) * 100}%`;
+      timerText.textContent = `${Math.ceil(left / 1000)} 秒`;
+      timer.classList.toggle("urgent", left <= 5000);
+      if (left === 0) {
+        stopTimer();
+        if (ch && !locked) send({ id: ch.id, timeout: true }, btn, submitLabel);
+      }
+    };
+    tick();
+    ticker = setInterval(tick, 200);
+  }
+
   function tap(n) {
     if (!ready()) return false;
     if (digits.length >= MAX_ANSWER_DIGITS) { playClass(display, "shake", 450); return false; }
-    errEl.hidden = true;
     digits += n;
     paint();
     return true;
@@ -659,6 +685,7 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   async function next() {
     ch = null;
     digits = "";
+    stopTimer();
     paint();
     board.classList.add("loading");
     try {
@@ -672,6 +699,11 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
     board.classList.remove("loading");
     playClass(board, "fade-in", 400);
     paint();
+    if (timed) {
+      chance.textContent = ch.attempt > 1 ? `最后一次机会 · 限时 ${ch.seconds} 秒` : `限时 ${ch.seconds} 秒`;
+      chance.classList.toggle("last", ch.attempt > 1);
+      startTimer(ch.seconds);
+    }
     board.querySelector("button").focus({ preventScroll: true });
   }
 
@@ -679,12 +711,12 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
     if (onError && onError(err)) return;
     if (err.code === "locked") { lock(err.message); return; }
     showError(err.message);
-    if (err.code === "wrong_answer" || err.code === "challenge_expired") next();
+    if (["wrong_answer", "timeout", "challenge_expired"].includes(err.code)) next();
   }
 
   async function send(payload, b, label) {
     if (locked || busy) return;
-    errEl.hidden = true;
+    stopTimer();
     busy = true;
     paint();
     setButtonBusy(b, true, "验证中…", label);
@@ -700,12 +732,16 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   }
 
   btn.addEventListener("click", () => {
-    if (ready() && digits) send({ id: ch.id, answer: Number(digits) }, btn, submitLabel);
+    if (ready() && digits) {
+      errEl.hidden = true;
+      send({ id: ch.id, answer: Number(digits) }, btn, submitLabel);
+    }
   });
   if (recBtn) {
     recBtn.addEventListener("click", () => {
       const code = recInput.value.trim();
       if (!code) { recInput.focus(); return; }
+      errEl.hidden = true;
       send({ recovery: code }, recBtn, "使用恢复码");
     });
     recInput.addEventListener("keydown", (e) => { if (e.key === "Enter") recBtn.click(); });
@@ -713,25 +749,53 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   next();
 }
 
-// 登录第三步：答格子口令。ticket 证明已经过了刷脸（没注册刷脸设备时为空）
-function enterGridStep(ticket, recovered) {
-  showLoginStep("grid");
-  mountGridQuiz($("#grid-quiz"), {
-    recovery: !recovered, // 一次登录只能用一个恢复码
-    load: () => request("POST", "/api/auth/grid/challenge", { ticket }),
-    async submit(payload, btn) {
-      const res = await request("POST", "/api/auth/grid/verify", { ticket, ...payload });
-      state.session = res.session;
-      if (payload.recovery) toast("已用掉一个恢复码");
-      await finishLogin(btn);
+// 看照片、视频时的抽查弹窗。答对返回 true；两次都没答对时服务端已作废会话，这里退出登录并返回 false。
+// 弹窗不能关掉跳过（题出了不答，服务端也会算用掉一次机会）。
+let gridGatePending = null;
+
+function gridGate() {
+  if (gridGatePending) return gridGatePending.promise;
+  const dlg = $("#grid-gate");
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  gridGatePending = { promise, resolve };
+  const done = async (ok) => {
+    if (gridGatePending?.promise !== promise) return;
+    gridGatePending = null;
+    if (ok) await closeDialog(dlg);
+    else dlg.close();
+    $("#grid-gate-quiz").replaceChildren();
+    resolve(ok);
+  };
+  mountGridQuiz($("#grid-gate-quiz"), {
+    timed: true,
+    load: () => request("POST", "/api/auth/grid/challenge"),
+    async submit(payload) {
+      await request("POST", "/api/auth/grid/verify", payload);
+      await done(true);
     },
     onError(err) {
-      if (err.code === "passkey_required") { enterFaceStep("刷脸验证已超时（5 分钟），请重新验证"); return true; }
-      if (err.status === 401) { logout("令牌已失效，请重新输入"); return true; }
+      if (err.status === 401) { // grid_logout：两次都没答对；或会话已过期
+        done(false);
+        logout(err.message);
+        return true;
+      }
       return false;
     },
   });
+  if (!dlg.open) dlg.showModal();
+  return promise;
 }
+
+function closeGridGate() {
+  const pending = gridGatePending;
+  gridGatePending = null;
+  $("#grid-gate").close();
+  $("#grid-gate-quiz").replaceChildren();
+  pending?.resolve(false);
+}
+
+$("#grid-gate").addEventListener("cancel", (e) => e.preventDefault()); // 不能用 Esc 跳过
 
 // ---------- 安全设置：管理刷脸设备 ----------
 
@@ -854,13 +918,15 @@ async function renderGridSec() {
   $("#grid-sec").hidden = !gridStatus.available;
   $("#grid-sec-body").replaceChildren();
   const hint = $("#grid-sec-hint");
-  if (gridStatus.enabled) {
-    hint.textContent = `已开启：登录时${gridStatus.passkey_required ? "刷脸之后" : ""}还要答一道格子题。`
-      + `剩余恢复码 ${gridStatus.recovery_left} 个`
-      + (gridStatus.recovery_left <= 3 ? "，不多了：关闭后重新开启会生成新的一组。" : "。");
+  const st = gridStatus;
+  if (st.enabled) {
+    hint.textContent = `已开启：看照片、视频时每 ${st.views_min}–${st.views_max} 张随机弹出一道格子题，`
+      + `限时 ${st.seconds_first} 秒；答错再给一次机会（${st.seconds_second} 秒），两次都没答对就退出登录。`
+      + `剩余恢复码 ${st.recovery_left} 个`
+      + (st.recovery_left <= 3 ? "，不多了：关闭后重新开启会生成新的一组。" : "。");
   } else {
-    hint.textContent = "开启后，登录时会出一张随机的 4×4 数字格，你按自己设定的规则心算出答案。"
-      + "规则只有你知道（加密保存在服务端），和刷脸都开启时两步都要过。";
+    hint.textContent = "开启后，看照片、视频时会随机弹出一张 4×4 数字格，你按自己设定的规则心算出答案、点数字输入。"
+      + "规则只有你知道（加密保存在服务端），答不对就退出登录，别人拿着你已登录的手机也翻不了相册。";
   }
   gridSecActions(true);
 }
@@ -963,7 +1029,7 @@ function gridShowCodes(codes) {
     renderGridSec();
   });
   body.replaceChildren(
-    mk("p", { className: "hint", textContent: "✓ 已开启。下面是 10 个恢复码，只显示这一次。刷脸设备丢了或规则忘了时，每次登录可以用一个代替其中一步。请存到手机以外的地方。" }),
+    mk("p", { className: "hint", textContent: "✓ 已开启。下面是 10 个恢复码，只显示这一次，每个只能用一次：刷脸设备丢了时可以代替刷脸登录，规则忘了时可以用来关闭格子口令。请存到手机以外的地方。" }),
     mk("ul", { className: "recovery-codes" }, ...codes.map((c) => mk("li", { textContent: c }))),
     mk("div", { className: "dialog-actions wrap" }, copy, dl),
     mk("label", { className: "check" }, saved, "我已妥善保存这些恢复码"),
@@ -980,13 +1046,14 @@ async function gridDisable() {
     ticket = await reverifyFace(body);
     if (!ticket) { renderGridSec(); return; }
   }
+  // 题出了就要答（和抽查一样两次机会、两次都没答对退出登录），所以这里不再提供取消
   const quiz = mk("div");
-  const cancel = mk("button", { type: "button", className: "link", textContent: "取消" });
-  cancel.addEventListener("click", () => renderGridSec());
-  body.replaceChildren(mk("p", { className: "hint", textContent: "最后一步：答对一道格子题确认关闭。关闭后恢复码全部作废。" }), quiz, cancel);
+  body.replaceChildren(mk("p", { className: "hint", textContent: "最后一步：答对一道格子题确认关闭（规则忘了可以用恢复码）。关闭后恢复码全部作废。" }), quiz);
   mountGridQuiz(quiz, {
+    timed: true,
+    recovery: true,
     submitLabel: "确认关闭",
-    load: () => request("POST", "/api/auth/grid/challenge", { ticket }),
+    load: () => request("POST", "/api/auth/grid/challenge"),
     async submit(payload) {
       await request("DELETE", "/api/auth/grid", { ticket, ...payload });
       toast("已关闭格子口令");
@@ -1000,7 +1067,7 @@ async function gridDisable() {
   });
 }
 
-// 在安全设置里重新刷脸，成功后返回过渡票据；取消返回 ""
+// 在安全设置里重新刷脸，成功后返回“刚刚刷过脸”的凭证；取消返回 ""
 function reverifyFace(body) {
   return new Promise((resolve) => {
     let opts = null;
@@ -1302,9 +1369,18 @@ $("#mkdir-btn").addEventListener("click", async () => {
   } catch (err) { fail(err); }
 });
 
+// 开启了格子口令时，看照片、视频每随机几张服务端会要求先答一道格子题（grid_required）
 async function signedURL(f, inline) {
-  const { url } = await request("POST", `/api/files/${f.id}/link`);
-  return state.api + url + (inline ? "&inline=1" : "");
+  const path = `/api/files/${f.id}/link`;
+  let res;
+  try {
+    res = await request("POST", path);
+  } catch (err) {
+    if (err.code !== "grid_required") throw err;
+    if (!(await gridGate())) throw new HttpError(0, "", "grid_cancelled"); // 已退出登录
+    res = await request("POST", path);
+  }
+  return state.api + res.url + (inline ? "&inline=1" : "");
 }
 
 async function download(f) {

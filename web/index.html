@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>小桔云盘</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='17' r='12' fill='%23f59e0b'/%3E%3Cpath d='M16 5c2-3 6-3 7-1-3 0-5 1-7 1z' fill='%2316a34a'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=9">
-  <script src="config.js?v=9"></script>
-  <script src="app.js?v=9" defer></script>
+  <link rel="stylesheet" href="style.css?v=10">
+  <script src="config.js?v=10"></script>
+  <script src="app.js?v=10" defer></script>
 </head>
 <body>
   <div id="page-progress" class="page-progress" hidden><i></i></div>
@@ -98,21 +98,13 @@
       </details>
       <details id="face-recovery" class="face-add" hidden>
         <summary>刷脸设备丢了？用恢复码代替这一步</summary>
-        <p class="hint">每次登录只能用一个恢复码，之后还要答格子口令。</p>
+        <p class="hint">每个恢复码只能用一次。登录后记得给本机重新开启刷脸。</p>
         <div class="row">
           <input id="face-recovery-code" maxlength="9" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="xxxx-xxxx" aria-label="恢复码">
           <button id="face-recovery-btn" type="button"><span class="spinner" aria-hidden="true"></span><span class="label">使用恢复码</span></button>
         </div>
       </details>
       <button id="face-back" type="button" class="link">← 换个令牌</button>
-    </section>
-
-    <!-- 第三步：格子口令 -->
-    <section id="grid-step" class="grid-step" hidden>
-      <h2>格子口令</h2>
-      <p class="hint">按你设定的规则算出答案，再依次点格子里的数字输入。答错会换一道新题。</p>
-      <div id="grid-quiz"></div>
-      <button id="grid-back" type="button" class="link">← 换个令牌</button>
     </section>
   </dialog>
 
@@ -140,6 +132,13 @@
     <div class="dialog-actions sec-footer">
       <button id="sec-close" type="button" class="ghost">关闭</button>
     </div>
+  </dialog>
+
+  <!-- 看照片、视频时随机弹出的格子口令（不能关掉跳过） -->
+  <dialog id="grid-gate" class="grid-gate" aria-labelledby="grid-gate-title">
+    <h2 id="grid-gate-title">🔢 格子口令</h2>
+    <p class="hint">按你设定的规则算出答案，依次点格子里的数字输入。两次机会，都没答对会退出登录。</p>
+    <div id="grid-gate-quiz"></div>
   </dialog>
 
   <dialog id="preview" class="preview">

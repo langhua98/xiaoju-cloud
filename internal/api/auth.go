@@ -22,25 +22,31 @@ func (s *Server) tokenOK(r *http.Request) bool {
 	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
-func (s *Server) sessionOK(r *http.Request) bool {
+// sessionID 返回请求所带会话的 ID（会话无效时第二个返回值为 false）。
+func (s *Server) sessionID(r *http.Request) (string, bool) {
 	t := r.Header.Get("X-Xiaoju-Session")
-	return t != "" && s.sessions.Valid(t)
+	if t == "" {
+		return "", false
+	}
+	return s.sessions.Check(t)
+}
+
+func (s *Server) sessionOK(r *http.Request) bool {
+	_, ok := s.sessionID(r)
+	return ok
 }
 
 // passkeyRequired：已经注册过 Face ID / 指纹设备后，仅凭令牌不能访问文件。
 func (s *Server) passkeyRequired() bool { return s.passkeys != nil && s.passkeys.Required() }
 
-// gridRequired：开启了格子口令。
+// gridRequired：开启了格子口令（看照片、视频时随机抽查，要靠会话计数，所以也不能仅凭令牌访问）。
 func (s *Server) gridRequired() bool { return s.grid != nil && s.grid.Enabled() }
 
-// loginSteps 返回令牌之后还要通过的验证，按顺序：先刷脸，再格子口令。两个都开启时两个都要过。
+// loginSteps 返回令牌之后还要通过的验证（格子口令不在登录时，而在看照片时抽查）。
 func (s *Server) loginSteps() []string {
 	steps := []string{}
 	if s.passkeyRequired() {
 		steps = append(steps, "passkey")
-	}
-	if s.gridRequired() {
-		steps = append(steps, "grid")
 	}
 	return steps
 }
@@ -48,7 +54,7 @@ func (s *Server) loginSteps() []string {
 func (s *Server) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case s.sessionOK(r), s.tokenOK(r) && len(s.loginSteps()) == 0:
+		case s.sessionOK(r), s.tokenOK(r) && !s.passkeyRequired() && !s.gridRequired():
 			next.ServeHTTP(w, r)
 		case s.tokenOK(r):
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "second factor verification required", "code": "second_factor_required"})
@@ -83,29 +89,21 @@ func (s *Server) writeSession(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, map[string]any{"session": tok, "expires_at": exp})
 }
 
-// POST /api/auth/session：令牌正确后的第一步。没有开启任何第二步验证时直接签发会话；
-// 否则返回 steps（如 ["passkey","grid"]），前端依次走刷脸、格子口令。
+// POST /api/auth/session：令牌正确后的第一步。没有注册刷脸设备时直接签发会话；
+// 否则返回 steps: ["passkey"]，前端接着走刷脸。recovery_available 表示可以用恢复码代替刷脸。
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	steps := s.loginSteps()
 	resp := map[string]any{
 		"steps":              steps,
 		"passkey_required":   s.passkeyRequired(),
 		"grid_required":      s.gridRequired(),
+		"recovery_available": s.passkeyRequired() && s.gridRequired(),
 		"passkeys_available": s.passkeys != nil && s.passkeys.Available(),
 	}
 	if len(steps) == 0 {
 		resp["session"], resp["expires_at"] = s.sessions.Issue()
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// afterPasskey：刷脸通过（或用恢复码代替）后，开启了格子口令就发过渡票据进入下一步，否则直接签发会话。
-func (s *Server) afterPasskey(w http.ResponseWriter, recovered bool) {
-	if s.gridRequired() {
-		writeJSON(w, http.StatusOK, map[string]any{"next": "grid", "ticket": s.sessions.IssueTicket(recovered)})
-		return
-	}
-	s.writeSession(w)
 }
 
 func (s *Server) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +129,9 @@ func (s *Server) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		s.passkeyFail(w, err)
 		return
 	}
-	s.afterPasskey(w, false)
+	// ticket 证明“刚刚刷过脸”，关闭格子口令等敏感操作要用
+	tok, exp := s.sessions.Issue()
+	writeJSON(w, http.StatusOK, map[string]any{"session": tok, "expires_at": exp, "ticket": s.sessions.IssueTicket()})
 }
 
 type registerBeginReq struct {
@@ -177,11 +177,7 @@ func (s *Server) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("passkey registered")
-	if s.sessionOK(r) {
-		s.writeSession(w) // 已登录状态下给本机加设备
-		return
-	}
-	s.afterPasskey(w, false) // 新设备凭添加码注册：开启了格子口令时还要答题
+	s.writeSession(w)
 }
 
 func (s *Server) listPasskeys(w http.ResponseWriter, r *http.Request) {

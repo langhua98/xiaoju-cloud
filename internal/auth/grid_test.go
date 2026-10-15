@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func newTestGrid(t *testing.T, now *time.Time) (*Grid, *memGridStore) {
 // enable 按 testRule 开启格子口令，返回恢复码
 func enable(t *testing.T, g *Grid) []string {
 	t.Helper()
-	ch, err := g.NewChallenge("setup")
+	ch, err := g.NewSetupChallenge()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,16 +121,19 @@ func enable(t *testing.T, g *Grid) []string {
 	return codes
 }
 
-func TestGridSetupAndVerify(t *testing.T) {
+func TestGridSetup(t *testing.T) {
 	now := time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC) // 北京时间周三中午
 	g, st := newTestGrid(t, &now)
 	ctx := context.Background()
 
-	if _, err := g.NewChallenge("login"); !errors.Is(err, ErrGridDisabled) {
-		t.Fatalf("login challenge before setup: %v", err)
+	if _, err := g.NewCheck("s1"); !errors.Is(err, ErrGridDisabled) {
+		t.Fatalf("check before setup: %v", err)
 	}
 	// 练习题答错：不开启，题目作废
-	ch, _ := g.NewChallenge("setup")
+	ch, _ := g.NewSetupChallenge()
+	if ch.Seconds != 0 || ch.Attempt != 0 {
+		t.Fatalf("practice must not be timed: %+v", ch)
+	}
 	if _, err := g.Setup(ctx, ch.ID, testRule, testRule.Answer(ch.Grid, ch.Weekday)+1); !errors.Is(err, ErrGridWrong) {
 		t.Fatalf("wrong practice answer: %v", err)
 	}
@@ -146,45 +150,108 @@ func TestGridSetupAndVerify(t *testing.T) {
 	if bytes.Contains(st.rule, []byte("monday")) {
 		t.Fatal("rule must be stored encrypted")
 	}
-	if _, err := g.NewChallenge("setup"); !errors.Is(err, ErrGridEnabled) {
+	if _, err := g.NewSetupChallenge(); !errors.Is(err, ErrGridEnabled) {
 		t.Fatalf("setup while enabled: %v", err)
 	}
-
 	// 重启后从数据库恢复规则
 	g2, err := NewGrid(ctx, st, g.master, g.loc)
 	if err != nil || !g2.Enabled() || *g2.rule != testRule {
 		t.Fatalf("reload: %v %+v", err, g2.rule)
 	}
+}
 
-	ch, err = g.NewChallenge("login")
-	if err != nil || ch.Weekday != 3 || ch.Timezone != "Asia/Shanghai" || ch.IssuedLocal != "2026-10-14 12:00" {
-		t.Fatalf("login challenge: %v %+v", err, ch)
+func TestGridCheckTwoChances(t *testing.T) {
+	now := time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)
+	g, _ := newTestGrid(t, &now)
+	enable(t, g)
+	right := func(ch Challenge) int { return testRule.Answer(ch.Grid, ch.Weekday) }
+
+	// 第一次就答对
+	ch, err := g.NewCheck("s1")
+	if err != nil || ch.Attempt != 1 || ch.Seconds != 15 || ch.Weekday != 3 || ch.IssuedLocal != "2026-10-14 12:00" {
+		t.Fatalf("first challenge: %v %+v", err, ch)
 	}
-	if err := g.Verify(ch.ID, testRule.Answer(ch.Grid, 3)); err != nil {
+	if err := g.Check("s1", ch.ID, right(ch), false); err != nil {
 		t.Fatalf("correct answer: %v", err)
 	}
-	if err := g.Verify(ch.ID, testRule.Answer(ch.Grid, 3)); !errors.Is(err, ErrGridChallenge) {
+	if err := g.Check("s1", ch.ID, right(ch), false); !errors.Is(err, ErrGridChallenge) {
 		t.Fatalf("answered challenge reused: %v", err)
 	}
 
-	// 新出一题，旧题作废
-	old, _ := g.NewChallenge("login")
-	cur, _ := g.NewChallenge("login")
-	if err := g.Verify(old.ID, testRule.Answer(old.Grid, 3)); !errors.Is(err, ErrGridChallenge) {
-		t.Fatalf("superseded challenge: %v", err)
+	// 第一次答错 → 换新格子、限时 20 秒 → 答对
+	ch, _ = g.NewCheck("s1")
+	if err := g.Check("s1", ch.ID, right(ch)+1, false); !errors.Is(err, ErrGridWrong) {
+		t.Fatalf("first wrong answer: %v", err)
 	}
-	// 答错一次，题目作废，正确答案也不行
-	if err := g.Verify(cur.ID, testRule.Answer(cur.Grid, 3)+1); !errors.Is(err, ErrGridWrong) {
-		t.Fatalf("wrong answer: %v", err)
+	if err := g.Check("s1", ch.ID, right(ch), false); !errors.Is(err, ErrGridChallenge) {
+		t.Fatalf("same grid must not be answered twice: %v", err)
 	}
-	if err := g.Verify(cur.ID, testRule.Answer(cur.Grid, 3)); !errors.Is(err, ErrGridChallenge) {
-		t.Fatalf("retry after wrong answer: %v", err)
+	ch2, _ := g.NewCheck("s1")
+	if ch2.Attempt != 2 || ch2.Seconds != 20 || ch2.ID == ch.ID {
+		t.Fatalf("second chance: %+v", ch2)
 	}
-	// 题目 3 分钟过期
-	ch, _ = g.NewChallenge("login")
-	now = now.Add(gridChallengeTTL + time.Second)
-	if err := g.Verify(ch.ID, testRule.Answer(ch.Grid, 3)); !errors.Is(err, ErrGridChallenge) {
-		t.Fatalf("expired challenge: %v", err)
+	if err := g.Check("s1", ch2.ID, right(ch2), false); err != nil {
+		t.Fatalf("second chance correct: %v", err)
+	}
+	// 答对后下一轮又是两次机会
+	if ch, _ = g.NewCheck("s1"); ch.Attempt != 1 {
+		t.Fatalf("new round: %+v", ch)
+	}
+
+	// 两次都答错 → 失败（调用方退出登录），之后重新开始
+	if err := g.Check("s1", ch.ID, right(ch)+1, false); !errors.Is(err, ErrGridWrong) {
+		t.Fatal(err)
+	}
+	ch, _ = g.NewCheck("s1")
+	if err := g.Check("s1", ch.ID, right(ch)+1, false); !errors.Is(err, ErrGridFailed) {
+		t.Fatalf("second wrong answer: %v", err)
+	}
+	if ch, _ = g.NewCheck("s1"); ch.Attempt != 1 {
+		t.Fatalf("round must restart after failure: %+v", ch)
+	}
+
+	// 各个会话互不影响
+	other, _ := g.NewCheck("s2")
+	if other.Attempt != 1 || g.Check("s1", other.ID, right(other), false) == nil {
+		t.Fatal("a session must not answer another session's grid")
+	}
+}
+
+func TestGridCheckTimeLimits(t *testing.T) {
+	now := time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)
+	g, _ := newTestGrid(t, &now)
+	enable(t, g)
+	right := func(ch Challenge) int { return testRule.Answer(ch.Grid, ch.Weekday) }
+
+	// 第一次 15 秒（另有 2 秒网络余量）：16 秒时答对仍然有效
+	ch, _ := g.NewCheck("s")
+	now = now.Add(16 * time.Second)
+	if err := g.Check("s", ch.ID, right(ch), false); err != nil {
+		t.Fatalf("answer within grace: %v", err)
+	}
+	// 超过 15+2 秒：算超时，进入第二次机会（20 秒）
+	ch, _ = g.NewCheck("s")
+	now = now.Add(18 * time.Second)
+	if err := g.Check("s", ch.ID, right(ch), false); !errors.Is(err, ErrGridTimeout) {
+		t.Fatalf("late answer: %v", err)
+	}
+	ch, _ = g.NewCheck("s")
+	now = now.Add(21 * time.Second) // 第二次多给了 5 秒
+	if err := g.Check("s", ch.ID, right(ch), false); err != nil {
+		t.Fatalf("second chance has 20s: %v", err)
+	}
+
+	// 页面倒计时到了主动报告超时
+	ch, _ = g.NewCheck("s")
+	if err := g.Check("s", ch.ID, 0, true); !errors.Is(err, ErrGridTimeout) {
+		t.Fatalf("reported timeout: %v", err)
+	}
+	// 出了题不答、直接再要一道：算用掉一次机会；两次都这样就失败
+	if _, err := g.NewCheck("s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.NewCheck("s"); !errors.Is(err, ErrGridFailed) {
+		t.Fatalf("abandoned second chance: %v", err)
 	}
 }
 
@@ -193,70 +260,34 @@ func TestGridWeekdayFixedAtIssue(t *testing.T) {
 	now := time.Date(2026, 10, 13, 20, 0, 0, 0, time.UTC)
 	g, _ := newTestGrid(t, &now)
 	enable(t, g)
-	ch, _ := g.NewChallenge("login")
+	ch, _ := g.NewCheck("s")
 	if ch.Weekday != 3 {
 		t.Fatalf("weekday = %d, want 3 (Wednesday in Shanghai)", ch.Weekday)
 	}
+	g.Check("s", ch.ID, testRule.Answer(ch.Grid, 3), false)
 
-	// 北京时间周三 23:59 出题、周四 00:01 作答：仍按周三算
-	now = time.Date(2026, 10, 14, 15, 59, 0, 0, time.UTC)
-	ch, _ = g.NewChallenge("login")
-	now = now.Add(2 * time.Minute)
+	// 北京时间周三 23:59:50 出题、周四 00:00:02 作答：仍按周三算
+	now = time.Date(2026, 10, 14, 15, 59, 50, 0, time.UTC)
+	ch, _ = g.NewCheck("s")
+	now = now.Add(12 * time.Second)
 	if Weekday(now.In(g.loc)) != 4 {
 		t.Fatal("test setup: answer time should be Thursday")
 	}
-	if err := g.Verify(ch.ID, testRule.Answer(ch.Grid, 3)); err != nil {
+	if err := g.Check("s", ch.ID, testRule.Answer(ch.Grid, 3), false); err != nil {
 		t.Fatalf("answer across midnight must use the issue weekday: %v", err)
 	}
 
 	// 周一（北京时间）要加周一的固定数
 	now = time.Date(2026, 10, 12, 1, 0, 0, 0, time.UTC)
-	ch, _ = g.NewChallenge("login")
-	want := ch.Grid[1]*1 + 5 + ch.Grid[11]
-	if ch.Weekday != 1 || g.Verify(ch.ID, want) != nil {
+	ch, _ = g.NewCheck("s")
+	if ch.Weekday != 1 || g.Check("s", ch.ID, ch.Grid[1]*1+5+ch.Grid[11], false) != nil {
 		t.Fatalf("Monday rule: weekday %d", ch.Weekday)
 	}
 	// 周日（北京时间）算 7
 	now = time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
-	ch, _ = g.NewChallenge("login")
-	if ch.Weekday != 7 || g.Verify(ch.ID, ch.Grid[1]*7+ch.Grid[11]) != nil {
+	ch, _ = g.NewCheck("s")
+	if ch.Weekday != 7 || g.Check("s", ch.ID, ch.Grid[1]*7+ch.Grid[11], false) != nil {
 		t.Fatalf("Sunday rule: weekday %d", ch.Weekday)
-	}
-}
-
-func TestGridLockout(t *testing.T) {
-	now := time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)
-	g, _ := newTestGrid(t, &now)
-	enable(t, g)
-	wrong := func() error {
-		ch, err := g.NewChallenge("login")
-		if err != nil {
-			return err
-		}
-		return g.Verify(ch.ID, testRule.Answer(ch.Grid, ch.Weekday)+1)
-	}
-	// 答对会清零计数
-	wrong()
-	wrong()
-	ch, _ := g.NewChallenge("login")
-	if err := g.Verify(ch.ID, testRule.Answer(ch.Grid, ch.Weekday)); err != nil {
-		t.Fatal(err)
-	}
-	wrong()
-	wrong()
-	var locked *LockedError
-	if err := wrong(); !errors.As(err, &locked) || !locked.Until.Equal(now.Add(gridLockout)) {
-		t.Fatalf("third wrong answer should lock: %v", err)
-	}
-	if _, err := g.NewChallenge("login"); !errors.As(err, &locked) {
-		t.Fatalf("no new challenge while locked: %v", err)
-	}
-	if err := g.UseRecoveryCode(context.Background(), "aaaa-aaaa"); !errors.As(err, &locked) {
-		t.Fatalf("recovery codes are locked too: %v", err)
-	}
-	now = now.Add(gridLockout)
-	if err := wrong(); !errors.Is(err, ErrGridWrong) {
-		t.Fatalf("lock should expire: %v", err)
 	}
 }
 
@@ -276,10 +307,23 @@ func TestRecoveryCodes(t *testing.T) {
 	if st, _ := g.Status(ctx); !st.Enabled || st.RecoveryLeft != recoveryCodeCount-1 {
 		t.Fatalf("status: %+v", st)
 	}
+	// 连续输错 3 次锁定 1 小时，期间正确的也不收
+	g.UseRecoveryCode(ctx, "aaaa-aaaa")
+	var locked *LockedError
+	if err := g.UseRecoveryCode(ctx, "bbbb-bbbb"); !errors.As(err, &locked) || !locked.Until.Equal(now.Add(recoveryLockout)) {
+		t.Fatalf("third wrong code should lock: %v", err)
+	}
+	if err := g.UseRecoveryCode(ctx, codes[1]); !errors.As(err, &locked) {
+		t.Fatalf("locked: %v", err)
+	}
+	now = now.Add(recoveryLockout)
+	if err := g.UseRecoveryCode(ctx, codes[1]); err != nil {
+		t.Fatalf("after lockout: %v", err)
+	}
 	if err := g.Disable(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.UseRecoveryCode(ctx, codes[1]); !errors.Is(err, ErrGridDisabled) {
+	if err := g.UseRecoveryCode(ctx, codes[2]); !errors.Is(err, ErrGridDisabled) {
 		t.Fatalf("codes after disable: %v", err)
 	}
 }
@@ -311,5 +355,31 @@ func TestGridCellsContainEveryDigit(t *testing.T) {
 		if len(pos[d]) != GridCells {
 			t.Fatalf("digit %d appeared only at positions %v; grid must be shuffled", d, pos[d])
 		}
+	}
+}
+
+func TestViews(t *testing.T) {
+	v := NewViews()
+	limits := map[int]bool{}
+	for range 200 {
+		id := fmt.Sprint(len(limits), "-", time.Now().UnixNano())
+		n := 0
+		for v.Allow(id) {
+			n++
+		}
+		if n < ViewsMin || n > ViewsMax {
+			t.Fatalf("quota %d outside %d-%d", n, ViewsMin, ViewsMax)
+		}
+		limits[n] = true
+		if v.Allow(id) {
+			t.Fatal("quota must stay used up until Reset")
+		}
+		v.Reset(id)
+		if !v.Allow(id) {
+			t.Fatal("Reset must give a new quota")
+		}
+	}
+	if len(limits) < 4 {
+		t.Fatalf("quota should be random across 3-7, got %v", limits)
 	}
 }

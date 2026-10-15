@@ -36,6 +36,7 @@ type Server struct {
 	passkeys    *auth.Passkeys
 	grid        *auth.Grid
 	sessions    *auth.Sessions
+	views       *auth.Views // 每个会话看了几张照片、视频（格子口令抽查用）
 }
 
 type Options struct {
@@ -49,17 +50,24 @@ type Options struct {
 	Passkeys *auth.Passkeys
 	// Grid 为 nil 时不支持格子口令。
 	Grid *auth.Grid
+	// Sessions 为 nil 时用令牌新建（作废名单只在内存里）。
+	Sessions *auth.Sessions
 }
 
 func New(svc *service.Service, opt Options) *Server {
+	sessions := opt.Sessions
+	if sessions == nil {
+		sessions = auth.NewSessions(opt.Token)
+	}
 	return &Server{
 		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
-		passkeys: opt.Passkeys, grid: opt.Grid, sessions: auth.NewSessions(opt.Token),
+		passkeys: opt.Passkeys, grid: opt.Grid, sessions: sessions, views: auth.NewViews(),
 	}
 }
 
 // 接口按访问级别分三组：
-//   - 文件接口：需要会话（令牌 + 刷脸 + 格子口令后签发）；一个第二步验证都没开启时，仅凭令牌也可以（兼容旧客户端和脚本）
+//   - 文件接口：需要会话（令牌 + 刷脸后签发）；刷脸和格子口令都没开启时，仅凭令牌也可以（兼容旧客户端和脚本）。
+//     开启格子口令后，照片、视频每看随机 3–7 张要先答一道格子题（mediaGate）
 //   - 运维接口（统计、备份状态、对账）：令牌或会话都可以，不涉及文件内容，方便自动化诊断
 //   - 登录接口：需要令牌
 func (s *Server) Handler() http.Handler {
@@ -86,6 +94,8 @@ func (s *Server) Handler() http.Handler {
 	files("POST /api/auth/grid/setup/begin", s.gridSetupBegin)
 	files("POST /api/auth/grid/setup/finish", s.gridSetupFinish)
 	files("DELETE /api/auth/grid", s.gridDisable)
+	files("POST /api/auth/grid/challenge", s.gridChallenge)
+	files("POST /api/auth/grid/verify", s.gridVerify)
 
 	ops("GET /api/backup/status", s.backupStatus)
 	ops("GET /api/stats", s.stats)
@@ -98,8 +108,6 @@ func (s *Server) Handler() http.Handler {
 	login("POST /api/auth/passkey/login/finish", s.passkeyLoginFinish)
 	login("POST /api/auth/passkey/register/begin", s.passkeyRegisterBegin)
 	login("POST /api/auth/passkey/register/finish", s.passkeyRegisterFinish)
-	login("POST /api/auth/grid/challenge", s.gridChallenge)
-	login("POST /api/auth/grid/verify", s.gridVerify)
 	login("POST /api/auth/recovery/passkey", s.recoveryPasskey)
 
 	mux.Handle("/api/", s.cors(api))
@@ -232,7 +240,36 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 视频播放会发很多个 Range 请求：只有从头开始的那个算“看了一张”
+	if rg := r.Header.Get("Range"); rg == "" || strings.HasPrefix(rg, "bytes=0-") {
+		f, err := s.svc.Store().Get(r.Context(), s.userID, id)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		if f.Type == meta.TypeFile && !s.mediaGate(w, r, f) {
+			return
+		}
+	}
 	s.serveContent(w, r, id)
+}
+
+// mediaGate：开启了格子口令时，照片、视频（预览和下载都算）每个会话每看随机 3–7 张，
+// 下一张之前要先答对一道格子题（POST /api/auth/grid/challenge、/verify）。
+func (s *Server) mediaGate(w http.ResponseWriter, r *http.Request, f *meta.File) bool {
+	if !s.gridRequired() || !(strings.HasPrefix(f.Mime, "image/") || strings.HasPrefix(f.Mime, "video/")) {
+		return true
+	}
+	sid, ok := s.sessionID(r)
+	if !ok { // 开启格子口令后文件接口必须带会话（requireSession），这里只是兜底
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	if s.views.Allow(sid) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "grid passcode check required", "code": "grid_required"})
+	return false
 }
 
 // POST /api/files/{id}/link 生成限时有效的下载链接 /dl/{id}?exp=..&sig=..（相对路径），
@@ -249,6 +286,9 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if f.Type != meta.TypeFile || f.TrashedAt != nil {
 		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !s.mediaGate(w, r, f) {
 		return
 	}
 	exp := time.Now().Add(downloadLinkTTL).Unix()

@@ -17,17 +17,25 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 )
 
-// 格子口令：刷脸之后的第二道验证。页面出一张随机 4×4 数字格，主人按自己设定的规则心算出答案：
+// 格子口令：看照片、视频时随机抽查（见 Views）。页面出一张随机 4×4 数字格，主人按自己设定的规则心算出答案：
 //
 //	答案 = 格[乘数格] × 星期 + 格[加数格]，周一再加一个固定数；周日算 7。
 //
 // 星期按出题那一刻（配置的时区）计算并随题目保存，跨零点作答不受影响。
 // 规则只存在数据库里（用主密钥加密），代码里只有通用的计算方式。
+//
+// 每次抽查有两次机会：第一次限时 CheckTimeFirst，答错或超时换一张新格子、限时再加 5 秒；
+// 第二次也没答对就返回 ErrGridFailed，调用方要让这个会话退出登录。
+// 题一旦出了就必须在时限内作答：不答、关掉弹窗或重新出题，都算这次机会用掉了。
 const (
 	GridCells         = 16
-	gridChallengeTTL  = 3 * time.Minute
-	gridMaxFails      = 3 // 连续答错这么多次后锁定
-	gridLockout       = time.Hour
+	CheckTimeFirst    = 15 * time.Second
+	CheckTimeSecond   = CheckTimeFirst + 5*time.Second
+	checkAttempts     = 2
+	checkGrace        = 2 * time.Second // 网络延迟的余量
+	setupChallengeTTL = 3 * time.Minute // 开启时的练习题不限时，只是会过期
+	recoveryMaxFails  = 3               // 恢复码连续输错这么多次后锁定
+	recoveryLockout   = time.Hour
 	recoveryCodeCount = 10
 )
 
@@ -35,16 +43,18 @@ var (
 	ErrGridDisabled  = errors.New("grid passcode is not enabled")
 	ErrGridEnabled   = errors.New("grid passcode is already enabled; turn it off first")
 	ErrGridChallenge = errors.New("this grid has expired or was already answered")
-	ErrGridWrong     = errors.New("wrong answer")
+	ErrGridWrong     = errors.New("wrong answer, one more chance")
+	ErrGridTimeout   = errors.New("time is up, one more chance")
+	ErrGridFailed    = errors.New("both chances used up")
 	ErrGridRule      = errors.New("invalid rule: pick two different cells (0-15) and a Monday bonus of 0-99")
 	ErrRecoveryCode  = errors.New("recovery code is wrong or already used")
 )
 
-// LockedError 表示连续答错太多次，在 Until 之前不再接受作答。
+// LockedError 表示恢复码连续输错太多次，在 Until 之前不再接受。
 type LockedError struct{ Until time.Time }
 
 func (e *LockedError) Error() string {
-	return fmt.Sprintf("too many wrong answers, try again after %s", e.Until.Format(time.RFC3339))
+	return fmt.Sprintf("too many wrong recovery codes, try again after %s", e.Until.Format(time.RFC3339))
 }
 
 // GridRule 是主人设定的规则。格子按行编号：第 r 行第 c 列 = (r-1)*4 + (c-1)。
@@ -97,17 +107,25 @@ type Challenge struct {
 	IssuedLocal string         `json:"issued_local"` // 出题时间（服务端时区），如 2026-10-15 23:58
 	Timezone    string         `json:"timezone"`
 	ExpiresAt   time.Time      `json:"expires_at"`
+	Attempt     int            `json:"attempt,omitempty"` // 抽查：第几次机会（1 或 2）
+	Seconds     int            `json:"seconds,omitempty"` // 抽查：限时秒数
 }
 
 type gridChallenge struct {
-	id      string
-	kind    string // login | setup
-	cells   [GridCells]int
-	weekday int
-	exp     time.Time
+	id       string
+	cells    [GridCells]int
+	weekday  int
+	deadline time.Time
 }
 
-// Grid 管理格子口令的规则、题目和恢复码。同一时间只有一道有效的题。
+// checkRound 是一个会话正在进行的一轮抽查。
+type checkRound struct {
+	attempt int            // 当前是第几次机会
+	cur     *gridChallenge // 出了还没答的题
+	started time.Time
+}
+
+// Grid 管理格子口令的规则、题目和恢复码。
 type Grid struct {
 	store  GridStore
 	master []byte
@@ -115,14 +133,15 @@ type Grid struct {
 	now    func() time.Time
 
 	mu          sync.Mutex
-	rule        *GridRule // nil 表示未开启
-	cur         *gridChallenge
-	fails       int
+	rule        *GridRule              // nil 表示未开启
+	setup       *gridChallenge         // 开启时的练习题
+	rounds      map[string]*checkRound // 会话 ID → 正在进行的抽查
+	fails       int                    // 恢复码连续输错次数
 	lockedUntil time.Time
 }
 
 func NewGrid(ctx context.Context, store GridStore, masterKey []byte, loc *time.Location) (*Grid, error) {
-	g := &Grid{store: store, master: masterKey, loc: loc, now: time.Now}
+	g := &Grid{store: store, master: masterKey, loc: loc, now: time.Now, rounds: map[string]*checkRound{}}
 	wrapped, err := store.GetGridRule(ctx)
 	if errors.Is(err, meta.ErrNotFound) {
 		return g, nil
@@ -152,61 +171,108 @@ func (g *Grid) Enabled() bool {
 	return g.rule != nil
 }
 
-func (g *Grid) lockErr(now time.Time) error {
-	if now.Before(g.lockedUntil) {
-		return &LockedError{Until: g.lockedUntil}
-	}
-	return nil
-}
-
-// fail 记一次答错；达到上限时锁定并返回 LockedError。调用方持锁。
-func (g *Grid) fail(now time.Time, err error) error {
-	if g.fails++; g.fails >= gridMaxFails {
-		g.fails = 0
-		g.lockedUntil = now.Add(gridLockout)
-		return &LockedError{Until: g.lockedUntil}
-	}
-	return err
-}
-
-// NewChallenge 出一道新题，之前没答的题立即作废。kind 为 login（按已保存的规则作答）
-// 或 setup（开启时的练习题，按提交的新规则作答）。
-func (g *Grid) NewChallenge(kind string) (Challenge, error) {
+func (g *Grid) newChallenge(now time.Time, ttl time.Duration) (*gridChallenge, Challenge, error) {
 	cells, err := newGridCells()
 	if err != nil {
-		return Challenge{}, err
+		return nil, Challenge{}, err
 	}
 	id, err := randomString(18)
 	if err != nil {
-		return Challenge{}, err
-	}
-
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	now := g.now()
-	switch kind {
-	case "login":
-		if g.rule == nil {
-			return Challenge{}, ErrGridDisabled
-		}
-		if err := g.lockErr(now); err != nil {
-			return Challenge{}, err
-		}
-	case "setup":
-		if g.rule != nil {
-			return Challenge{}, ErrGridEnabled
-		}
-	default:
-		return Challenge{}, fmt.Errorf("unknown challenge kind %q", kind)
+		return nil, Challenge{}, err
 	}
 	local := now.In(g.loc)
-	c := &gridChallenge{id: id, kind: kind, cells: cells, weekday: Weekday(local), exp: now.Add(gridChallengeTTL)}
-	g.cur = c
-	return Challenge{
+	c := &gridChallenge{id: id, cells: cells, weekday: Weekday(local), deadline: now.Add(ttl)}
+	return c, Challenge{
 		ID: id, Grid: cells, Weekday: c.weekday,
 		IssuedAt: now.UTC(), IssuedLocal: local.Format("2006-01-02 15:04"), Timezone: g.loc.String(),
-		ExpiresAt: c.exp.UTC(),
+		ExpiresAt: c.deadline.UTC(),
 	}, nil
+}
+
+// failAttempt 用掉当前这次机会。还有机会时返回 reason，否则结束这一轮并返回 ErrGridFailed。调用方持锁。
+func (g *Grid) failAttempt(key string, r *checkRound, reason error) error {
+	r.cur = nil
+	if r.attempt >= checkAttempts {
+		delete(g.rounds, key)
+		return ErrGridFailed
+	}
+	r.attempt++
+	return reason
+}
+
+// NewCheck 给会话 key 出一道抽查题。上一道题还没答（关掉弹窗、重新出题）就算这次机会用掉了：
+// 两次机会都用完时返回 ErrGridFailed。
+func (g *Grid) NewCheck(key string) (Challenge, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.rule == nil {
+		return Challenge{}, ErrGridDisabled
+	}
+	now := g.now()
+	r := g.rounds[key]
+	if r == nil {
+		for k, old := range g.rounds { // 清掉早已没人管的
+			if now.Sub(old.started) > SessionTTL {
+				delete(g.rounds, k)
+			}
+		}
+		r = &checkRound{attempt: 1, started: now}
+		g.rounds[key] = r
+	} else if r.cur != nil {
+		if err := g.failAttempt(key, r, ErrGridTimeout); errors.Is(err, ErrGridFailed) {
+			return Challenge{}, err
+		}
+	}
+	limit := CheckTimeFirst
+	if r.attempt > 1 {
+		limit = CheckTimeSecond
+	}
+	c, ch, err := g.newChallenge(now, limit)
+	if err != nil {
+		return Challenge{}, err
+	}
+	r.cur = c
+	ch.Attempt, ch.Seconds = r.attempt, int(limit/time.Second)
+	return ch, nil
+}
+
+// Check 校验会话 key 的抽查答案（timedOut 表示页面倒计时已到、没有作答）。
+// 答对返回 nil；第一次答错 / 超时返回 ErrGridWrong / ErrGridTimeout（再出一题）；
+// 第二次也没答对返回 ErrGridFailed；题目对不上返回 ErrGridChallenge（不算机会）。
+func (g *Grid) Check(key, id string, answer int, timedOut bool) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.rule == nil {
+		return ErrGridDisabled
+	}
+	r := g.rounds[key]
+	if r == nil || r.cur == nil || r.cur.id != id {
+		return ErrGridChallenge
+	}
+	c := r.cur
+	switch {
+	case timedOut || g.now().After(c.deadline.Add(checkGrace)):
+		return g.failAttempt(key, r, ErrGridTimeout)
+	case g.rule.Answer(c.cells, c.weekday) != answer:
+		return g.failAttempt(key, r, ErrGridWrong)
+	}
+	delete(g.rounds, key)
+	return nil
+}
+
+// NewSetupChallenge 出开启时的练习题（按提交的新规则作答，不限时，3 分钟内有效）。
+func (g *Grid) NewSetupChallenge() (Challenge, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.rule != nil {
+		return Challenge{}, ErrGridEnabled
+	}
+	c, ch, err := g.newChallenge(g.now(), setupChallengeTTL)
+	if err != nil {
+		return Challenge{}, err
+	}
+	g.setup = c
+	return ch, nil
 }
 
 // newGridCells 生成一张格子：0–9 每个数字至少出现一次（答案靠点格子里的数字输入，
@@ -238,47 +304,12 @@ func newGridCells() ([GridCells]int, error) {
 	return cells, nil
 }
 
-// take 取出并作废当前题目：一道题只能答一次，答错也要换新题。调用方持锁。
-func (g *Grid) take(id, kind string, now time.Time) (*gridChallenge, error) {
-	c := g.cur
-	if c == nil || c.id != id {
-		return nil, ErrGridChallenge
-	}
-	g.cur = nil
-	if c.kind != kind || now.After(c.exp) {
-		return nil, ErrGridChallenge
-	}
-	return c, nil
-}
-
-// Verify 校验登录题的答案。连续答错 gridMaxFails 次后锁定 gridLockout。
-func (g *Grid) Verify(id string, answer int) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	now := g.now()
-	if err := g.lockErr(now); err != nil {
-		return err
-	}
-	if g.rule == nil {
-		return ErrGridDisabled
-	}
-	c, err := g.take(id, "login", now)
-	if err != nil {
-		return err
-	}
-	if g.rule.Answer(c.cells, c.weekday) != answer {
-		return g.fail(now, ErrGridWrong)
-	}
-	g.fails = 0
-	return nil
-}
-
-// UseRecoveryCode 校验并作废一个恢复码。输错和答错共用同一个计数和锁定。
+// UseRecoveryCode 校验并作废一个恢复码。连续输错 recoveryMaxFails 次后锁定 recoveryLockout。
 func (g *Grid) UseRecoveryCode(ctx context.Context, code string) error {
 	g.mu.Lock()
-	if err := g.lockErr(g.now()); err != nil {
+	if now := g.now(); now.Before(g.lockedUntil) {
 		g.mu.Unlock()
-		return err
+		return &LockedError{Until: g.lockedUntil}
 	}
 	if g.rule == nil {
 		g.mu.Unlock()
@@ -293,7 +324,12 @@ func (g *Grid) UseRecoveryCode(ctx context.Context, code string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !ok {
-		return g.fail(g.now(), ErrRecoveryCode)
+		if g.fails++; g.fails >= recoveryMaxFails {
+			g.fails = 0
+			g.lockedUntil = g.now().Add(recoveryLockout)
+			return &LockedError{Until: g.lockedUntil}
+		}
+		return ErrRecoveryCode
 	}
 	g.fails = 0
 	return nil
@@ -310,10 +346,11 @@ func (g *Grid) Setup(ctx context.Context, id string, rule GridRule, answer int) 
 		g.mu.Unlock()
 		return nil, ErrGridEnabled
 	}
-	c, err := g.take(id, "setup", g.now())
+	c := g.setup
+	g.setup = nil // 一道题只能答一次
 	g.mu.Unlock()
-	if err != nil {
-		return nil, err
+	if c == nil || c.id != id || g.now().After(c.deadline) {
+		return nil, ErrGridChallenge
 	}
 	if rule.Answer(c.cells, c.weekday) != answer {
 		return nil, ErrGridWrong
@@ -337,6 +374,7 @@ func (g *Grid) Setup(ctx context.Context, id string, rule GridRule, answer int) 
 	g.mu.Lock()
 	g.rule = &rule
 	g.fails = 0
+	clear(g.rounds)
 	g.mu.Unlock()
 	return codes, nil
 }
@@ -348,7 +386,8 @@ func (g *Grid) Disable(ctx context.Context) error {
 	}
 	g.mu.Lock()
 	g.rule = nil
-	g.cur = nil
+	g.setup = nil
+	clear(g.rounds)
 	g.mu.Unlock()
 	return nil
 }

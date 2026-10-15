@@ -158,8 +158,13 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		log.Warn("face / fingerprint login not configured: set XIAOJU_CORS_ORIGINS (or XIAOJU_WEBAUTHN_RP_ID / XIAOJU_WEBAUTHN_ORIGINS)")
 	}
 
+	sessions, err := auth.NewSessionsWithStore(ctx, cfg.AdminToken, store)
+	if err != nil {
+		return err
+	}
 	handler := api.New(svc, api.Options{
-		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log, Passkeys: passkeys, Grid: grid,
+		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
+		Passkeys: passkeys, Grid: grid, Sessions: sessions,
 	}).Handler()
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
