@@ -172,13 +172,9 @@ func (g *Grid) fail(now time.Time, err error) error {
 // NewChallenge 出一道新题，之前没答的题立即作废。kind 为 login（按已保存的规则作答）
 // 或 setup（开启时的练习题，按提交的新规则作答）。
 func (g *Grid) NewChallenge(kind string) (Challenge, error) {
-	var cells [GridCells]int
-	for i := range cells {
-		n, err := rand.Int(rand.Reader, big.NewInt(10))
-		if err != nil {
-			return Challenge{}, err
-		}
-		cells[i] = int(n.Int64())
+	cells, err := newGridCells()
+	if err != nil {
+		return Challenge{}, err
 	}
 	id, err := randomString(18)
 	if err != nil {
@@ -211,6 +207,35 @@ func (g *Grid) NewChallenge(kind string) (Challenge, error) {
 		IssuedAt: now.UTC(), IssuedLocal: local.Format("2006-01-02 15:04"), Timezone: g.loc.String(),
 		ExpiresAt: c.exp.UTC(),
 	}, nil
+}
+
+// newGridCells 生成一张格子：0–9 每个数字至少出现一次（答案靠点格子里的数字输入，
+// 缺了某个数字就点不出来），其余 6 格随机，再整体打乱。
+func newGridCells() ([GridCells]int, error) {
+	var cells [GridCells]int
+	randN := func(n int) (int, error) {
+		v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+		return int(v.Int64()), err
+	}
+	for i := range cells {
+		if i < 10 {
+			cells[i] = i
+			continue
+		}
+		n, err := randN(10)
+		if err != nil {
+			return cells, err
+		}
+		cells[i] = n
+	}
+	for i := len(cells) - 1; i > 0; i-- { // Fisher–Yates
+		j, err := randN(i + 1)
+		if err != nil {
+			return cells, err
+		}
+		cells[i], cells[j] = cells[j], cells[i]
+	}
+	return cells, nil
 }
 
 // take 取出并作废当前题目：一道题只能答一次，答错也要换新题。调用方持锁。

@@ -364,8 +364,8 @@ button.wide { width: 100%; padding: 10px 14px; }
 .grid-board {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  width: min(232px, 100%);
+  gap: 8px;
+  width: min(256px, 100%);
   margin: 0 auto 8px;
   transition: opacity 0.2s ease;
 }
@@ -383,8 +383,38 @@ button.wide { width: 100%; padding: 10px 14px; }
   padding: 0;
 }
 .grid-when { color: var(--muted); font-size: 13px; margin: 0 0 12px; text-align: center; }
-.grid-answer { display: flex; gap: 8px; justify-content: center; margin-bottom: 4px; }
-.grid-answer input { width: 6.5em; margin: 0; text-align: center; font-size: 18px; letter-spacing: 0.1em; }
+.grid-board.loading > button { pointer-events: none; }
+/* 答题时每格是一个数字键 */
+.grid-quiz .grid-board > button {
+  cursor: pointer;
+  touch-action: manipulation; /* 连点同一格时不触发双击缩放 */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.1s ease;
+}
+.grid-quiz .grid-board > button:hover { border-color: var(--accent); }
+.grid-quiz .grid-board > button:active { transform: scale(0.94); }
+.grid-quiz .grid-board > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.grid-quiz .grid-board > button.tap { animation: tap 0.26s ease; }
+@keyframes tap { 0% { background: var(--accent); border-color: var(--accent); color: var(--accent-text); } }
+
+.grid-answer { display: flex; gap: 8px; justify-content: center; align-items: stretch; margin-bottom: 4px; }
+.grid-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 8.5em;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.15em;
+}
+.grid-display.empty { font: 13px/1.2 system-ui, sans-serif; letter-spacing: 0; color: var(--muted); }
+.grid-display.shake { animation: shake 0.36s ease; }
+.grid-del { min-width: 44px; font-size: 18px; touch-action: manipulation; }
 .grid-quiz .error { text-align: center; }
 .grid-quiz .face-add input { letter-spacing: 0.08em; text-transform: none; }
 

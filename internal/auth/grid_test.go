@@ -283,3 +283,33 @@ func TestRecoveryCodes(t *testing.T) {
 		t.Fatalf("codes after disable: %v", err)
 	}
 }
+
+func TestGridCellsContainEveryDigit(t *testing.T) {
+	// 答案靠点格子里的数字输入，所以每张格子都要有 0–9；同时不能总在固定位置
+	pos := map[int]map[int]bool{} // 数字 → 出现过的位置
+	for range 500 {
+		cells, err := newGridCells()
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[int]bool{}
+		for i, n := range cells {
+			if n < 0 || n > 9 {
+				t.Fatalf("cell %d = %d", i, n)
+			}
+			seen[n] = true
+			if pos[n] == nil {
+				pos[n] = map[int]bool{}
+			}
+			pos[n][i] = true
+		}
+		if len(seen) != 10 {
+			t.Fatalf("grid %v is missing digits", cells)
+		}
+	}
+	for d := range 10 {
+		if len(pos[d]) != GridCells {
+			t.Fatalf("digit %d appeared only at positions %v; grid must be shuffled", d, pos[d])
+		}
+	}
+}

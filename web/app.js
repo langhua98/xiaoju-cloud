@@ -580,29 +580,36 @@ function issuedText(ch) {
   return `出题时间：${+m}月${+day}日 ${WEEKDAY[ch.weekday]} ${t}${tz}`;
 }
 
-function renderBoard(board, cells) {
-  board.replaceChildren(...cells.map((n) => mk("div", { textContent: String(n) })));
-  board.setAttribute("aria-label", `数字格：${[0, 4, 8, 12].map((i) => cells.slice(i, i + 4).join(" ")).join("，")}`);
+const MAX_ANSWER_DIGITS = 3; // 最大答案 9 × 1 + 9 + 99 = 117
+
+// 画格子。传了 onTap 时每格是一个可点的数字键（答题），否则只是展示。
+function renderBoard(board, cells, onTap) {
+  board.replaceChildren(...cells.map((n) => {
+    if (!onTap) return mk("div", { textContent: String(n) });
+    const b = mk("button", { type: "button", textContent: String(n), ariaLabel: `数字 ${n}` });
+    b.addEventListener("click", () => {
+      if (onTap(n)) playClass(b, "tap", 260);
+    });
+    return b;
+  }));
 }
 
-// 答题组件：显示格子和答案输入框，可选“用恢复码代替这一步”。答错 / 过期自动换新题。
+// 答题组件：点格子里的数字依次凑出答案，可选“用恢复码代替这一步”。答错 / 过期自动换新题。
 //   load()                 → 出一道题
 //   submit(payload, btn)   → payload 为 {id, answer} 或 {recovery}
 //   onError(err) → true    表示已处理
 function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确认", onError }) {
-  const board = mk("div", { className: "grid-board loading", role: "img" });
+  const board = mk("div", { className: "grid-board loading", role: "group", ariaLabel: "数字格：点数字输入答案" });
   renderBoard(board, Array(16).fill("·"));
   const when = mk("p", { className: "grid-when", textContent: "正在出题…" });
   const errEl = mk("p", { className: "error", hidden: true });
-  const input = mk("input", {
-    inputMode: "numeric", maxLength: 3, autocomplete: "off", placeholder: "答案", ariaLabel: "答案", disabled: true,
-  });
-  input.setAttribute("pattern", "[0-9]*");
+  const display = mk("output", { className: "grid-display empty", ariaLive: "polite", ariaLabel: "已输入的答案" });
+  const del = mk("button", { type: "button", className: "grid-del", textContent: "⌫", ariaLabel: "删除最后一位", title: "删除最后一位", disabled: true });
   const btn = busyButton(submitLabel, "primary");
+  btn.type = "button";
   btn.disabled = true;
-  const form = mk("form", { className: "grid-answer" }, input, btn);
   root.className = "grid-quiz";
-  root.replaceChildren(board, when, errEl, form);
+  root.replaceChildren(board, when, errEl, mk("div", { className: "grid-answer" }, display, del, btn));
 
   let recInput, recBtn;
   if (recovery) {
@@ -615,7 +622,17 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   }
 
   let ch = null;
+  let digits = "";
+  let busy = false;
   let locked = false;
+  const ready = () => ch && !busy && !locked;
+  const paint = () => {
+    display.textContent = digits || "点格子里的数字";
+    display.classList.toggle("empty", !digits);
+    del.disabled = !digits || !ready();
+    btn.disabled = !digits || !ready();
+    if (recBtn) recBtn.disabled = busy || locked;
+  };
   const showError = (msg) => {
     errEl.textContent = msg;
     errEl.hidden = false;
@@ -623,16 +640,26 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   };
   const lock = (msg) => {
     locked = true;
-    input.disabled = btn.disabled = true;
     if (recBtn) recBtn.disabled = true;
     board.classList.add("loading");
+    paint();
     showError(msg);
   };
 
+  function tap(n) {
+    if (!ready()) return false;
+    if (digits.length >= MAX_ANSWER_DIGITS) { playClass(display, "shake", 450); return false; }
+    errEl.hidden = true;
+    digits += n;
+    paint();
+    return true;
+  }
+  del.addEventListener("click", () => { digits = digits.slice(0, -1); paint(); });
+
   async function next() {
     ch = null;
-    input.value = "";
-    input.disabled = btn.disabled = true;
+    digits = "";
+    paint();
     board.classList.add("loading");
     try {
       ch = await load();
@@ -640,12 +667,12 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
       handle(err);
       return;
     }
-    renderBoard(board, ch.grid);
+    renderBoard(board, ch.grid, tap);
     when.textContent = issuedText(ch);
     board.classList.remove("loading");
     playClass(board, "fade-in", 400);
-    input.disabled = btn.disabled = false;
-    input.focus();
+    paint();
+    board.querySelector("button").focus({ preventScroll: true });
   }
 
   function handle(err) {
@@ -656,25 +683,25 @@ function mountGridQuiz(root, { load, submit, recovery = true, submitLabel = "确
   }
 
   async function send(payload, b, label) {
-    if (locked || b.disabled) return;
+    if (locked || busy) return;
     errEl.hidden = true;
+    busy = true;
+    paint();
     setButtonBusy(b, true, "验证中…", label);
     try {
       await submit(payload, b);
-      setButtonBusy(b, false, "验证中…", label);
     } catch (err) {
-      setButtonBusy(b, false, "验证中…", label);
       handle(err);
+    } finally {
+      busy = false;
+      setButtonBusy(b, false, "验证中…", label);
+      paint();
     }
   }
 
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const v = input.value.trim();
-    if (!ch || !/^\d{1,3}$/.test(v)) { input.focus(); return; }
-    send({ id: ch.id, answer: Number(v) }, btn, submitLabel);
+  btn.addEventListener("click", () => {
+    if (ready() && digits) send({ id: ch.id, answer: Number(digits) }, btn, submitLabel);
   });
-  input.addEventListener("input", () => { input.value = input.value.replace(/\D/g, ""); });
   if (recBtn) {
     recBtn.addEventListener("click", () => {
       const code = recInput.value.trim();
