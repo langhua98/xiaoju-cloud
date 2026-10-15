@@ -154,6 +154,15 @@ td.name a:hover { text-decoration: underline; }
   margin-bottom: 12px;
 }
 .usummary { margin: 2px 0 4px; font-size: 14px; font-weight: 500; }
+.picking {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  border-radius: 8px;
+  background: var(--hover);
+  animation: fade-in 0.25s ease;
+}
+.picking .spinner { display: inline-block; color: var(--accent); }
 .upload { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 6px 0; font-size: 14px; }
 .upload .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload .ustatus { color: var(--muted); }
