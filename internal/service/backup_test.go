@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/crypto"
 	"github.com/langhua98/xiaoju-cloud/internal/db"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
+	"github.com/langhua98/xiaoju-cloud/internal/storage"
 	"github.com/langhua98/xiaoju-cloud/internal/storage/local"
 	"github.com/langhua98/xiaoju-cloud/migrations"
 )
@@ -139,6 +141,34 @@ func TestBackupIntegration(t *testing.T) {
 	if after := countFiles(t, backupDir); after != before-len(parts) {
 		t.Fatalf("backup files after purge: %d, want %d", after, before-len(parts))
 	}
+
+	// 7. 主存储和备份一起写；主存储写到一半失败：上传失败，两边已经写进去的分块都删掉
+	before = countFiles(t, backupDir)
+	beforePrimary := countFiles(t, primaryDir)
+	flaky := New(store, &failingDriver{Driver: primary, failAt: 2}, optsB)
+	if _, err := flaky.Upload(ctx, UploadRequest{UserID: userID, Name: "flaky.bin", Body: bytes.NewReader(randBytes(2500))}); err == nil {
+		t.Fatal("upload must fail when the primary storage fails")
+	}
+	if got := countFiles(t, backupDir); got != before {
+		t.Fatalf("backup parts left after a failed upload: %d, want %d", got, before)
+	}
+	if got := countFiles(t, primaryDir); got != beforePrimary {
+		t.Fatalf("primary parts left after a failed upload: %d, want %d", got, beforePrimary)
+	}
+}
+
+// failingDriver 的第 failAt 次写入失败。
+type failingDriver struct {
+	storage.Driver
+	puts, failAt int
+}
+
+func (d *failingDriver) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
+	if d.puts++; d.puts == d.failAt {
+		io.Copy(io.Discard, req.Body)
+		return storage.Location{}, errors.New("primary storage unavailable")
+	}
+	return d.Driver.Put(ctx, req)
 }
 
 // isolatedDB 在独立的 schema 里运行测试：备份同步会扫描全库缺少备份的分块，

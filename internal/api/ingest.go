@@ -53,6 +53,7 @@ var ingestAlbums = map[string]string{"": AlbumFolder, "hidden": HiddenAlbumFolde
 // 文件收完后即使客户端断开也会写完，下次运行会当作已传过跳过。
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	start := time.Now()
 	body := bufio.NewReaderSize(r.Body, 64<<10)
 	head, _ := body.Peek(64)
 	ext, sniffed := media.Sniff(head)
@@ -105,9 +106,10 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			n = withCopySuffix(name, i)
 		}
 		var hb *heartbeat
+		var received time.Time
 		f, err := s.svc.Upload(uploadCtx, service.UploadRequest{
 			UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Body: body,
-			Spool: true, OnSpooled: func() { hb = startHeartbeat(w) },
+			Spool: true, OnSpooled: func() { received = time.Now(); hb = startHeartbeat(w) },
 		})
 		started := hb.end() // 之后只有这里写回复
 		// 重名在读请求体之前就会发现（hb 还没创建），可以换个名字重试
@@ -123,7 +125,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]any{"result": "error", "error": "服务端写入失败，请稍后再运行一次（传过的会自动跳过）"})
 			return
 		}
-		s.log.Info("ingested", "folder", folder, "name", f.Name, "size", f.Size, "client", clientIP(r))
+		// receive：手机传到服务端用的时间；store：写进 Telegram（主频道和备份一起）用的时间。看慢在哪边
+		s.log.Info("ingested", "folder", folder, "name", f.Name, "size", f.Size, "client", clientIP(r),
+			"receive", received.Sub(start).Round(100*time.Millisecond), "store", time.Since(received).Round(100*time.Millisecond))
 		resp := map[string]any{"result": "uploaded", "name": f.Name, "size": f.Size}
 		if started {
 			json.NewEncoder(w).Encode(resp)

@@ -151,7 +151,8 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 启用后：
 
-- 上传时每个加密分块同时写入两个频道（备份写入失败不影响上传，后台会重试）；
+- 上传时每个加密分块同时写入两个频道（两个账号并行写，总时间约等于慢的那一个；备份写入失败不影响上传，后台会重试；
+  主频道写失败时备份里已写的这块也删掉）；
 - 下载时主频道读不到（消息被删、频道不可用等）自动改读备份；
 - 后台任务每隔一段时间把还没有备份的分块（包括启用前上传的旧文件）从主频道复制过去，并用 sha256 校验；
 - 永久删除时两边一起删；
@@ -366,6 +367,10 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 ### 其他注意
 
 - Telegram 写入有频率限制（每个频道大约每分钟 20 条，日志里会看到 `telegram flood wait`），上传上千个文件要一两个小时以上。
+- **上传速度**（2026-10-16 实测，手机走蜂窝网络）：小照片每个约 5–6 秒（固定开销：快捷指令动作、网络往返、两次写 Telegram），
+  大视频约 1 MB/s。快捷指令是一个接一个传的，每个文件都要等服务端写完 Telegram 才传下一个。批量上传的日志行
+  `ingested ... receive=… store=…` 分别是手机传到服务端、写进 Telegram 的用时，用来判断慢在哪边。
+- 用户上传期间跑 `diagnose-hf.yml` 要选 `reconcile: none`：对账会扫描整个频道，触发 Telegram 限流（30 秒），拖慢正在进行的上传。
 - 缩略图存在数据库里，每张 10–20 KB；用户用的是免费 PostgreSQL，照片多了注意容量。
 - 测试：`XIAOJU_TEST_DATABASE_URL=... go test -race ./...`；`internal/thumb` 的测试需要 ffmpeg（HEIC 测试需要 vips，没有就跳过）。
   `TestIngest` 里改过 `ingestHeartbeat` 的地方要及时改回来（曾经因此在 CI 上偶发失败、挡住部署）。

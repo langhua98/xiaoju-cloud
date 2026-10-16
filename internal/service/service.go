@@ -225,19 +225,38 @@ func (s *Service) sealPart(partNo int, dek []byte, body io.Reader) (_ *sealedPar
 	return sp, nil
 }
 
-// storePart 把加密好的分块写进存储端（和备份端）。
+// storePart 把加密好的分块写进存储端，同时写备份端（两个频道是不同的账号，一起写，总时间约等于慢的那一个）。
 func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPart) (*meta.Part, storage.Location, error) {
-	if _, err := sp.tmp.Seek(0, io.SeekStart); err != nil {
-		return nil, storage.Location{}, err
+	req := func() storage.PutRequest {
+		return storage.PutRequest{
+			Name:    partName(fileID, sp.no),
+			Caption: caption(fileID, sp.no, sp.sum),
+			Body:    io.NewSectionReader(sp.tmp, 0, sp.size), // 各读各的
+			Size:    sp.size,
+		}
 	}
-	req := storage.PutRequest{
-		Name:    partName(fileID, sp.no),
-		Caption: caption(fileID, sp.no, sp.sum),
-		Body:    sp.tmp,
-		Size:    sp.size,
+	// 双备份：同一份密文再写进备份频道。失败不影响本次上传，后台同步任务会补上。
+	type result struct {
+		loc storage.Location
+		err error
 	}
-	loc, err := s.driver.Put(ctx, req)
+	var backup chan result
+	if s.backup != nil {
+		backup = make(chan result, 1)
+		go func() {
+			loc, err := s.backup.Put(ctx, req())
+			backup <- result{loc, err}
+		}()
+	}
+	loc, err := s.driver.Put(ctx, req())
 	if err != nil {
+		if backup != nil {
+			if b := <-backup; b.err == nil { // 主存储没写成，备份里的这块用不上了
+				if derr := s.backup.Delete(context.WithoutCancel(ctx), []storage.Location{b.loc}); derr != nil {
+					s.log.Warn("delete unused backup part", "file", fileID, "part", sp.no, "err", derr)
+				}
+			}
+		}
 		return nil, storage.Location{}, err
 	}
 	part := &meta.Part{
@@ -245,16 +264,11 @@ func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPar
 		ChannelID: loc.ChannelID, MessageID: loc.MessageID,
 		Size: sp.size, IV: sp.iv, SHA256: sp.sum,
 	}
-
-	// 双备份：同一份密文再写进备份频道。失败不影响本次上传，后台同步任务会补上。
-	if s.backup != nil {
-		if _, err := sp.tmp.Seek(0, io.SeekStart); err != nil {
-			return nil, storage.Location{}, err
-		}
-		if bloc, err := s.backup.Put(ctx, req); err != nil {
-			s.log.Warn("backup upload failed; will retry in background", "file", fileID, "part", sp.no, "err", err)
+	if backup != nil {
+		if b := <-backup; b.err != nil {
+			s.log.Warn("backup upload failed; will retry in background", "file", fileID, "part", sp.no, "err", b.err)
 		} else {
-			part.BackupChannelID, part.BackupMessageID = &bloc.ChannelID, &bloc.MessageID
+			part.BackupChannelID, part.BackupMessageID = &b.loc.ChannelID, &b.loc.MessageID
 		}
 	}
 	return part, loc, nil
