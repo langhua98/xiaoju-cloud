@@ -60,38 +60,50 @@ def fix_questions(wf):
         q["ActionIndex"] = i
 
 
-# 每个快捷指令里「获取最新的照片」占位依次换成的「查找照片」要不要加“已隐藏”条件：
-# None 不加；False 只要没隐藏的；True 只要“已隐藏”相簿里的
-HIDDEN_FILTERS = {"sync": [None], "backup": [False, True]}
+# 每个快捷指令里「获取最新的照片」占位按顺序换成什么：
+#   (date, hidden)：「查找照片」，date 为真时加“创建日期晚于 sinceText”；hidden 为 None 不管隐藏没隐藏，
+#                   False 只要没隐藏的，True 只要“已隐藏”相簿里的
+#   "keep"：保留「获取最新的照片」（不带任何条件，诊断用）
+# backup 里依次是：普通批次、隐藏相册批次，以及一张也没找到时的三个诊断（只按日期 / 只看隐藏 / 最新照片）
+PLACEHOLDERS = {
+    "sync": [(True, None)],
+    "backup": [(True, False), (True, True), (True, None), (False, True), "keep"],
+}
 
 
-def find_photos(wf, hidden, since_var="sinceText"):
-    """把占位的「获取最新的照片」依次换成「查找照片」——创建日期晚于变量 since_var（hidden 不是 None 时再加
-    “已隐藏 是 hidden”），按创建日期最旧的排最前，张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换
-    （保留 UUID，后面引用它输出的操作不用改）。"""
+def find_photos(wf, specs, since_var="sinceText"):
+    """把占位的「获取最新的照片」按 specs 依次换成「查找照片」（条件见 PLACEHOLDERS），按创建日期最旧的排最前，
+    张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
     hits = [a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.getlastphoto"]
-    if len(hits) != len(hidden):
-        sys.exit(f"expected {len(hidden)} getLatestPhotos placeholders, found {len(hits)}")
-    for action, h in zip(hits, hidden):
+    if len(hits) != len(specs):
+        sys.exit(f"expected {len(specs)} getLatestPhotos placeholders, found {len(hits)}")
+    for action, spec in zip(hits, specs):
+        if spec == "keep":
+            continue
+        date, hidden = spec
         old = action["WFWorkflowActionParameters"]
-        templates = [{
-            "Bounded": True,
-            "Removable": True,
-            "Property": "Creation Date",
-            "Operator": 2,  # 日期：0 早于，2 晚于（与“如果”的 小于 / 大于 同一套编号）
-            "Values": {
-                "Unit": 4,
-                "Date": {
-                    "WFSerializationType": "WFTextTokenString",
-                    "Value": {"string": "\ufffc", "attachmentsByRange": {
-                        "{0, 1}": {"Type": "Variable", "VariableName": since_var}}},
+        templates = []
+        if date:
+            templates.append({
+                "Bounded": True,
+                "Removable": True,
+                "Property": "Creation Date",
+                "Operator": 2,  # 日期：0 早于，2 晚于（与“如果”的 小于 / 大于 同一套编号）
+                "Values": {
+                    "Unit": 4,
+                    "Date": {
+                        "WFSerializationType": "WFTextTokenString",
+                        "Value": {"string": "\ufffc", "attachmentsByRange": {
+                            "{0, 1}": {"Type": "Variable", "VariableName": since_var}}},
+                    },
                 },
-            },
-        }]
-        if h is not None:
+            })
+        if hidden is not None:
             # 是 / 否 类的条件：Operator 4 是“是”，值放在 Bool（和快捷指令 App 里选“已隐藏 是 真 / 假”存下来的一样）
-            templates.append({"Property": "Is Hidden", "Operator": 4, "Bool": h, "Removable": True, "Unit": 4,
+            templates.append({"Property": "Is Hidden", "Operator": 4, "Bool": hidden, "Removable": True, "Unit": 4,
                               "VariableOverrides": {}})
+        if not templates:
+            sys.exit(f"placeholder spec {spec} has no condition; use \"keep\"")
         action["WFWorkflowActionIdentifier"] = "is.workflow.actions.filter.photos"
         action["WFWorkflowActionParameters"] = {
             "UUID": old["UUID"],
@@ -175,7 +187,7 @@ def main():
     source = (HERE / f"{a.shortcut}.cherri").read_text().replace("__INGEST_URL__", api_url(a.api) + "/api/ingest")
     wf = compile_cherri(a.cherri, source)
     fix_questions(wf)
-    find_photos(wf, HIDDEN_FILTERS[a.shortcut])
+    find_photos(wf, PLACEHOLDERS[a.shortcut])
     check_structure(wf)
     xml = plistlib.dumps(wf, fmt=plistlib.FMT_XML).decode()
     data = xml.encode() if a.skip_sign else sign(SHORTCUTS[a.shortcut], xml)

@@ -117,7 +117,7 @@ showNotification("{scope}：从 {sinceText} 之后拍的开始，一批 30 张�
 repeat batch for 200 {
     if done == 0 {
         // build.py 把这两步依次换成「查找照片」：创建日期晚于 sinceText，“已隐藏”分别是 假 / 真，
-        // 按创建日期最旧的排最前，限制 30 张（顺序要和 build.py 的 HIDDEN_FILTERS["backup"] 对应）
+        // 按创建日期最旧的排最前，限制 30 张（顺序要和 build.py 的 PLACEHOLDERS["backup"] 对应）
         if hiddenOnly == 0 {
             @photos = getLatestPhotos(30)
         } else {
@@ -197,7 +197,16 @@ repeat batch for 200 {
 
 if processed == 0 {
     if stalled == 0 {
-        alert("{scope}：{startText} 之后拍的都传过了，或者一张也没找到。\n\n如果明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」；传隐藏相册还可以到 设置 → App → 照片，打开「显示“已隐藏”相簿」，再运行一次。", "没有新照片")
+        // 一张也没找到：顺便查一下是哪一步查不到（截图发给维护的人就知道原因）。build.py 把下面三步依次换成
+        // 「查找照片：创建日期晚于 1971 年」「查找照片：已隐藏 是 真」，第三步保留「获取最新的照片」（没有任何条件）
+        @sinceText = "1971-01-01 00:00:00"
+        @diagDate = getLatestPhotos(5)
+        @diagHidden = getLatestPhotos(5)
+        @diagLatest = getLatestPhotos(5)
+        @nDate = count(diagDate)
+        @nHidden = count(diagHidden)
+        @nLatest = count(diagLatest)
+        alert("{scope}：{startText} 之后拍的都传过了，或者一张也没找到。\n\n如果明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」；传隐藏相册时可以先到 设置 → App → 照片，关掉「使用面容 ID」，传完再打开。\n\n诊断（各最多 5）：最新 {nLatest} · 按日期 {nDate} · 已隐藏 {nHidden}", "没有新照片")
         stop()
     }
 }
