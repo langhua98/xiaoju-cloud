@@ -45,8 +45,12 @@ jobs:
         env:
           XIAOJU_TEST_DATABASE_URL: postgres://xiaoju:xiaoju@localhost:5432/xiaoju?sslmode=disable
 
+  # 镜像能构建，并且在镜像里真能生成缩略图（vips、ffmpeg 装对了）才部署
+  image:
+    uses: ./.github/workflows/image.yml
+
   deploy:
-    needs: test
+    needs: [test, image]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

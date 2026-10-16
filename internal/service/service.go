@@ -18,6 +18,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/crypto"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/storage"
+	"github.com/langhua98/xiaoju-cloud/internal/thumb"
 )
 
 type Service struct {
@@ -29,6 +30,7 @@ type Service struct {
 	partSize  int64
 	tempDir   string
 	log       *slog.Logger
+	thumbs    *thumbnails // nil 时不生成缩略图
 }
 
 type Options struct {
@@ -40,10 +42,12 @@ type Options struct {
 	Backup storage.Driver
 	// BackupError 记录备份已配置但无法连接的原因，用于状态接口展示。
 	BackupError string
+	// Thumbs 不为 nil 时给照片、视频生成缩略图（上传后在后台生成，没生成过的在第一次请求时生成）。
+	Thumbs *thumb.Generator
 }
 
 func New(store *meta.Store, driver storage.Driver, opt Options) *Service {
-	return &Service{
+	s := &Service{
 		store:     store,
 		driver:    driver,
 		backup:    opt.Backup,
@@ -53,6 +57,10 @@ func New(store *meta.Store, driver storage.Driver, opt Options) *Service {
 		tempDir:   opt.TempDir,
 		log:       opt.Log,
 	}
+	if opt.Thumbs != nil {
+		s.thumbs = newThumbnails(opt.Thumbs)
+	}
+	return s
 }
 
 func (s *Service) Store() *meta.Store { return s.store }
@@ -162,7 +170,11 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 			sp.remove()
 		}
 	}
-	return s.store.ActivateFile(ctx, f.ID, total, fileHash.Sum(nil))
+	done, err := s.store.ActivateFile(ctx, f.ID, total, fileHash.Sum(nil))
+	if err == nil {
+		s.queueThumbnail(done)
+	}
+	return done, err
 }
 
 // sealedPart 是加密好、存在临时文件里等着写存储端的一个分块。

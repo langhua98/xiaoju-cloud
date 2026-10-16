@@ -3,12 +3,14 @@
 //	xiaoju migrate [up|down]   执行 / 回滚数据库迁移
 //	xiaoju serve               启动 HTTP 服务（未配置数据库时进入 Telegram 连通性诊断模式）
 //	xiaoju check               只检查 Telegram 登录与频道访问
+//	xiaoju thumb IN OUT.jpg    给本地的照片 / 视频生成缩略图（检查镜像里的 vips、ffmpeg 是否可用）
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,6 +29,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/storage"
 	"github.com/langhua98/xiaoju-cloud/internal/storage/local"
 	"github.com/langhua98/xiaoju-cloud/internal/storage/telegram"
+	"github.com/langhua98/xiaoju-cloud/internal/thumb"
 	"github.com/langhua98/xiaoju-cloud/migrations"
 )
 
@@ -43,7 +46,10 @@ func main() {
 
 func run(ctx context.Context, args []string, log *slog.Logger) error {
 	if len(args) == 0 {
-		return errors.New("usage: xiaoju <serve|migrate [up|down]|check>")
+		return errors.New("usage: xiaoju <serve|migrate [up|down]|check|thumb IN OUT>")
+	}
+	if args[0] == "thumb" { // 不需要任何配置
+		return makeThumb(ctx, args[1:], log)
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -124,9 +130,11 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	thumbs := thumb.New(cfg.TempDir)
+	log.Info("thumbnails", "tools", thumbs.Tools())
 	svc := service.New(store, driver, service.Options{
 		MasterKey: cfg.MasterKey, PartSize: cfg.PartSize, TempDir: cfg.TempDir, Log: log,
-		Backup: backup, BackupError: backupErr,
+		Backup: backup, BackupError: backupErr, Thumbs: thumbs,
 	})
 	if backup != nil {
 		go svc.RunBackupSync(ctx, 5*time.Minute)
@@ -300,4 +308,22 @@ func newBackupDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 	}
 	log.Info("backup channel connected")
 	return d, done, nil
+}
+
+// makeThumb 给本地文件生成缩略图：xiaoju thumb IN OUT.jpg
+func makeThumb(ctx context.Context, args []string, log *slog.Logger) error {
+	if len(args) != 2 {
+		return errors.New("usage: xiaoju thumb IN OUT.jpg")
+	}
+	g := thumb.New("")
+	log.Info("thumbnail tools", "found", g.Tools())
+	res, err := g.Generate(ctx, func(context.Context) (io.ReadSeekCloser, error) { return os.Open(args[0]) })
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(args[1], res.JPEG, 0o644); err != nil {
+		return err
+	}
+	log.Info("thumbnail written", "out", args[1], "bytes", len(res.JPEG), "duration", res.Duration)
+	return nil
 }

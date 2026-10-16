@@ -47,6 +47,31 @@ func UnwrapKey(master, wrapped []byte) ([]byte, error) {
 	return gcm.Open(nil, nonce, ct, nil)
 }
 
+// Seal 用 key 加密一小段数据（AES-GCM），aad 绑定数据的用途和归属（如文件 ID），输出 nonce || ciphertext。
+func Seal(key, plaintext, aad []byte) ([]byte, error) {
+	gcm, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := randBytes(gcm.NonceSize())
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
+}
+
+// Open 是 Seal 的逆操作，aad 必须和加密时相同。
+func Open(key, sealed, aad []byte) ([]byte, error) {
+	gcm, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealed) < gcm.NonceSize() {
+		return nil, errors.New("sealed data too short")
+	}
+	return gcm.Open(nil, sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():], aad)
+}
+
 // NewCTRAt 返回一个从 offset 字节处开始的 AES-CTR 流，等价于把从 0 开始的流丢弃前 offset 字节。
 func NewCTRAt(key, iv []byte, offset int64) (cipher.Stream, error) {
 	if len(iv) != IVSize {

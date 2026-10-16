@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
+	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
 	return mux
 }
 
@@ -185,10 +186,12 @@ func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if items == nil {
-		items = []*meta.File{}
+	out, err := s.withThumbs(r.Context(), items)
+	if err != nil {
+		s.fail(w, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 // POST /api/files?name=xxx[&parent_id=uuid]，请求体是文件原始内容（流式，不走 multipart）。

@@ -2,12 +2,10 @@ package api
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"mime"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -20,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/langhua98/xiaoju-cloud/internal/media"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
@@ -47,7 +46,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	body := bufio.NewReaderSize(r.Body, 64<<10)
 	head, _ := body.Peek(64)
-	ext, sniffed := sniffMedia(head)
+	ext, sniffed := media.Sniff(head)
 	name := ingestName(r, ext)
 
 	album, err := s.albumFolder(r)
@@ -73,7 +72,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 
 	mimeType := sniffed
 	if mimeType == "" {
-		mimeType = mimeByExt(filepath.Ext(name))
+		mimeType = media.ByExt(filepath.Ext(name))
 	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
@@ -249,42 +248,4 @@ func stripCopySuffix(n string) string { return copySuffix.ReplaceAllString(n, "$
 func withCopySuffix(n string, i int) string {
 	ext := filepath.Ext(n)
 	return strings.TrimSuffix(n, ext) + " (" + strconv.Itoa(i) + ")" + ext
-}
-
-// sniffMedia 按文件开头的字节认出常见的照片、视频格式，返回扩展名和 MIME 类型。
-func sniffMedia(b []byte) (ext, mimeType string) {
-	switch {
-	case len(b) >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF:
-		return ".jpg", "image/jpeg"
-	case bytes.HasPrefix(b, []byte("\x89PNG\r\n\x1a\n")):
-		return ".png", "image/png"
-	case bytes.HasPrefix(b, []byte("GIF8")):
-		return ".gif", "image/gif"
-	case len(b) >= 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "WEBP":
-		return ".webp", "image/webp"
-	case len(b) >= 12 && string(b[4:8]) == "ftyp":
-		switch string(b[8:12]) {
-		case "heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1":
-			return ".heic", "image/heic"
-		case "avif", "avis":
-			return ".avif", "image/avif"
-		case "qt  ":
-			return ".mov", "video/quicktime"
-		default: // isom、mp41、mp42、M4V …
-			return ".mp4", "video/mp4"
-		}
-	}
-	return "", ""
-}
-
-func mimeByExt(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".heic", ".heif":
-		return "image/heic"
-	case ".mov":
-		return "video/quicktime"
-	case ".mp4", ".m4v":
-		return "video/mp4"
-	}
-	return mime.TypeByExtension(ext)
 }
