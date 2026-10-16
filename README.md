@@ -287,3 +287,75 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 把 Telegram 当作存储后端属于非常规用法：账号或 Bot 可能被限制，没有可用性保证（SLA）。
 适合个人 / 小团队自用；重要数据请另行备份，**PostgreSQL 与主密钥必须备份**——数据库丢失后频道里的数据无法按文件名还原。
+
+## 开发交接（给接手的人）
+
+> 2026-10-16 写，记录到这一刻为止的状态、正在进行的事和踩过的坑。用户用中文沟通，在 iPhone 上实测，
+> 偏好：界面简洁、提示少、点击操作、有“科技感”；改完直接合并到 `main` 部署（开发分支 `claude/grid-passcode`）。
+
+### 线上部署
+
+- 网页：GitHub Pages `https://langhua98.github.io/xiaoju-cloud/`（`.github/workflows/pages.yml`：发布 `web/`，
+  给 `version.json` / `?v=` 打提交号，并编译、签名两个快捷指令 `xiaoju-backup.shortcut`、`xiaoju-sync.shortcut`）。
+- 服务端：Hugging Face Space `https://langhua1998-xiaoju-cloud.hf.space`（`.github/workflows/deploy-hf.yml`：
+  `test`（带 PostgreSQL 的 `go test`）→ `image`（`image.yml`：构建镜像，在镜像里实际生成 JPEG / HEIC / 视频缩略图）→ `deploy`）。
+  只改 `web/**`、`shortcuts/**`、文档时不部署服务端。
+- 推到 `main` 两条流水线同时跑。快捷指令签名用 RoutineHub 的 HubSign，**有频率限制**（常见 429，`build.py` 会等 30/60/90 秒重试），
+  不要短时间内反复推送；`shortcut.yml` 只在开发分支上跑。
+- 查线上状态：手动运行 `diagnose-hf.yml`（`reconcile` 选 `none` 就只读）：备份状态、网盘统计、Space 最近的日志
+  （只保留 backup / ingest / WARN / ERROR 行，能看到每个批量上传的文件名和放进的文件夹）。
+  **仓库是公开的，Actions 日志也公开**——日志里会出现上传的文件名，别往日志里打更敏感的东西。
+- 这个沙箱里访问不了 hf.space、github.io、iCloud、Azure blob；能访问 api.github.com、npm、PyPI、Go 代理。
+
+### 这次会话做了什么（按时间）
+
+1. **格子口令**（`internal/auth/grid.go`、`internal/api/grid.go`、网页 `mountGridQuiz`）：规则 `乘数格 × 星期 + 加数格`（周一另加），
+   看照片 / 视频随机 3–7 张抽查一次，两次机会（15 秒 + 20 秒），都错就作废会话（`revoked_sessions`）。缩略图不计数。
+2. **网页自动更新**：旧页面发现 `version.json` 变了就自动换新（登录状态存在 `sessionStorage`）。
+3. **缩略图 + 照片墙**：`internal/thumb`（vips 处理照片含 HEIC，ffmpeg 通过本机 HTTP + Range 截视频首帧），
+   加密存在 `thumbnails` 表；`/thumb/{id}` 签名链接；网页网格视图、大图左右滑、双指 / 双击缩放、下滑关闭（`web/app.js` 的
+   “网格与缩略图”“大图查看”两节）。浏览器端用 Playwright 测过（沙箱里的 Chromium 不能解 H.264，MOV 显示“加载失败”是正常的）。
+4. **批量上传接口** `POST /api/ingest`（只进不出、不需要认证）：写 Telegram 期间发空格心跳防止快捷指令 60 秒超时；
+   `X-Xiaoju-Album: hidden` 放进“隐藏相册”；`GET /api/ingest/exists` 先问传过没有；没带文件名直接 400 `missing_name`；
+   以前被自动起名“照片 日期 时分秒-xxxx.ext”的文件，重新上传时按同文件夹同大小认出来改回真名（`uploadedBefore`）。
+5. **快捷指令**（`shortcuts/*.cherri`，`shortcuts/build.py` 编译、补丁、检查嵌套、签名）。来回改了很多版，结论见下面“快捷指令的坑”。
+
+### 正在进行（交接时的状态）
+
+- 用户在把 iPhone 的**隐藏相册（1561 个文件，约 910 张照片、650 个视频）** 传进网盘根目录的“隐藏相册”文件夹：
+  照片 App 全选 → 存储到“文件”（我的 iPhone 里的一个文件夹）→ 运行「备份照片到小桔云盘」选“隐藏相册”和那个文件夹。
+- 修复前传上去约 20 个没有名字的文件（名字是“照片 2026-10-16 03xxxx-xxxx.*”），重新运行时会被自动改回真名，不会重复。
+  传完可以在网页里确认“隐藏相册”里没有剩下这种名字的文件。
+- 修复（提交 `da072e0`）刚推上去，等部署完让用户删掉旧快捷指令、重装、在快捷指令 App 里重新运行。
+- 用户的下一步计划：隐藏相册传完 → 传**整个相册** → 之后**按时间只传新照片**。这两项现在都**没有可用的实现**（见下）。
+
+### 快捷指令的坑（都在 iPhone 上实测过）
+
+- **「查找照片」的过滤条件在新版 iOS 上不生效**：`build.py` 编译后写进去的条件，`backup` 的「🔧 诊断」（已删，见提交
+  `45ecbf6`）结果是：6 种日期写法（文字 / 日期变量、放在 Values / 最外层 / VariableOverrides、操作符 0/2/3）**一张都查不到**；
+  4 种“已隐藏”写法（`Bool` 放最外层或 Values 里）**都被忽略**（和不加条件结果一样）。不加条件、按创建日期排序、限制张数是好的
+  （查 300 张没问题）。新版 iOS 的确切写法查不到资料；最靠谱的办法是让用户在快捷指令 App 里手动做一个带条件的「查找照片」，
+  导出 / 发来看真实的 plist（签名后的 `.shortcut` 是 AEA 归档，需要自己解）。
+  - 所以 **`sync.cherri`（同步相册）现在查不到照片**，网页上已经标了“正在修”。
+  - 不靠过滤条件的分批办法：不加条件的「查找照片」按创建日期最旧的排最前、限制 `已处理数 + 30` 张，再用「获取列表中的项目」
+    取最后 30 张；进度存“已处理到第几张 + 最后一张的拍摄时间（毫秒）”，取到的照片先按时间跳过处理过的（防止中间删了照片错位）。
+    隐患：越往后一次查的张数越多，几千张时的内存没验证过。
+  - 只传新照片可以用「获取最新的照片」（不加条件，按时间倒序）再按拍摄时间跳过已处理的。
+- **相册选择器一次选几百张会卡死或闪退**（iOS 先把每张都准备好放进内存），网页的相册选择器也一样，所以别用选择器传大量照片。
+- **Cherri 1.3.2 的 bug**：`else if` 编译后“结束”放错位置（只用 `if/else` 嵌套，`build.py` 会检查嵌套）；
+  `getFileDetail` 把文件放进 `WFFolder`（应该是 `WFInput`，取到的全是空的，`backup.cherri` 自己定义了 `fileDetail`）；
+  `resp['key']` 会编译成读取文件属性（要先「从输入获取词典」再「获取词典值」）；`==` 比较要先把值转成文字变量 `"{x}"`。
+- **「此操作无法在当前用户界面中运行」**：快捷指令运行时 App 进了后台、熄屏或锁屏，「获取 URL 的内容」就会报这个错；
+  新装的快捷指令第一次联网要弹窗授权，新版 iOS 的简化运行界面弹不出来也报这个错——让用户在编辑界面点 ▶ 运行一次、选“始终允许”。
+  长时间上传要让用户把自动锁定设成“永不”、插着电、别切走。
+- 编码视频（「编码视频」Passthrough）在从相册直接读视频时需要；从“文件”传就不用了。
+- 发通知用不响铃的（`showNotification(..., false)`），每 10 个一条，是唯一能在运行中看到进度的办法。
+
+### 其他注意
+
+- Telegram 写入有频率限制（每个频道大约每分钟 20 条，日志里会看到 `telegram flood wait`），上传上千个文件要一两个小时以上。
+- 缩略图存在数据库里，每张 10–20 KB；用户用的是免费 PostgreSQL，照片多了注意容量。
+- 测试：`XIAOJU_TEST_DATABASE_URL=... go test -race ./...`；`internal/thumb` 的测试需要 ffmpeg（HEIC 测试需要 vips，没有就跳过）。
+  `TestIngest` 里改过 `ingestHeartbeat` 的地方要及时改回来（曾经因此在 CI 上偶发失败、挡住部署）。
+- 本地看网页：起服务端（`XIAOJU_STORAGE=local`）+ `python3 -m http.server -d web`，`web/config.js` 指向本地服务端；
+  Playwright 用 `/opt/pw-browsers/chromium`。
