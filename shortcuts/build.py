@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""编译并签名“备份照片到小桔云盘”快捷指令。
+"""编译并签名快捷指令：“备份照片到小桔云盘”（backup，自己选照片）或“同步相册到小桔云盘”（sync，整个相册分批续传）。
 
-    python3 shortcuts/build.py --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
+    python3 shortcuts/build.py [--shortcut backup|sync] --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
 
-1. 用 Cherri 编译 backup.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
+1. 用 Cherri 编译 <shortcut>.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
 2. 修正导入问题指向的操作（如果有；Cherri 1.3.2 会把多个问题都指向第 0 个操作）；
-3. iOS 15 起快捷指令文件必须签名才能导入：交给 RoutineHub 的 HubSign 服务签名（Cherri 在非 macOS 上也用它）。
+   sync：把占位的「获取最新的照片」换成带日期条件的「查找照片」（Cherri 不支持过滤条件）；
+3. 检查“如果 / 重复”的开始和结束一一对应（Cherri 1.3.2 编译 else if 会把“结束”放错位置）；
+4. iOS 15 起快捷指令文件必须签名才能导入：交给 RoutineHub 的 HubSign 服务签名（Cherri 在非 macOS 上也用它）。
    文件里只有上传地址（本来就公开在 web/config.js 里），没有任何密钥。
 """
 import argparse
@@ -22,7 +24,7 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-NAME = "备份照片到小桔云盘"
+SHORTCUTS = {"backup": "备份照片到小桔云盘", "sync": "同步相册到小桔云盘"}
 HUBSIGN = "https://hubsign.routinehub.services/sign"
 
 
@@ -37,7 +39,7 @@ def api_url(arg):
 
 def compile_cherri(cherri, source):
     with tempfile.TemporaryDirectory() as d:
-        src = pathlib.Path(d) / "backup.cherri"
+        src = pathlib.Path(d) / "shortcut.cherri"
         src.write_text(source)
         subprocess.run([cherri, str(src), "--skip-sign", "--no-ansi"], check=True)
         out = list(pathlib.Path(d).glob("*.shortcut"))
@@ -58,14 +60,73 @@ def fix_questions(wf):
         q["ActionIndex"] = i
 
 
+def find_photos(wf, since_var="sinceText"):
+    """sync：把占位的「获取最新的照片」换成「查找照片」——创建日期晚于变量 since_var，按创建日期最旧的排最前，
+    张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
+    hits = [a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.getlastphoto"]
+    if len(hits) != 1:
+        sys.exit(f"expected exactly one getLatestPhotos placeholder, found {len(hits)}")
+    action = hits[0]
+    old = action["WFWorkflowActionParameters"]
+    action["WFWorkflowActionIdentifier"] = "is.workflow.actions.filter.photos"
+    action["WFWorkflowActionParameters"] = {
+        "UUID": old["UUID"],
+        "CustomOutputName": old["CustomOutputName"],
+        "WFContentItemFilter": {
+            "WFSerializationType": "WFContentPredicateTableTemplate",
+            "Value": {
+                "WFActionParameterFilterPrefix": 1,
+                "WFContentPredicateBoundedDate": False,
+                "WFActionParameterFilterTemplates": [{
+                    "Bounded": True,
+                    "Removable": True,
+                    "Property": "Creation Date",
+                    "Operator": 2,  # 日期：0 早于，2 晚于（与“如果”的 小于 / 大于 同一套编号）
+                    "Values": {
+                        "Unit": 4,
+                        "Date": {
+                            "WFSerializationType": "WFTextTokenString",
+                            "Value": {"string": "\ufffc", "attachmentsByRange": {
+                                "{0, 1}": {"Type": "Variable", "VariableName": since_var}}},
+                        },
+                    },
+                }],
+            },
+        },
+        "WFContentItemSortProperty": "Creation Date",
+        "WFContentItemSortOrder": "Oldest First",
+        "WFContentItemLimitEnabled": True,
+        "WFContentItemLimitNumber": old["WFGetLatestPhotoCount"],
+    }
+
+
+def check_structure(wf):
+    """“如果 / 重复 / 菜单”的开始、否则、结束必须按嵌套顺序一一对应，否则后面的操作会跑进别的分支里。"""
+    stack = []
+    for i, a in enumerate(wf["WFWorkflowActions"]):
+        params = a["WFWorkflowActionParameters"]
+        mode = params.get("WFControlFlowMode")
+        if mode is None:
+            continue
+        group = params.get("GroupingIdentifier")
+        if mode == 0:
+            stack.append(group)
+        elif not stack or stack[-1] != group:
+            sys.exit(f"action {i} ({a['WFWorkflowActionIdentifier']}): block {group} closes out of order, open blocks: {stack}")
+        elif mode == 2:
+            stack.pop()
+    if stack:
+        sys.exit(f"unclosed blocks: {stack}")
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     # urllib 跟随 302 时会把 POST 改成不带请求体的 GET，签名就失败了：不跟随，直接报出跳转地址
     def redirect_request(self, *args, **kwargs):
         return None
 
 
-def sign(xml):
-    body = json.dumps({"shortcutName": NAME, "shortcut": xml}).encode()
+def sign(name, xml):
+    body = json.dumps({"shortcutName": name, "shortcut": xml}).encode()
     # 请求头和 Cherri 自带的 Go 客户端一致（有的 CDN 会拦截 Python 默认的 User-Agent）
     req = urllib.request.Request(HUBSIGN, data=body, method="POST", headers={
         "Content-Type": "application/json",
@@ -93,17 +154,21 @@ def sign(xml):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--shortcut", choices=sorted(SHORTCUTS), default="backup")
     p.add_argument("--out", required=True)
     p.add_argument("--api")
     p.add_argument("--cherri", default="cherri")
     p.add_argument("--skip-sign", action="store_true", help="只编译（输出未签名的 XML，iOS 不能直接导入）")
     a = p.parse_args()
 
-    source = (HERE / "backup.cherri").read_text().replace("__INGEST_URL__", api_url(a.api) + "/api/ingest")
+    source = (HERE / f"{a.shortcut}.cherri").read_text().replace("__INGEST_URL__", api_url(a.api) + "/api/ingest")
     wf = compile_cherri(a.cherri, source)
     fix_questions(wf)
+    if a.shortcut == "sync":
+        find_photos(wf)
+    check_structure(wf)
     xml = plistlib.dumps(wf, fmt=plistlib.FMT_XML).decode()
-    data = xml.encode() if a.skip_sign else sign(xml)
+    data = xml.encode() if a.skip_sign else sign(SHORTCUTS[a.shortcut], xml)
     pathlib.Path(a.out).write_bytes(data)
     print(f"wrote {a.out} ({len(data)} bytes, {'unsigned' if a.skip_sign else 'signed'})")
 
