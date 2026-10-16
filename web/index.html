@@ -27,6 +27,10 @@
   <main id="app" hidden>
     <div class="toolbar">
       <nav id="crumbs" class="crumbs" aria-label="当前位置"></nav>
+      <div id="view-toggle" class="view-toggle" role="group" aria-label="显示方式">
+        <button type="button" data-view="list" title="列表" aria-label="列表"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+        <button type="button" data-view="grid" title="网格" aria-label="网格"><svg viewBox="0 0 20 20" fill="currentColor"><rect x="3" y="3" width="6" height="6" rx="1.2"/><rect x="11" y="3" width="6" height="6" rx="1.2"/><rect x="3" y="11" width="6" height="6" rx="1.2"/><rect x="11" y="11" width="6" height="6" rx="1.2"/></svg></button>
+      </div>
       <div class="actions">
         <button id="mkdir-btn" type="button">新建文件夹</button>
         <label class="button">
@@ -54,12 +58,13 @@
     </section>
 
     <div id="drop" class="listing">
-      <table>
+      <table id="list-table">
         <thead>
           <tr><th>名称</th><th class="size">大小</th><th class="date">修改时间</th><th class="ops"></th></tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
+      <div id="grid" class="grid" hidden></div>
       <p id="empty" class="empty" hidden>这里还没有文件，点“上传文件”或把文件拖到这里。</p>
     </div>
   </main>
@@ -150,6 +155,21 @@
   <!-- 看照片、视频时随机弹出的格子口令（不能关掉跳过） -->
   <dialog id="grid-gate" class="grid-gate" aria-label="格子口令验证">
     <div id="grid-gate-quiz"></div>
+  </dialog>
+
+  <!-- 看照片、视频：左右滑动切换，双指 / 双击缩放，下滑关闭 -->
+  <dialog id="viewer" class="viewer" aria-label="查看照片和视频">
+    <div id="vw-stage" class="vw-stage">
+      <div id="vw-track" class="vw-track"></div>
+    </div>
+    <div class="vw-bar">
+      <button id="vw-close" type="button" class="vw-btn" aria-label="关闭"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
+      <div class="vw-title"><b id="vw-name"></b><small id="vw-count"></small></div>
+      <button id="vw-download" type="button" class="vw-btn" aria-label="下载"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M5.5 8.5L10 13l4.5-4.5M4 16.5h12"/></svg></button>
+      <button id="vw-delete" type="button" class="vw-btn" aria-label="删除"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h13M8 5.5V3.8h4v1.7M5.5 5.5l.8 11h7.4l.8-11M8.5 8.5v5M11.5 8.5v5"/></svg></button>
+    </div>
+    <button id="vw-prev" type="button" class="vw-nav prev" aria-label="上一张"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 4L6.5 10l6 6"/></svg></button>
+    <button id="vw-next" type="button" class="vw-nav next" aria-label="下一张"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 4l6 6-6 6"/></svg></button>
   </dialog>
 
   <dialog id="preview" class="preview">

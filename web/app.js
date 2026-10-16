@@ -19,6 +19,8 @@ const state = {
   loginSteps: [], // 令牌之后还要过的步骤，如 ["passkey"]
   recoveryAvailable: false, // 可以用恢复码代替刷脸
   folderId: null,
+  items: [],   // 当前目录的条目（含缩略图地址）
+  view: "list", // 当前目录的显示方式：list / grid
 };
 try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
 
@@ -247,6 +249,7 @@ async function logout(message) {
   $("#logout-btn").hidden = true;
   $("#security-btn").hidden = true;
   $("#preview").close();
+  $("#viewer").close();
   $("#security").close();
   // 主界面淡出后再弹出登录框
   const app = $("#app");
@@ -258,6 +261,7 @@ async function logout(message) {
   }
   app.hidden = true;
   $("#rows").replaceChildren();
+  $("#grid").replaceChildren();
   openLogin(message);
 }
 
@@ -1289,9 +1293,10 @@ async function load(prefetchedRoot = null) {
   }
   state.folderId = currentFolderFromHash();
   const rows = $("#rows");
+  const drop = $("#drop");
   $("#empty").hidden = true;
   // 已有内容时先变淡（切换目录、刷新），没有内容时显示骨架占位
-  if (rows.querySelector("tr:not(.skeleton)")) rows.classList.add("stale");
+  if (rows.querySelector("tr:not(.skeleton)") || $("#grid").childElementCount) drop.classList.add("stale");
   else if (!prefetchedRoot) showSkeleton();
   progress.start();
   try {
@@ -1303,7 +1308,7 @@ async function load(prefetchedRoot = null) {
     ]);
     if (seq !== loadSeq) return; // 期间又切换了目录，丢弃旧结果
     renderCrumbs(chain);
-    renderRows(list.items);
+    renderItems(list.items);
   } catch (err) {
     if (seq !== loadSeq) return;
     rows.querySelectorAll(".skeleton").forEach((tr) => tr.remove());
@@ -1311,11 +1316,13 @@ async function load(prefetchedRoot = null) {
     fail(err);
   } finally {
     progress.done();
-    if (seq === loadSeq) rows.classList.remove("stale");
+    if (seq === loadSeq) drop.classList.remove("stale");
   }
 }
 
 function showSkeleton() {
+  $("#list-table").hidden = false;
+  $("#grid").hidden = true;
   const widths = [[46, 60, 70, 55], [62, 50, 70, 55], [38, 65, 70, 55], [54, 45, 70, 55]];
   $("#rows").replaceChildren(...widths.map((w) => {
     const tr = document.createElement("tr");
@@ -1335,36 +1342,44 @@ function showSkeleton() {
 
 function renderRows(items) {
   const rows = $("#rows");
-  // 只给新出现的条目做淡入，刷新时已有的行保持不动
-  const before = new Set([...rows.querySelectorAll("tr[data-id]")].map((tr) => tr.dataset.id));
+  // 只给新出现的条目做淡入，刷新时没变的行直接沿用
+  const old = new Map([...rows.querySelectorAll("tr[data-id]")].map((tr) => [tr.dataset.id, tr]));
   let n = 0;
   rows.replaceChildren(...items.map((f) => {
+    const prev = old.get(f.id);
+    if (prev && prev.dataset.key === itemKey(f)) {
+      prev.classList.remove("appear"); // 重新插入时不要再播一遍淡入
+      return prev;
+    }
     const tr = rowFor(f);
-    if (!before.has(f.id)) {
+    if (!prev) {
       tr.classList.add("appear");
       tr.style.setProperty("--i", Math.min(n++, 12));
     }
     return tr;
   }));
-  $("#empty").hidden = items.length > 0;
-  if (!items.length) playClass($("#empty"), "fade-in", 500);
 }
 
 function rowFor(f) {
   const tr = document.createElement("tr");
   tr.dataset.id = f.id;
+  tr.dataset.key = itemKey(f);
   const isFolder = f.type === "folder";
 
   const name = document.createElement("td");
   name.className = "name";
   name.title = f.name;
-  const icon = Object.assign(document.createElement("span"), { className: "icon", textContent: iconFor(f) });
+  let icon = Object.assign(document.createElement("span"), { className: "icon", textContent: iconFor(f) });
+  if (f.thumb) {
+    const emoji = icon;
+    icon = thumbImg(f, "row-thumb", () => icon.replaceWith(emoji));
+  }
   const label = document.createElement(isFolder ? "a" : "span");
   label.textContent = f.name;
   if (isFolder) {
     label.href = `#/f/${f.id}`;
   } else {
-    label.addEventListener("click", () => (previewKind(f.mime) ? preview(f) : download(f)));
+    label.addEventListener("click", () => openItem(f));
   }
   name.append(icon, label);
 
@@ -1379,7 +1394,7 @@ function rowFor(f) {
     return b;
   };
   if (!isFolder) {
-    if (previewKind(f.mime)) ops.append(btn("预览", () => preview(f), "wide"));
+    if (inGallery(f) || previewKind(f.mime)) ops.append(btn("预览", () => openItem(f), "wide"));
     ops.append(btn("下载", () => download(f)));
   }
   ops.append(btn("删除", () => remove(f), "danger"));
@@ -1487,13 +1502,559 @@ $("#preview-close").addEventListener("click", () => $("#preview").close());
 // 关闭时清空内容以停止视频播放（Esc 关闭也会触发）
 $("#preview").addEventListener("close", () => $("#preview-body").replaceChildren());
 
+// ---------- 网格与缩略图 ----------
+
+const isMedia = (f) => f.type === "file" && /^(image|video)\//.test(f.mime || "");
+// 能在大图查看里看的：有缩略图，或者浏览器能直接显示的照片、视频
+const inGallery = (f) => isMedia(f) && (!!f.thumb || ["img", "video"].includes(previewKind(f.mime)));
+
+function openItem(f) {
+  if (inGallery(f)) openViewer(f);
+  else if (previewKind(f.mime)) preview(f);
+  else download(f);
+}
+
+const viewKey = () => `xiaoju.view.${state.folderId || "root"}`;
+
+// 没手动选过时：照片、视频占多数的目录（比如“相册”）用网格，其他用列表
+function chooseView(items) {
+  const saved = store.get(viewKey());
+  if (saved === "grid" || saved === "list") return saved;
+  const files = items.filter((f) => f.type === "file");
+  const media = files.filter(isMedia).length;
+  return media >= 4 && media >= files.length * 0.6 ? "grid" : "list";
+}
+
+function renderItems(items) {
+  state.items = items;
+  state.view = chooseView(items);
+  const grid = state.view === "grid";
+  document.querySelectorAll("#view-toggle button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === state.view)));
+  $("#list-table").hidden = grid;
+  $("#grid").hidden = !grid;
+  if (grid) {
+    $("#rows").replaceChildren();
+    renderGrid(items);
+  } else {
+    $("#grid").replaceChildren();
+    renderRows(items);
+  }
+  $("#empty").hidden = items.length > 0;
+  if (!items.length) playClass($("#empty"), "fade-in", 500);
+}
+
+$("#view-toggle").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-view]");
+  if (!b || b.dataset.view === state.view) return;
+  store.set(viewKey(), b.dataset.view);
+  renderItems(state.items);
+});
+
+// 条目内容没变时沿用原来的元素（上传期间列表会反复刷新，缩略图不用重新加载、不闪）
+const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0].join("|");
+
+function renderGrid(items) {
+  const grid = $("#grid");
+  const old = new Map([...grid.children].map((el) => [el.dataset.id, el]));
+  let n = 0;
+  grid.replaceChildren(...items.map((f) => {
+    const prev = old.get(f.id);
+    if (prev && prev.dataset.key === itemKey(f)) {
+      prev.classList.remove("appear"); // 重新插入时不要再播一遍淡入
+      return prev;
+    }
+    const tile = tileFor(f);
+    if (!prev) {
+      tile.classList.add("appear");
+      tile.style.setProperty("--i", Math.min(n++, 24));
+    }
+    return tile;
+  }));
+}
+
+function tileFor(f) {
+  const isFolder = f.type === "folder";
+  const tile = document.createElement(isFolder ? "a" : "button");
+  tile.className = "tile";
+  tile.dataset.id = f.id;
+  tile.dataset.key = itemKey(f);
+  tile.title = f.name;
+  // 文件夹、普通文件、缩略图加载失败的：图标 + 名字
+  const plain = () => {
+    tile.classList.remove("media");
+    tile.replaceChildren(
+      Object.assign(document.createElement("span"), { className: "ticon", textContent: iconFor(f) }),
+      Object.assign(document.createElement("span"), { className: "tname", textContent: f.name }),
+    );
+  };
+  if (isFolder) {
+    tile.href = `#/f/${f.id}`;
+    tile.classList.add("folder");
+    plain();
+    return tile;
+  }
+  tile.type = "button";
+  tile.addEventListener("click", () => openItem(f));
+  if (!f.thumb) {
+    plain();
+    return tile;
+  }
+  tile.classList.add("media");
+  tile.setAttribute("aria-label", f.name);
+  tile.append(thumbImg(f, "thumb", plain));
+  if (f.mime.startsWith("video/")) tile.append(videoBadge(f));
+  return tile;
+}
+
+function thumbImg(f, className, onFail) {
+  const img = document.createElement("img");
+  img.className = className;
+  img.alt = "";
+  img.decoding = "async";
+  img.draggable = false;
+  img.dataset.src = state.api + f.thumb;
+  img.addEventListener("thumbfail", onFail, { once: true });
+  thumbQueue.observe(img);
+  return img;
+}
+
+function videoBadge(f) {
+  const b = document.createElement("span");
+  b.className = "badge";
+  b.innerHTML = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.2 1.2v7.6L8.6 5z"/></svg>';
+  if (f.duration) b.append(clipLength(f.duration));
+  return b;
+}
+
+function clipLength(sec) {
+  const s = Math.max(1, Math.round(sec));
+  const pad = (x) => String(x).padStart(2, "0");
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+// 缩略图按需加载：滚到附近才请求，最多同时 4 个（服务端第一次要现做，也给点开原图等请求留出连接）
+const thumbQueue = (() => {
+  const MAX = 4;
+  let inFlight = 0;
+  const waiting = [];
+  const pump = () => {
+    while (inFlight < MAX && waiting.length) {
+      const img = waiting.shift();
+      if (!img.isConnected || img.src) continue;
+      inFlight++;
+      let freed = false;
+      const free = () => {
+        if (freed) return;
+        freed = true;
+        clearTimeout(timer);
+        inFlight--;
+        pump();
+      };
+      const timer = setTimeout(free, 20000); // 太久没回来先让出名额，回来了照样显示
+      img.onload = () => { img.classList.add("loaded"); img.parentElement?.classList.add("ready"); free(); };
+      img.onerror = () => { img.dispatchEvent(new Event("thumbfail")); free(); };
+      img.src = img.dataset.src;
+    }
+  };
+  const io = "IntersectionObserver" in window
+    ? new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        io.unobserve(e.target);
+        waiting.push(e.target);
+      }
+      pump();
+    }, { rootMargin: "600px 0px" })
+    : null;
+  return {
+    observe(img) {
+      if (io) io.observe(img);
+      else { waiting.push(img); setTimeout(pump); }
+    },
+  };
+})();
+
+// ---------- 大图查看 ----------
+// 当前目录的照片、视频排成一串：左右滑动（电脑上 ← → 或两侧箭头）切换；照片双指或双击放大，放大后拖动查看；
+// 往下拖关闭；单击隐藏 / 显示顶栏；手机的返回手势也是关闭。只有停在某一张上才请求原图
+// （算格子口令的“看了一张”），旁边的只用缩略图垫着，不算。
+
+const vw = { items: [], index: 0, zoom: { s: 1, x: 0, y: 0 }, pushed: false, animating: false };
+const vwDialog = $("#viewer");
+const vwStage = $("#vw-stage");
+const vwTrack = $("#vw-track");
+
+function openViewer(f) {
+  vw.items = state.items.filter(inGallery);
+  vw.index = Math.max(0, vw.items.findIndex((x) => x.id === f.id));
+  vw.animating = false;
+  vwDialog.classList.remove("ui-hidden");
+  vwDialog.style.setProperty("--vw-fade", "1");
+  vwTrack.style.transform = "";
+  vwTrack.replaceChildren(...[0, 1, 2].map(() => Object.assign(document.createElement("div"), { className: "vw-slide" })));
+  if (!vwDialog.open) {
+    vwDialog.showModal();
+    try {
+      history.pushState({ xiaojuViewer: true }, "");
+      vw.pushed = true;
+    } catch { vw.pushed = false; }
+  }
+  renderViewer();
+}
+
+function closeViewer() { closeDialog(vwDialog); }
+
+vwDialog.addEventListener("close", () => {
+  vwTrack.replaceChildren(); // 停止视频
+  vw.items = [];
+  if (vw.pushed) { // 关掉时把打开时压的那条历史记录退掉
+    vw.pushed = false;
+    history.back();
+  }
+});
+vwDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeViewer(); });
+window.addEventListener("popstate", () => {
+  if (!vwDialog.open) return;
+  vw.pushed = false; // 返回手势已经退掉了
+  closeViewer();
+});
+
+const curItem = () => vw.items[vw.index];
+const curSlide = () => vwTrack.children[1];
+const mediaEl = () => curSlide()?.querySelector(".vw-media");
+const canZoom = () => !!curItem() && !curItem().mime.startsWith("video/");
+
+function renderViewer() {
+  const f = curItem();
+  if (!f) { closeViewer(); return; }
+  vw.zoom = { s: 1, x: 0, y: 0 };
+  vwDialog.classList.remove("zoomed");
+  [...vwTrack.children].forEach((slide, k) => fillSlide(slide, vw.items[vw.index + k - 1], k === 1));
+  $("#vw-name").textContent = f.name;
+  $("#vw-count").textContent = `${vw.index + 1} / ${vw.items.length}`;
+  $("#vw-prev").disabled = vw.index === 0;
+  $("#vw-next").disabled = vw.index === vw.items.length - 1;
+  vwDialog.classList.toggle("is-video", f.mime.startsWith("video/"));
+}
+
+function fillSlide(slide, f, current) {
+  slide.replaceChildren();
+  slide.dataset.id = f ? f.id : "";
+  if (!f) return;
+  const bg = document.createElement("div");
+  bg.className = "vw-bg";
+  if (f.thumb) bg.style.backgroundImage = `url("${state.api + f.thumb}")`;
+  const media = document.createElement("div");
+  media.className = "vw-media";
+  if (f.thumb) media.append(Object.assign(document.createElement("img"), { className: "vw-small", src: state.api + f.thumb, alt: "", draggable: false }));
+  slide.append(bg, media);
+  if (current) showFull(slide, media, f);
+}
+
+const vwNote = (text) => Object.assign(document.createElement("p"), { className: "vw-note", textContent: text });
+
+// 原图的签名链接：同一张只申请一次（只算一次“看了一张”），下载也用它
+async function viewerURL(f) {
+  if (f._url && Date.now() < f._urlUntil) return f._url;
+  const url = await signedURL(f, false);
+  Object.assign(f, { _url: url, _urlUntil: Date.now() + 5 * 3600e3 });
+  return url;
+}
+
+async function showFull(slide, media, f) {
+  const kind = previewKind(f.mime);
+  if (kind !== "img" && kind !== "video") {
+    slide.append(vwNote(f.mime.startsWith("video/")
+      ? "这个浏览器播放不了这种视频，可以下载后查看"
+      : "这个浏览器显示不了 HEIC 原图（iPhone、Mac 的 Safari 可以），可以下载后查看"));
+    return;
+  }
+  const spin = Object.assign(document.createElement("div"), { className: "vw-spin" });
+  slide.append(spin);
+  const still = () => slide.isConnected && slide === curSlide() && slide.dataset.id === f.id;
+  let url;
+  try {
+    url = await viewerURL(f);
+  } catch (err) {
+    if (err.code === "grid_cancelled") return; // 格子口令没过，已经退出登录
+    spin.remove();
+    if (still()) slide.append(vwNote(err.message));
+    return;
+  }
+  if (!still()) return;
+  const src = `${url}&inline=1`;
+  if (kind === "video") {
+    const v = document.createElement("video");
+    Object.assign(v, { controls: true, playsInline: true, autoplay: true, preload: "metadata" });
+    v.className = "vw-video loading";
+    v.addEventListener("loadedmetadata", () => {
+      spin.remove();
+      v.classList.remove("loading");
+      media.querySelector(".vw-small")?.remove();
+    }, { once: true });
+    v.addEventListener("error", () => { spin.remove(); slide.append(vwNote("视频加载失败，可以下载后查看")); }, { once: true });
+    v.src = src;
+    media.append(v);
+    return;
+  }
+  const img = Object.assign(new Image(), { className: "vw-full", alt: f.name, draggable: false });
+  img.decoding = "async";
+  const ok = await new Promise((resolve) => {
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = src;
+  });
+  if (!still()) return;
+  spin.remove();
+  if (!ok) { slide.append(vwNote("原图加载失败，可以下载后查看")); return; }
+  media.replaceChildren(img);
+}
+
+// 切到上一张（-1）/ 下一张（1）
+function go(delta) {
+  if (vw.animating || !vwDialog.open) return;
+  const target = vw.index + delta;
+  if (target < 0 || target >= vw.items.length) { snapTrack(); return; }
+  vw.animating = true;
+  vwTrack.classList.add("anim");
+  vwTrack.style.transform = `translateX(${-100 * (1 + delta)}%)`;
+  let timer;
+  const finish = (e) => {
+    if (e && e.target !== vwTrack) return;
+    vwTrack.removeEventListener("transitionend", finish);
+    clearTimeout(timer);
+    vwTrack.classList.remove("anim");
+    vwTrack.style.transform = "";
+    vw.index = target;
+    vw.animating = false;
+    renderViewer();
+  };
+  vwTrack.addEventListener("transitionend", finish);
+  timer = setTimeout(finish, 450);
+}
+
+function snapTrack() {
+  vwTrack.classList.add("anim");
+  vwTrack.style.transform = "";
+  setTimeout(() => vwTrack.classList.remove("anim"), 350);
+}
+
+// 缩放：.vw-media 以屏幕中心为原点 translate(x, y) scale(s)
+function applyZoom(animate) {
+  const m = mediaEl();
+  if (!m) return;
+  m.classList.toggle("anim", !!animate);
+  const { s, x, y } = vw.zoom;
+  m.style.transform = s === 1 && !x && !y ? "" : `translate(${x}px, ${y}px) scale(${s})`;
+  vwDialog.classList.toggle("zoomed", s > 1.01);
+}
+
+// 放大后最多拖到照片边缘
+function zoomBounds(s) {
+  const pic = mediaEl()?.querySelector(".vw-full, .vw-small");
+  const W = vwStage.clientWidth;
+  const H = vwStage.clientHeight;
+  return {
+    x: Math.max(0, ((pic?.offsetWidth || W) * s - W) / 2),
+    y: Math.max(0, ((pic?.offsetHeight || H) * s - H) / 2),
+  };
+}
+
+const clampTo = (v, max) => Math.min(max, Math.max(-max, v));
+
+// 松手后：缩小过头的弹回原大小，拖出边缘的弹回来
+function settleZoom() {
+  let { s, x, y } = vw.zoom;
+  if (s <= 1.01) { s = 1; x = 0; y = 0; }
+  if (s > 6) { x *= 6 / s; y *= 6 / s; s = 6; }
+  const b = zoomBounds(s);
+  vw.zoom = { s, x: clampTo(x, b.x), y: clampTo(y, b.y) };
+  applyZoom(true);
+}
+
+function zoomAt(cx, cy, s) {
+  const c = stageCenter();
+  const { s: s0, x: x0, y: y0 } = vw.zoom;
+  // 手指（鼠标）下的那一点保持不动
+  const lx = (cx - c.x - x0) / s0;
+  const ly = (cy - c.y - y0) / s0;
+  vw.zoom = { s, x: cx - c.x - lx * s, y: cy - c.y - ly * s };
+}
+
+function stageCenter() {
+  const r = vwStage.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+// 手势：一根手指 → 判断是左右切换、下滑关闭还是（放大时）拖动；两根手指 → 缩放；没怎么动 → 单击 / 双击
+const ptrs = new Map();
+let gesture = null;
+let lastTap = null;
+let tapTimer = 0;
+
+vwStage.addEventListener("pointerdown", (e) => {
+  if ((e.pointerType === "mouse" && e.button !== 0) || vw.animating) return;
+  // 视频底部是系统的播放控件（拖进度条），那里的手势交给视频
+  const video = e.target.closest("video");
+  if (video && e.clientY > video.getBoundingClientRect().bottom - 64) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ptrs.size === 1) {
+    gesture = { type: "pending", x0: e.clientX, y0: e.clientY, t0: performance.now(), zoom0: { ...vw.zoom } };
+  } else if (ptrs.size === 2 && canZoom()) {
+    const [a, b] = [...ptrs.values()];
+    snapTrack();
+    gesture = { type: "pinch", d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom0: { ...vw.zoom }, m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  }
+});
+
+vwStage.addEventListener("pointermove", (e) => {
+  if (!ptrs.has(e.pointerId) || !gesture) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const g = gesture;
+  if (g.type === "pinch") {
+    if (ptrs.size < 2) return;
+    const [a, b] = [...ptrs.values()];
+    const s = Math.min(8, Math.max(0.6, g.zoom0.s * Math.hypot(a.x - b.x, a.y - b.y) / g.d0));
+    vw.zoom = g.zoom0;
+    zoomAt(g.m0.x, g.m0.y, s); // 以开始时两指中点为中心缩放，再跟着中点平移
+    vw.zoom.x += (a.x + b.x) / 2 - g.m0.x;
+    vw.zoom.y += (a.y + b.y) / 2 - g.m0.y;
+    applyZoom(false);
+    return;
+  }
+  const dx = e.clientX - g.x0;
+  const dy = e.clientY - g.y0;
+  if (g.type === "pending") {
+    if (Math.hypot(dx, dy) < 8) return;
+    if (vw.zoom.s > 1.01) g.type = "pan";
+    else if (Math.abs(dx) > Math.abs(dy)) g.type = "swipe";
+    else g.type = dy > 0 ? "dismiss" : "none";
+    if (g.type !== "none") {
+      try { vwStage.setPointerCapture(e.pointerId); } catch { /* 指针已经抬起 */ }
+    }
+  }
+  if (g.type === "pan") {
+    const b = zoomBounds(vw.zoom.s);
+    const rubber = (v, max) => (Math.abs(v) <= max ? v : Math.sign(v) * (max + (Math.abs(v) - max) / 3));
+    vw.zoom = { s: vw.zoom.s, x: rubber(g.zoom0.x + dx, b.x), y: rubber(g.zoom0.y + dy, b.y) };
+    applyZoom(false);
+  } else if (g.type === "swipe") {
+    const edge = (dx > 0 && vw.index === 0) || (dx < 0 && vw.index === vw.items.length - 1);
+    vwTrack.style.transform = `translateX(calc(-100% + ${edge ? dx / 3 : dx}px))`;
+  } else if (g.type === "dismiss") {
+    const p = Math.min(1, Math.max(0, dy) / 400);
+    const m = mediaEl();
+    if (m) {
+      m.classList.remove("anim");
+      m.style.transform = `translate(${dx * 0.6}px, ${Math.max(0, dy)}px) scale(${1 - p * 0.3})`;
+    }
+    vwDialog.style.setProperty("--vw-fade", String(1 - p));
+  }
+});
+
+function pointerEnd(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.delete(e.pointerId);
+  const g = gesture;
+  if (!g) return;
+  if (g.type === "pinch") {
+    if (ptrs.size) { // 还剩一根手指：接着拖动
+      const [p] = [...ptrs.values()];
+      gesture = { type: "pan", x0: p.x, y0: p.y, t0: performance.now(), zoom0: { ...vw.zoom } };
+      return;
+    }
+    gesture = null;
+    settleZoom();
+    return;
+  }
+  if (ptrs.size) return;
+  gesture = null;
+  const dx = e.clientX - g.x0;
+  const dy = e.clientY - g.y0;
+  const dt = Math.max(1, performance.now() - g.t0);
+  if (g.type === "pending") {
+    if (e.type === "pointerup") tap(e);
+  } else if (g.type === "pan") {
+    settleZoom();
+  } else if (g.type === "swipe") {
+    const fast = Math.abs(dx) / dt > 0.5 && Math.abs(dx) > 30;
+    if (Math.abs(dx) > vwStage.clientWidth * 0.2 || fast) go(dx < 0 ? 1 : -1);
+    else snapTrack();
+  } else if (g.type === "dismiss") {
+    if (dy > 120 || (dy / dt > 0.6 && dy > 40)) { closeViewer(); return; }
+    const m = mediaEl();
+    if (m) { m.classList.add("anim"); m.style.transform = ""; }
+    vwDialog.style.setProperty("--vw-fade", "1");
+  }
+}
+vwStage.addEventListener("pointerup", pointerEnd);
+vwStage.addEventListener("pointercancel", pointerEnd);
+
+function tap(e) {
+  const now = performance.now();
+  if (lastTap && now - lastTap.t < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+    clearTimeout(tapTimer);
+    lastTap = null;
+    if (!canZoom()) return;
+    if (vw.zoom.s > 1.01) vw.zoom = { s: 1, x: 0, y: 0 };
+    else zoomAt(e.clientX, e.clientY, 2.5);
+    settleZoom();
+    return;
+  }
+  lastTap = { t: now, x: e.clientX, y: e.clientY };
+  if (e.target.closest("video")) return; // 点视频是系统控件的事
+  clearTimeout(tapTimer);
+  tapTimer = setTimeout(() => {
+    lastTap = null;
+    vwDialog.classList.toggle("ui-hidden");
+  }, 300);
+}
+
+// 电脑：滚轮 / 触控板缩放
+vwStage.addEventListener("wheel", (e) => {
+  if (!canZoom()) return;
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, Math.min(6, Math.max(1, vw.zoom.s * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002)))));
+  settleZoom();
+}, { passive: false });
+vwDialog.addEventListener("gesturestart", (e) => e.preventDefault()); // Safari 自己的双指缩放整页
+window.addEventListener("resize", () => { if (vwDialog.open && vw.zoom.s !== 1) settleZoom(); });
+
+vwDialog.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") { e.preventDefault(); go(-1); }
+  if (e.key === "ArrowRight") { e.preventDefault(); go(1); }
+});
+$("#vw-close").addEventListener("click", closeViewer);
+$("#vw-prev").addEventListener("click", () => go(-1));
+$("#vw-next").addEventListener("click", () => go(1));
+$("#vw-download").addEventListener("click", async () => {
+  const f = curItem();
+  if (!f) return;
+  try {
+    const a = Object.assign(document.createElement("a"), { href: await viewerURL(f), rel: "noopener" });
+    vwDialog.append(a); // 弹窗打开时页面其他部分点不到，链接放在弹窗里
+    a.click();
+    a.remove();
+  } catch (err) { fail(err); }
+});
+$("#vw-delete").addEventListener("click", async () => {
+  const f = curItem();
+  if (!f || !(await remove(f))) return;
+  vw.items.splice(vw.index, 1);
+  if (!vw.items.length) { closeViewer(); return; }
+  vw.index = Math.min(vw.index, vw.items.length - 1);
+  renderViewer();
+});
+
 async function remove(f) {
   const isFolder = f.type === "folder";
   let permanent = false;
   if (isFolder) {
-    if (!confirm(`把文件夹“${f.name}”移入回收站？`)) return;
+    if (!confirm(`把文件夹“${f.name}”移入回收站？`)) return false;
   } else {
-    if (!confirm(`删除“${f.name}”？`)) return;
+    if (!confirm(`删除“${f.name}”？`)) return false;
     permanent = confirm("是否永久删除？\n\n确定：立即永久删除（同时删除 Telegram 中的数据，无法恢复）\n取消：仅移入回收站");
   }
   try {
@@ -1501,7 +2062,8 @@ async function remove(f) {
     toast(permanent ? "已永久删除" : "已移入回收站");
     load();
     refreshBackup();
-  } catch (err) { fail(err); }
+    return true;
+  } catch (err) { fail(err); return false; }
 }
 
 // ---------- 上传 ----------
@@ -1858,7 +2420,7 @@ async function checkWebVersion() {
   } catch { return; } // 离线等情况：下次再查
   if (!latest || latest === WEB_VERSION) return;
   // 没在上传、没在答题或看照片时直接换新版（会话存在当前标签页，刷新不用重新登录），否则只提示
-  const busy = active || queue.length || gridGatePending || $("#preview").open || $("#security").open;
+  const busy = active || queue.length || gridGatePending || $("#preview").open || $("#viewer").open || $("#security").open;
   if (!busy) reloadTo(latest);
   else showUpdateBar(latest);
 }
