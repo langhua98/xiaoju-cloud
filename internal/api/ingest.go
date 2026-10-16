@@ -77,6 +77,8 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// 开始收文件时也记一条：大视频要传很久，只有传完才记日志的话，中间看不出在传哪个、是不是卡住了
+	s.log.Info("ingest receiving", "folder", folder, "name", name, "size", r.ContentLength, "client", clientIP(r))
 	// 已经传过：读完请求体（避免客户端在发送途中被断开而报错），不再写 Telegram
 	if r.ContentLength > 0 {
 		f, err := s.uploadedBefore(ctx, album.ID, name, r.ContentLength)
@@ -86,6 +88,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		if f != nil {
 			io.Copy(io.Discard, body)
+			s.log.Info("ingest skipped: uploaded before", "folder", folder, "name", name, "took", time.Since(start).Round(100*time.Millisecond))
 			writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": f.Name})
 			return
 		}
@@ -230,6 +233,8 @@ func (s *Server) ingestNames(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 快捷指令每次运行开始时取一次：看得出它开始跑了
+	s.log.Info("ingest names requested", "album", r.Header.Get("X-Xiaoju-Album"), "files", len(files), "client", clientIP(r))
 	var b strings.Builder
 	for _, f := range files {
 		b.WriteString(nameSizeHash(f.Name, f.Size))
