@@ -1,21 +1,18 @@
 // “备份照片到小桔云盘”快捷指令（Cherri 语言，https://github.com/electrikmilk/cherri）。
 // 由 shortcuts/build.py 编译、签名，发布网页时一起放到 GitHub Pages（xiaoju-backup.shortcut）。
 //
-// 不用相册的选择器：一次选几百张时，iOS 要先把每张照片都准备好放进内存才交给快捷指令，点完「添加」就卡住或闪退。
-// 改成先选传什么（隐藏相册 / 整个相册 / 接着上次 / 最近 7 天 / 最近 30 天 / 某一天起），再按拍摄时间从旧到新、
-// 一批 30 张地用「查找照片」查出来，一张张传进网盘（只进不出，不需要密钥），传过的服务端会跳过：
-//   - 隐藏相册：只传“已隐藏”相簿里的，放进网盘根目录的“隐藏相册”文件夹；进度单独存在 xiaoju-hidden.json，
-//     每次运行都从上次传到的地方接着传；
-//   - 其他：只传没隐藏的，放进“相册”文件夹；进度存在 xiaoju-backup.json，「接着上次」从那里接着传，以后用它只传新拍的。
-// 进度（传到哪张照片的拍摄时间）存在 iCloud 云盘「快捷指令」文件夹里，每传好一张存一次：中途停了（锁屏、断网、出错）
-// 再运行一次就从那张接着传。
+// 上传「文件」里的一个文件夹：先在照片 App 里把要传的相簿（比如“已隐藏”）全选、分享、存储到“文件”的一个文件夹，
+// 再运行这个快捷指令选那个文件夹，里面的照片、视频一个个传进网盘（只进不出，不需要密钥）。
+//
+// 为什么不直接从相册读：
+//   - 相册的选择器一次选几百张，iOS 要先把每张都准备好放进内存，点完「添加」就卡住或闪退；
+//   - 「查找照片」的过滤条件（拍摄日期、已隐藏）在 iPhone 上实测都不生效（日期条件一张也查不到，已隐藏条件被忽略），
+//     没法分批，也挑不出隐藏的照片。照片 App 自己导出到“文件”最可靠。
+//
+// 每个文件先问服务端传过没有（同名同大小），传过的直接跳过、不再发送整个文件，所以中途停了再运行一次很快就能接着传。
 // 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始一条、每个视频一条（大视频慢）、每 10 个一条。
-#include 'actions/photos'
-#include 'actions/images'
 #include 'actions/scripting'
-#include 'actions/media'
 #include 'actions/documents'
-#include 'actions/calendar'
 #define name 备份照片到小桔云盘
 #define color orange
 #define glyph cloud
@@ -31,247 +28,98 @@ action 'downloadurl' uploadFile(
     "ShowHeaders": true
 }
 
+// 「获取 URL 的内容」：GET，只带头部（问服务端传过没有）
+action 'downloadurl' askServer(
+    text url: 'WFURL',
+    dictionary! headers: 'WFHTTPHeaders'
+) {
+    "WFHTTPMethod": "GET",
+    "ShowHeaders": true
+}
+
 // 上传地址：构建时由 build.py 换成网盘地址
 @uploadURL = "__INGEST_URL__"
-@progressFile = "xiaoju-backup.json"
+@existsURL = "{uploadURL}/exists"
 
-// 上次的进度。since 是给“查找照片”用的日期文字（精确到秒）；key 是精确到毫秒的数字（yyyyMMddHHmmssSSS），
-// 用来判断一张照片是不是已经处理过：拍摄时间不晚于 key 的都处理过了
-@saved = getFile(progressFile, false)
-@progress = getDictionary(saved)
-@savedSince = getValue(progress, "since")
-@savedKey = getValue(progress, "key")
-
-// 选传什么（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
-if savedKey {
-    @options = list("▶️ 接着上次（只传之后拍的）", "🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始", "🔧 诊断（不上传，出问题时截图）")
-    @chosen = chooseFromList(options, "要传哪些照片？上次已经传到 {savedSince} 拍的")
-} else {
-    @options = list("🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始", "🔧 诊断（不上传，出问题时截图）")
-    @chosen = chooseFromList(options, "要传哪些照片？")
+// 放进网盘哪个文件夹（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
+@targets = list("🙈 网盘的「隐藏相册」", "🖼 网盘的「相册」")
+@target = chooseFromList(targets, "这个文件夹里的照片、视频放进网盘哪里？")
+@targetText = "{target}"
+@albumKey = ""
+@folderName = "相册"
+if targetText == "🙈 网盘的「隐藏相册」" {
+    @albumKey = "hidden"
+    @folderName = "隐藏相册"
 }
-@choice = "{chosen}"
 
-// 诊断：一张也不传，用几种不同的写法查照片，看这台手机认哪一种（新版 iOS 的条件写法查不到资料）。
-// build.py 按 PLACEHOLDERS["backup"] 的前 11 项依次把下面的「获取最新的照片」换成不同条件的「查找照片」。
-// 日期 A–F 各查最多 5 张：能查到（5）说明这种写法可以用；隐藏 1–4 各查最多 300 张并取第一张的名字，
-// 和“全部”比：条件没生效时数量、名字都和“全部”一样。
-if choice == "🔧 诊断（不上传，出问题时截图）" {
-    @probeNow = currentDate()
-    @probePast = adjustDate(probeNow, "Subtract", 20, "yr")
-    @probeFuture = adjustDate(probeNow, "Add", 1, "days")
-    @sinceText = "1971-01-01 00:00:00"
-    @pA = getLatestPhotos(5)
-    @pB = getLatestPhotos(5)
-    @pC = getLatestPhotos(5)
-    @pD = getLatestPhotos(5)
-    @pE = getLatestPhotos(5)
-    @pF = getLatestPhotos(5)
-    @h1 = getLatestPhotos(300)
-    @h2 = getLatestPhotos(300)
-    @h3 = getLatestPhotos(300)
-    @h4 = getLatestPhotos(300)
-    @hAll = getLatestPhotos(300)
-    @nA = count(pA)
-    @nB = count(pB)
-    @nC = count(pC)
-    @nD = count(pD)
-    @nE = count(pE)
-    @nF = count(pF)
-    @n1 = count(h1)
-    @n2 = count(h2)
-    @n3 = count(h3)
-    @n4 = count(h4)
-    @nAll = count(hAll)
-    @name1 = ""
-    @name2 = ""
-    @name3 = ""
-    @name4 = ""
-    @nameAll = ""
-    if n1.number > 0 {
-        @first1 = getFirstItem(h1)
-        @name1 = getImageDetail(first1, "Name")
-    }
-    if n2.number > 0 {
-        @first2 = getFirstItem(h2)
-        @name2 = getImageDetail(first2, "Name")
-    }
-    if n3.number > 0 {
-        @first3 = getFirstItem(h3)
-        @name3 = getImageDetail(first3, "Name")
-    }
-    if n4.number > 0 {
-        @first4 = getFirstItem(h4)
-        @name4 = getImageDetail(first4, "Name")
-    }
-    if nAll.number > 0 {
-        @firstAll = getFirstItem(hAll)
-        @nameAll = getImageDetail(firstAll, "Name")
-    }
-    alert("日期 A{nA} B{nB} C{nC} D{nD} E{nE} F{nF}\n隐藏1 {n1} {name1}\n隐藏2 {n2} {name2}\n隐藏3 {n3} {name3}\n隐藏4 {n4} {name4}\n全部 {nAll} {nameAll}\n\n请把这个截图发给维护网盘的人。", "诊断结果")
+// 选「文件」里导出照片的那个文件夹
+@folder = selectFolder()
+@files = getFolderContents(folder)
+@total = count(files)
+if total.number == 0 {
+    alert("这个文件夹是空的。\n\n先在照片 App 里打开要传的相簿 → 选择 → 全选 → 分享 → 存储到“文件”，存到一个新文件夹里，再运行一次选那个文件夹。", "没有文件")
     stop()
 }
-@sinceText = ""
-@sinceKey = ""
-@now = currentDate()
-@start = now
-@fromDate = 0
-@hiddenOnly = 0
-@albumKey = ""
-@scope = "照片"
-@folderName = "相册"
-if choice == "🙈 隐藏相册" {
-    @hiddenOnly = 1
-    @albumKey = "hidden"
-    @scope = "隐藏相册里的照片"
-    @folderName = "隐藏相册"
-    @progressFile = "xiaoju-hidden.json"
-    @hiddenSaved = getFile(progressFile, false)
-    @hiddenProgress = getDictionary(hiddenSaved)
-    @hiddenSince = getValue(hiddenProgress, "since")
-    @hiddenKey = getValue(hiddenProgress, "key")
-    if hiddenKey {
-        @sinceText = "{hiddenSince}"
-        @sinceKey = "{hiddenKey}"
-    } else {
-        @sinceText = "1971-01-01 00:00:00"
-        @sinceKey = "19710101000000000"
-    }
-}
-if choice == "▶️ 接着上次（只传之后拍的）" {
-    @sinceText = "{savedSince}"
-    @sinceKey = "{savedKey}"
-}
-if choice == "📅 最近 7 天" {
-    @start = adjustDate(now, "Subtract", 7, "days")
-    @fromDate = 1
-}
-if choice == "📅 最近 30 天" {
-    @start = adjustDate(now, "Subtract", 30, "days")
-    @fromDate = 1
-}
-if choice == "📅 从某一天开始" {
-    @start = prompt("从哪天拍的照片开始传？", "Date")
-    @fromDate = 1
-}
-if choice == "🗂 整个相册（从最早的开始）" {
-    @sinceText = "1971-01-01 00:00:00"
-    @sinceKey = "19710101000000000"
-}
-if fromDate == 1 {
-    // 从那天 0 点开始（往前多算 1 秒，0 点整拍的那张也算在内）
-    @day = adjustDate(start, "Get Start of Day")
-    @edge = adjustDate(day, "Subtract", 1, "sec")
-    @sinceText = formatDate(edge, "Custom", "yyyy-MM-dd HH:mm:ss")
-    @sinceKey = formatDate(edge, "Custom", "yyyyMMddHHmmssSSS")
-}
-@startText = sinceText
-showNotification("{scope}：从 {sinceText} 之后拍的开始，一批 30 张往后传，放进网盘的“{folderName}”。传完前别锁屏、别切走", "小桔云盘 · 开始备份", false)
+showNotification("共 {total} 个文件，开始传进网盘的「{folderName}」。传完前别锁屏、别切走", "小桔云盘 · 开始上传", false)
 
 @uploaded = 0
 @skipped = 0
-@processed = 0
+@index = 0
 @sinceNote = 0
-@done = 0
-@stalled = 0
-repeat batch for 200 {
-    if done == 0 {
-        // build.py 把这两步依次换成「查找照片」：创建日期晚于 sinceText，“已隐藏”分别是 假 / 真，
-        // 按创建日期最旧的排最前，限制 30 张（顺序要和 build.py 的 PLACEHOLDERS["backup"] 对应）
-        if hiddenOnly == 0 {
-            @photos = getLatestPhotos(30)
-        } else {
-            @photos = getLatestPhotos(30)
-        }
-        @found = count(photos)
-        @advanced = 0
-        for photo in photos {
-            @created = getImageDetail(photo, "Creation Date")
-            @createdKey = formatDate(created, "Custom", "yyyyMMddHHmmssSSS")
-            @delta = createdKey - sinceKey
-            if delta.number > 0 {
-                @processed += 1
-                @name = getImageDetail(photo, "Name")
-                // 视频先用「编码视频」（Passthrough：原尺寸、不重新压缩）导出成文件再传。直接拿相册里的视频项上传，
-                // 某些视频（录屏、慢动作、原片在 iCloud）会报“produced no file representation for type public.mpeg-4”并停下。
-                // “媒体类型”只读照片库记录，不需要导出文件；中文系统里可能显示成“视频”或“影片”。
-                @mediaType = getImageDetail(photo, "Media Type")
-                @kind = "{mediaType}"
-                @isVideo = 0
-                if kind == "Video" {
-                    @isVideo = 1
-                }
-                if kind == "视频" {
-                    @isVideo = 1
-                }
-                if kind == "影片" {
-                    @isVideo = 1
-                }
-                @file = photo
-                if isVideo == 1 {
-                    @file = encodeVideo(photo)
-                    @size = getFileDetail(file, "File Size")
-                    showNotification("第 {processed} 个 · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
-                    @sinceNote = 0
-                }
-                @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}", "X-Xiaoju-Album": "{albumKey}"})
-                // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
-                // 不能直接 resp['result']——那会编译成读取文件属性
-                @respDict = getDictionary(resp)
-                @resultValue = getValue(respDict, "result")
-                @result = "{resultValue}"
-                if result == "uploaded" {
-                    @uploaded += 1
-                } else {
-                    if result == "skipped" {
-                        @skipped += 1
-                    } else {
-                        alert("{name} 没传上去：{resp}\n\n这次新上传 {uploaded} 个，进度已保存。检查网络后再运行一次，还选这一项就从这张接着传。", "上传失败")
-                        stop()
-                    }
-                }
-                @sinceText = formatDate(created, "Custom", "yyyy-MM-dd HH:mm:ss")
-                @sinceKey = createdKey
-                @advanced = 1
-                @state = {"since": "{sinceText}", "key": "{sinceKey}"}
-                saveFile(progressFile, state, true)
-                @sinceNote += 1
-                if sinceNote == 10 {
-                    showNotification("已处理 {processed} 个 · 新传 {uploaded} · 跳过 {skipped}\n已传到 {sinceText} 拍的", "小桔云盘 · 备份中", false)
-                    @sinceNote = 0
-                }
-            }
-        }
-        // 不满一批：后面没有照片了。满一批却一张都没处理：日期条件没生效（或 30 张拍摄时间完全相同），不能当成传完了
-        if found.number < 30 {
-            @done = 1
-        }
-        if advanced == 0 {
-            @done = 1
-            if found.number == 30 {
-                @stalled = 1
-            }
-        }
-    }
-}
-
-if processed == 0 {
-    if stalled == 0 {
-        alert("{scope}：{startText} 之后拍的都传过了，或者一张也没找到。\n\n如果明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」；传隐藏相册时可以先到 设置 → App → 照片，关掉「使用面容 ID」。还不行就再运行一次、选「🔧 诊断」，把结果截图发给维护网盘的人。", "没有新照片")
-        stop()
-    }
-}
-if stalled == 1 {
-    alert("这次新上传 {uploaded} 个，进度停在 {sinceText}。\n\n后面的照片查不出来（“查找照片”的日期条件可能没生效）。请把这个提示截图发给维护网盘的人。", "备份卡住了")
-    stop()
-}
-if done == 1 {
-    if hiddenOnly == 1 {
-        @tail = "🎉 隐藏相册都传完了，在网盘的“隐藏相册”文件夹"
+for file in files {
+    @index += 1
+    @name = getFileDetail(file, "Name")
+    @ext = getFileDetail(file, "File Extension")
+    @extText = "{ext}"
+    @fullName = "{name}.{extText}"
+    @sizeValue = getFileDetail(file, "File Size")
+    @bytes = fileSize(sizeValue, "Bytes")
+    // 先问传过没有：同名同大小算传过，不用再发一遍（问不清楚时服务端回答没传过，照常上传）
+    @check = askServer(existsURL, {"X-File-Name": "{fullName}", "X-File-Size": "{bytes}", "X-Xiaoju-Album": "{albumKey}"})
+    @checkDict = getDictionary(check)
+    @checkValue = getValue(checkDict, "result")
+    @checkText = "{checkValue}"
+    if checkText == "exists" {
+        @skipped += 1
     } else {
-        @tail = "🎉 到现在为止拍的都传完了。以后选「接着上次」只传新拍的"
+        @isVideo = 0
+        if extText == "MOV" {
+            @isVideo = 1
+        }
+        if extText == "mov" {
+            @isVideo = 1
+        }
+        if extText == "MP4" {
+            @isVideo = 1
+        }
+        if extText == "mp4" {
+            @isVideo = 1
+        }
+        if isVideo == 1 {
+            showNotification("{index}/{total} · {fullName}（{sizeValue}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+            @sinceNote = 0
+        }
+        @resp = uploadFile(uploadURL, file, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}"})
+        // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
+        // 不能直接 resp['result']——那会编译成读取文件属性
+        @respDict = getDictionary(resp)
+        @resultValue = getValue(respDict, "result")
+        @result = "{resultValue}"
+        if result == "uploaded" {
+            @uploaded += 1
+        } else {
+            if result == "skipped" {
+                @skipped += 1
+            } else {
+                alert("{fullName} 没传上去：{resp}\n\n这次新上传 {uploaded} 个。检查网络后再运行一次、选同一个文件夹，传过的会很快跳过。", "上传失败")
+                stop()
+            }
+        }
     }
-} else {
-    @tail = "⏩ 后面还有，再运行一次、还选这一项接着传"
+    @sinceNote += 1
+    if sinceNote == 10 {
+        showNotification("{index}/{total} · 新传 {uploaded} 个 · 跳过 {skipped} 个", "小桔云盘 · 上传中", false)
+        @sinceNote = 0
+    }
 }
-alert("{scope}\n✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个\n📍 已传到 {sinceText} 拍的\n\n{tail}", "照片备份")
+alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个\n📁 都在网盘的「{folderName}」\n\n都传好了：可以在「文件」里删掉这个文件夹（原照片还在相册里）。", "上传完成")

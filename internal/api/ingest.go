@@ -68,17 +68,15 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	// 已经传过：读完请求体（避免客户端在发送途中被断开而报错），不再写 Telegram
 	if r.ContentLength > 0 {
-		same, err := s.svc.Store().ListFilesBySize(ctx, s.userID, album.ID, r.ContentLength)
+		f, err := s.uploadedBefore(ctx, album.ID, name, r.ContentLength)
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
-		for _, f := range same {
-			if strings.EqualFold(stripCopySuffix(f.Name), stripCopySuffix(name)) {
-				io.Copy(io.Discard, body)
-				writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": f.Name})
-				return
-			}
+		if f != nil {
+			io.Copy(io.Discard, body)
+			writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": f.Name})
+			return
 		}
 	}
 
@@ -124,6 +122,84 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+}
+
+// uploadedBefore 找文件夹里已经传过的同一个文件：文件名去掉自动加的序号后相同（不分大小写）、大小也相同。
+// name 没有扩展名时只比较扩展名前面的部分（从相册直接传时快捷指令给的名字没有扩展名）。
+func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name string, size int64) (*meta.File, error) {
+	same, err := s.svc.Store().ListFilesBySize(ctx, s.userID, albumID, size)
+	if err != nil {
+		return nil, err
+	}
+	want := stripCopySuffix(name)
+	noExt := filepath.Ext(want) == ""
+	for _, f := range same {
+		got := stripCopySuffix(f.Name)
+		if noExt {
+			got = strings.TrimSuffix(got, filepath.Ext(got))
+		}
+		if strings.EqualFold(got, want) {
+			return f, nil
+		}
+	}
+	return nil, nil
+}
+
+// GET /api/ingest/exists（头部 X-File-Name、X-File-Size、X-Xiaoju-Album，同上传）：这个文件是不是已经传过了。
+// 快捷指令先问一下，传过的就不用再把整个文件发一遍（中途停了再运行时省时间、省流量）。
+// 返回 {"result":"exists"} 或 {"result":"missing"}；大小看不懂（比如带单位）时一律回答 missing，照常上传，不会漏传。
+// 只透露“同名同大小的文件在不在”，不能列目录、下载。
+func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
+	folder, ok := ingestAlbums[strings.ToLower(strings.TrimSpace(r.Header.Get("X-Xiaoju-Album")))]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown album")
+		return
+	}
+	missing := map[string]string{"result": "missing"}
+	size := parseByteCount(r.Header.Get("X-File-Size"))
+	name := ingestName(r, "")
+	if size <= 0 {
+		writeJSON(w, http.StatusOK, missing)
+		return
+	}
+	album, err := s.svc.Store().FindFolder(r.Context(), s.userID, nil, folder)
+	if errors.Is(err, meta.ErrNotFound) {
+		writeJSON(w, http.StatusOK, missing)
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	f, err := s.uploadedBefore(r.Context(), album.ID, name, size)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if f == nil {
+		writeJSON(w, http.StatusOK, missing)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"result": "exists", "name": f.Name})
+}
+
+// parseByteCount 读字节数：只允许数字和千位分隔符（“12,345”“12 345”），其他（“1.2 MB”）返回 0。
+func parseByteCount(v string) int64 {
+	v = strings.TrimSpace(v)
+	digits := strings.Map(func(c rune) rune {
+		switch {
+		case c >= '0' && c <= '9':
+			return c
+		case c == ',' || c == ' ' || c == '\'' || c == '\u00a0' || c == '\u202f':
+			return -1
+		}
+		return 'x'
+	}, v)
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ingestHeartbeat 是写 Telegram 期间给客户端发空格的间隔（要明显短于快捷指令约 60 秒的等待上限）。

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,34 @@ func TestIngest(t *testing.T) {
 	_, hidden := call("GET", "/api/folders/"+hiddenID+"/children", "", tokenH...)
 	if hiddenID == "" || len(hidden["items"].([]any)) != 1 {
 		t.Fatalf("hidden album folder: %q %v", hiddenID, hidden)
+	}
+
+	// 先问再传：同名同大小才算传过；名字没有扩展名时只比前面的部分；大小看不懂就当没传过
+	size := strconv.Itoa(len(jpeg))
+	for _, c := range []struct {
+		name, size, album, want string
+	}{
+		{"IMG_0001.JPG", size, "hidden", "exists"},
+		{"IMG_0001.jpg", size, "", "exists"},
+		{"IMG_0001", size, "", "exists"},
+		{"IMG_0001 (3).jpg", size, "", "exists"},
+		{"IMG_0001.jpg", "1," + size[1:], "", "missing"}, // 大小不一样
+		{"IMG_0001.jpg", "2.5 KB", "", "missing"},
+		{"IMG_0001.jpg", "", "", "missing"},
+		{"IMG_0009.jpg", size, "", "missing"},
+	} {
+		code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", c.name, "X-File-Size", c.size, "X-Xiaoju-Album", c.album)
+		if code != 200 || out["result"] != c.want {
+			t.Errorf("exists %q size %q album %q: %d %v, want %s", c.name, c.size, c.album, code, out, c.want)
+		}
+	}
+	if len(jpeg) >= 1000 {
+		if code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", "IMG_0001.jpg", "X-File-Size", size[:1]+","+size[1:]); code != 200 || out["result"] != "exists" {
+			t.Errorf("size with a thousands separator: %d %v", code, out)
+		}
+	}
+	if code, _ := call("GET", "/api/ingest/exists", "", "X-File-Name", "a.jpg", "X-File-Size", "1", "X-Xiaoju-Album", "x"); code != 400 {
+		t.Errorf("unknown album must be rejected: %d", code)
 	}
 }
 

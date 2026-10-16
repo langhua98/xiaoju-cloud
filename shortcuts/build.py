@@ -66,25 +66,13 @@ def fix_questions(wf):
 #   var:    日期条件用的变量名；op：比较方式（0 早于、2 晚于、3 不早于，与“如果”的 小于 / 大于 / 大于等于 同一套编号）
 #   hidden: True / False 加“已隐藏 是 真 / 假”，hidden_style 是它的写法（见 hidden_template）
 #
-# 日期、“已隐藏”条件在新版 iOS 上的确切写法查不到资料：sinceText 那种写法在 iPhone 上一张都查不到。
-# 所以 backup 先带一个「🔧 诊断」：前 11 项用不同写法各查一次，看手机认哪一种（结果截图），再改正式用的两项。
+# 注意：这些条件写法在 iPhone 上实测都不生效（2026-10，backup 的「🔧 诊断」：6 种日期写法都一张也查不到，
+# 4 种“已隐藏”写法都被忽略），新版 iOS 的确切写法查不到资料。backup 已经改成上传「文件」里的文件夹，不再用条件；
+# sync 还在用 values-text 写法（所以现在也查不到照片），等找到正确写法再改。
 _DATE = {"var": "sinceText", "op": 2, "date": "values-text"}
-_DIAG = [
-    dict(_DATE),                                           # A：现在的写法（日期文字）
-    {"date": "values-var", "var": "probePast", "op": 2},   # B：日期变量，晚于 20 年前
-    {"date": "values-var", "var": "probeFuture", "op": 0}, # C：日期变量，早于明天
-    {"date": "values-var", "var": "probePast", "op": 3},   # D：日期变量，不早于 20 年前
-    {"date": "top-var", "var": "probePast", "op": 2},      # E：日期变量放在条件最外层（旧版写法）
-    {"date": "override", "var": "probePast", "op": 2},     # F：日期变量放在 VariableOverrides 里
-    {"hidden": True, "hidden_style": "top"},               # 已隐藏 是 真：旧版写法
-    {"hidden": True, "hidden_style": "values"},            # 已隐藏 是 真：值放在 Values 里
-    {"hidden": False, "hidden_style": "top"},
-    {"hidden": False, "hidden_style": "values"},
-    {},                                                    # 没有条件：全部照片（对照）
-]
 PLACEHOLDERS = {
     "sync": [dict(_DATE)],
-    "backup": _DIAG + [dict(_DATE, hidden=False, hidden_style="top"), dict(_DATE, hidden=True, hidden_style="top")],
+    "backup": [],
 }
 
 
