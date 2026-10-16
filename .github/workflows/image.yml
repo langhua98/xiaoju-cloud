@@ -35,9 +35,9 @@ jobs:
             || run ffmpeg -nostdin -v error -f lavfi -i testsrc=size=360x640:rate=30:duration=2 -c:v mpeg4 -y /t/v.mov
           run vips -l | grep -i heifload
           for f in a.jpg sample.heic taken.heic v.mov; do
-            run xiaoju thumb "/t/$f" "/t/$f.thumb.jpg" 2>&1 | tee /tmp/t/log
-            grep -q 'found="\[vips ffmpeg\]"' /tmp/t/log
+            run xiaoju thumb "/t/$f" "/t/$f.thumb.jpg" 2>&1 | tee "/tmp/t/$f.log"
+            grep -q 'found="\[vips ffmpeg\]"' "/tmp/t/$f.log"
             run vipsheader "/t/$f.thumb.jpg" | tee /dev/stderr | grep -q ': 320x320 '
           done
           # 拍摄时间（相册排序用）从 HEIC 的 EXIF 里读出来了
-          grep -q 'taken=2021-02-03T04:05:06' /tmp/t/log
+          grep -q 'taken=2021-02-03T04:05:06' /tmp/t/taken.heic.log

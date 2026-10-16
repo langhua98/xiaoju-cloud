@@ -168,6 +168,9 @@ func TestPhotoTaken(t *testing.T) {
 
 	// 生成缩略图时一起读出来
 	g := New(t.TempDir())
+	if len(g.Tools()) == 0 {
+		t.Skip("neither vips nor ffmpeg installed")
+	}
 	g.Location = shanghai
 	res, err := g.Generate(context.Background(), fileSource("testdata/taken.jpg"))
 	if err != nil {
