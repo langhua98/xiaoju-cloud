@@ -5,7 +5,7 @@
 
 1. 用 Cherri 编译 <shortcut>.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
 2. 修正导入问题指向的操作（如果有；Cherri 1.3.2 会把多个问题都指向第 0 个操作）；
-   把占位的「获取最新的照片」换成带日期条件的「查找照片」（Cherri 不支持过滤条件）；
+   把占位的「获取最新的照片」换成带日期（和“已隐藏”）条件的「查找照片」（Cherri 不支持过滤条件）；
 3. 检查“如果 / 重复”的开始和结束一一对应（Cherri 1.3.2 编译 else if 会把“结束”放错位置）；
 4. iOS 15 起快捷指令文件必须签名才能导入：交给 RoutineHub 的 HubSign 服务签名（Cherri 在非 macOS 上也用它）。
    文件里只有上传地址（本来就公开在 web/config.js 里），没有任何密钥。
@@ -60,44 +60,55 @@ def fix_questions(wf):
         q["ActionIndex"] = i
 
 
-def find_photos(wf, since_var="sinceText"):
-    """把占位的「获取最新的照片」换成「查找照片」——创建日期晚于变量 since_var，按创建日期最旧的排最前，
-    张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
+# 每个快捷指令里「获取最新的照片」占位依次换成的「查找照片」要不要加“已隐藏”条件：
+# None 不加；False 只要没隐藏的；True 只要“已隐藏”相簿里的
+HIDDEN_FILTERS = {"sync": [None], "backup": [False, True]}
+
+
+def find_photos(wf, hidden, since_var="sinceText"):
+    """把占位的「获取最新的照片」依次换成「查找照片」——创建日期晚于变量 since_var（hidden 不是 None 时再加
+    “已隐藏 是 hidden”），按创建日期最旧的排最前，张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换
+    （保留 UUID，后面引用它输出的操作不用改）。"""
     hits = [a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.getlastphoto"]
-    if len(hits) != 1:
-        sys.exit(f"expected exactly one getLatestPhotos placeholder, found {len(hits)}")
-    action = hits[0]
-    old = action["WFWorkflowActionParameters"]
-    action["WFWorkflowActionIdentifier"] = "is.workflow.actions.filter.photos"
-    action["WFWorkflowActionParameters"] = {
-        "UUID": old["UUID"],
-        "CustomOutputName": old["CustomOutputName"],
-        "WFContentItemFilter": {
-            "WFSerializationType": "WFContentPredicateTableTemplate",
-            "Value": {
-                "WFActionParameterFilterPrefix": 1,
-                "WFContentPredicateBoundedDate": False,
-                "WFActionParameterFilterTemplates": [{
-                    "Bounded": True,
-                    "Removable": True,
-                    "Property": "Creation Date",
-                    "Operator": 2,  # 日期：0 早于，2 晚于（与“如果”的 小于 / 大于 同一套编号）
-                    "Values": {
-                        "Unit": 4,
-                        "Date": {
-                            "WFSerializationType": "WFTextTokenString",
-                            "Value": {"string": "\ufffc", "attachmentsByRange": {
-                                "{0, 1}": {"Type": "Variable", "VariableName": since_var}}},
-                        },
-                    },
-                }],
+    if len(hits) != len(hidden):
+        sys.exit(f"expected {len(hidden)} getLatestPhotos placeholders, found {len(hits)}")
+    for action, h in zip(hits, hidden):
+        old = action["WFWorkflowActionParameters"]
+        templates = [{
+            "Bounded": True,
+            "Removable": True,
+            "Property": "Creation Date",
+            "Operator": 2,  # 日期：0 早于，2 晚于（与“如果”的 小于 / 大于 同一套编号）
+            "Values": {
+                "Unit": 4,
+                "Date": {
+                    "WFSerializationType": "WFTextTokenString",
+                    "Value": {"string": "\ufffc", "attachmentsByRange": {
+                        "{0, 1}": {"Type": "Variable", "VariableName": since_var}}},
+                },
             },
-        },
-        "WFContentItemSortProperty": "Creation Date",
-        "WFContentItemSortOrder": "Oldest First",
-        "WFContentItemLimitEnabled": True,
-        "WFContentItemLimitNumber": old["WFGetLatestPhotoCount"],
-    }
+        }]
+        if h is not None:
+            # 是 / 否 类的条件：Operator 4 是“是”，值放在 Bool（和快捷指令 App 里选“已隐藏 是 真 / 假”存下来的一样）
+            templates.append({"Property": "Is Hidden", "Operator": 4, "Bool": h, "Removable": True, "Unit": 4,
+                              "VariableOverrides": {}})
+        action["WFWorkflowActionIdentifier"] = "is.workflow.actions.filter.photos"
+        action["WFWorkflowActionParameters"] = {
+            "UUID": old["UUID"],
+            "CustomOutputName": old["CustomOutputName"],
+            "WFContentItemFilter": {
+                "WFSerializationType": "WFContentPredicateTableTemplate",
+                "Value": {
+                    "WFActionParameterFilterPrefix": 1,  # 1：所有条件都满足
+                    "WFContentPredicateBoundedDate": False,
+                    "WFActionParameterFilterTemplates": templates,
+                },
+            },
+            "WFContentItemSortProperty": "Creation Date",
+            "WFContentItemSortOrder": "Oldest First",
+            "WFContentItemLimitEnabled": True,
+            "WFContentItemLimitNumber": old["WFGetLatestPhotoCount"],
+        }
 
 
 def check_structure(wf):
@@ -164,7 +175,7 @@ def main():
     source = (HERE / f"{a.shortcut}.cherri").read_text().replace("__INGEST_URL__", api_url(a.api) + "/api/ingest")
     wf = compile_cherri(a.cherri, source)
     fix_questions(wf)
-    find_photos(wf)
+    find_photos(wf, HIDDEN_FILTERS[a.shortcut])
     check_structure(wf)
     xml = plistlib.dumps(wf, fmt=plistlib.FMT_XML).decode()
     data = xml.encode() if a.skip_sign else sign(SHORTCUTS[a.shortcut], xml)

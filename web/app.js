@@ -1150,9 +1150,10 @@ async function renderShortcutSec() {
       + "每次传完告诉你新上传几张、以前传过几张、已经备份到哪天拍的照片。传的时候别锁屏，第一次运行要允许访问照片和连接网盘。" }));
   const install = mk("div", { className: "key-install", hidden: true },
     mk("a", { className: "button primary", href: SHORTCUT_FILE, textContent: "安装「备份照片」" }),
-    mk("p", { className: "hint", textContent: "几百上千张都行（不用相册的选择器，那里一次选太多会卡住）：先选从哪开始——接着上次、最近 7 天、"
-      + "最近 30 天、某一天起或整个相册，然后按拍摄时间一批 30 张往后传，一次最多 6000 张，传的时候有通知报进度。"
-      + "进度记在 iCloud 云盘「快捷指令」文件夹的 xiaoju-backup.json 里：中途停了，再运行选「接着上次」接着传；以后选它只传新拍的。" }),
+    mk("p", { className: "hint", textContent: "几百上千张都行（不用相册的选择器，那里一次选太多会卡住）：先选传什么——隐藏相册、整个相册、"
+      + "接着上次、最近 7 天、最近 30 天或某一天起，然后按拍摄时间一批 30 张往后传，一次最多 6000 张，传的时候有通知报进度。"
+      + "隐藏相册里的照片单独放进网盘的“隐藏相册”文件夹，其他放进“相册”。进度记在 iCloud 云盘「快捷指令」文件夹里"
+      + "（xiaoju-hidden.json、xiaoju-backup.json）：中途停了，再运行一次、还选那一项就接着传；整个相册传完以后，选「接着上次」只传新拍的。" }),
     mk("p", { className: "hint", textContent: "安装：点按钮后 Safari 问是否下载就选「下载」，再在下载列表里点开，在快捷指令 App 里点「添加快捷指令」。"
       + "第一次运行会问能否连接网盘，选「始终允许」。" }));
   const manual = mk("details", { className: "key-manual" },

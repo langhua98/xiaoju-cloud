@@ -2,10 +2,13 @@
 // 由 shortcuts/build.py 编译、签名，发布网页时一起放到 GitHub Pages（xiaoju-backup.shortcut）。
 //
 // 不用相册的选择器：一次选几百张时，iOS 要先把每张照片都准备好放进内存才交给快捷指令，点完「添加」就卡住或闪退。
-// 改成先选从哪里开始（接着上次 / 最近 7 天 / 最近 30 天 / 某一天起 / 整个相册），再按拍摄时间从旧到新、
-// 一批 30 张地用「查找照片」查出来，一张张传进网盘根目录的“相册”文件夹（只进不出，不需要密钥），传过的服务端会跳过。
-// 每传好一张，进度（传到哪张照片的拍摄时间）存进 iCloud 云盘「快捷指令」文件夹的 xiaoju-backup.json：
-// 中途停了（锁屏、断网、出错），再运行选「接着上次」就从那张接着传，以后也可以用它只传新拍的。
+// 改成先选传什么（隐藏相册 / 整个相册 / 接着上次 / 最近 7 天 / 最近 30 天 / 某一天起），再按拍摄时间从旧到新、
+// 一批 30 张地用「查找照片」查出来，一张张传进网盘（只进不出，不需要密钥），传过的服务端会跳过：
+//   - 隐藏相册：只传“已隐藏”相簿里的，放进网盘根目录的“隐藏相册”文件夹；进度单独存在 xiaoju-hidden.json，
+//     每次运行都从上次传到的地方接着传；
+//   - 其他：只传没隐藏的，放进“相册”文件夹；进度存在 xiaoju-backup.json，「接着上次」从那里接着传，以后用它只传新拍的。
+// 进度（传到哪张照片的拍摄时间）存在 iCloud 云盘「快捷指令」文件夹里，每传好一张存一次：中途停了（锁屏、断网、出错）
+// 再运行一次就从那张接着传。
 // 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始一条、每个视频一条（大视频慢）、每 10 个一条。
 #include 'actions/photos'
 #include 'actions/images'
@@ -39,12 +42,12 @@ action 'downloadurl' uploadFile(
 @savedSince = getValue(progress, "since")
 @savedKey = getValue(progress, "key")
 
-// 选从哪里开始（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
+// 选传什么（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
 if savedKey {
-    @options = list("▶️ 接着上次（只传之后拍的）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始", "🗂 整个相册（从最早的开始）")
+    @options = list("▶️ 接着上次（只传之后拍的）", "🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始")
     @chosen = chooseFromList(options, "要传哪些照片？上次已经传到 {savedSince} 拍的")
 } else {
-    @options = list("📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始", "🗂 整个相册（从最早的开始）")
+    @options = list("🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始")
     @chosen = chooseFromList(options, "要传哪些照片？")
 }
 @choice = "{chosen}"
@@ -53,6 +56,28 @@ if savedKey {
 @now = currentDate()
 @start = now
 @fromDate = 0
+@hiddenOnly = 0
+@albumKey = ""
+@scope = "照片"
+@folderName = "相册"
+if choice == "🙈 隐藏相册" {
+    @hiddenOnly = 1
+    @albumKey = "hidden"
+    @scope = "隐藏相册里的照片"
+    @folderName = "隐藏相册"
+    @progressFile = "xiaoju-hidden.json"
+    @hiddenSaved = getFile(progressFile, false)
+    @hiddenProgress = getDictionary(hiddenSaved)
+    @hiddenSince = getValue(hiddenProgress, "since")
+    @hiddenKey = getValue(hiddenProgress, "key")
+    if hiddenKey {
+        @sinceText = "{hiddenSince}"
+        @sinceKey = "{hiddenKey}"
+    } else {
+        @sinceText = "1971-01-01 00:00:00"
+        @sinceKey = "19710101000000000"
+    }
+}
 if choice == "▶️ 接着上次（只传之后拍的）" {
     @sinceText = "{savedSince}"
     @sinceKey = "{savedKey}"
@@ -81,7 +106,7 @@ if fromDate == 1 {
     @sinceKey = formatDate(edge, "Custom", "yyyyMMddHHmmssSSS")
 }
 @startText = sinceText
-showNotification("从 {sinceText} 之后拍的开始，一批 30 张往后传。传完前别锁屏、别切走", "小桔云盘 · 开始备份", false)
+showNotification("{scope}：从 {sinceText} 之后拍的开始，一批 30 张往后传，放进网盘的“{folderName}”。传完前别锁屏、别切走", "小桔云盘 · 开始备份", false)
 
 @uploaded = 0
 @skipped = 0
@@ -91,8 +116,13 @@ showNotification("从 {sinceText} 之后拍的开始，一批 30 张往后传。
 @stalled = 0
 repeat batch for 200 {
     if done == 0 {
-        // build.py 把这一步换成「查找照片」：创建日期晚于 sinceText，按创建日期最旧的排最前，限制 30 张
-        @photos = getLatestPhotos(30)
+        // build.py 把这两步依次换成「查找照片」：创建日期晚于 sinceText，“已隐藏”分别是 假 / 真，
+        // 按创建日期最旧的排最前，限制 30 张（顺序要和 build.py 的 HIDDEN_FILTERS["backup"] 对应）
+        if hiddenOnly == 0 {
+            @photos = getLatestPhotos(30)
+        } else {
+            @photos = getLatestPhotos(30)
+        }
         @found = count(photos)
         @advanced = 0
         for photo in photos {
@@ -124,7 +154,7 @@ repeat batch for 200 {
                     showNotification("第 {processed} 个 · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
                     @sinceNote = 0
                 }
-                @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}"})
+                @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}", "X-Xiaoju-Album": "{albumKey}"})
                 // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
                 // 不能直接 resp['result']——那会编译成读取文件属性
                 @respDict = getDictionary(resp)
@@ -136,7 +166,7 @@ repeat batch for 200 {
                     if result == "skipped" {
                         @skipped += 1
                     } else {
-                        alert("{name} 没传上去：{resp}\n\n这次新上传 {uploaded} 个，进度已保存。检查网络后再运行一次，选「接着上次」从这张接着传。", "上传失败")
+                        alert("{name} 没传上去：{resp}\n\n这次新上传 {uploaded} 个，进度已保存。检查网络后再运行一次，还选这一项就从这张接着传。", "上传失败")
                         stop()
                     }
                 }
@@ -167,7 +197,7 @@ repeat batch for 200 {
 
 if processed == 0 {
     if stalled == 0 {
-        alert("{startText} 之后没有找到要传的照片。\n\n如果相册里明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」，再运行一次。", "没有新照片")
+        alert("{scope}：{startText} 之后拍的都传过了，或者一张也没找到。\n\n如果明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」；传隐藏相册还可以到 设置 → App → 照片，打开「显示“已隐藏”相簿」，再运行一次。", "没有新照片")
         stop()
     }
 }
@@ -176,8 +206,12 @@ if stalled == 1 {
     stop()
 }
 if done == 1 {
-    @tail = "🎉 到现在为止拍的都传完了。以后选「接着上次」只传新拍的"
+    if hiddenOnly == 1 {
+        @tail = "🎉 隐藏相册都传完了，在网盘的“隐藏相册”文件夹"
+    } else {
+        @tail = "🎉 到现在为止拍的都传完了。以后选「接着上次」只传新拍的"
+    }
 } else {
-    @tail = "⏩ 后面还有，再运行一次选「接着上次」接着传"
+    @tail = "⏩ 后面还有，再运行一次、还选这一项接着传"
 }
-alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个\n📍 已传到 {sinceText} 拍的\n\n{tail}", "照片备份")
+alert("{scope}\n✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个\n📍 已传到 {sinceText} 拍的\n\n{tail}", "照片备份")

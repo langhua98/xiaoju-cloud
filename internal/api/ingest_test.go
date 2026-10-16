@@ -176,6 +176,28 @@ func TestIngest(t *testing.T) {
 	if code, out := ingest("VID_0001", video); code != 200 || out["result"] != "skipped" {
 		t.Fatalf("video re-run must be skipped: %d %v", code, out)
 	}
+
+	// 隐藏相册：X-Xiaoju-Album: hidden 放进根目录的“隐藏相册”，和“相册”分开查重；不认识的值拒绝（不能随意建文件夹）
+	if code, out := call("POST", "/api/ingest", jpeg, "X-File-Name", "IMG_0001", "X-Xiaoju-Album", "hidden"); code != 201 || out["name"] != "IMG_0001.jpg" {
+		t.Fatalf("hidden album ingest: %d %v", code, out)
+	}
+	if code, out := call("POST", "/api/ingest", jpeg, "X-File-Name", "IMG_0001", "X-Xiaoju-Album", "Hidden"); code != 200 || out["result"] != "skipped" {
+		t.Fatalf("hidden album re-run must be skipped: %d %v", code, out)
+	}
+	if code, _ := call("POST", "/api/ingest", jpeg, "X-File-Name", "IMG_0002", "X-Xiaoju-Album", "../etc"); code != 400 {
+		t.Fatalf("unknown album must be rejected: %d", code)
+	}
+	_, root = call("GET", "/api/folders/root/children", "", tokenH...)
+	var hiddenID string
+	for _, it := range root["items"].([]any) {
+		if m := it.(map[string]any); m["name"] == HiddenAlbumFolder {
+			hiddenID = m["id"].(string)
+		}
+	}
+	_, hidden := call("GET", "/api/folders/"+hiddenID+"/children", "", tokenH...)
+	if hiddenID == "" || len(hidden["items"].([]any)) != 1 {
+		t.Fatalf("hidden album folder: %q %v", hiddenID, hidden)
+	}
 }
 
 // slowDriver 模拟写 Telegram 很慢（大视频）

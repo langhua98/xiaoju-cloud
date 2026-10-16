@@ -30,9 +30,16 @@ import (
 // AlbumFolder 是同步相册用的文件夹（和网页的“同步相册”是同一个）。
 const AlbumFolder = "相册"
 
+// HiddenAlbumFolder 放 iPhone“已隐藏”相簿里的照片，和其他照片分开。
+const HiddenAlbumFolder = "隐藏相册"
+
+// ingestAlbums：上传时用 X-Xiaoju-Album 选放进哪个文件夹（都在根目录）。只能选这几个，不能随意建文件夹。
+var ingestAlbums = map[string]string{"": AlbumFolder, "hidden": HiddenAlbumFolder}
+
 // POST /api/ingest[?name=IMG_0001.HEIC]
 //
 //	头部 X-File-Name: 文件名（也可以放在 ?name=；没有扩展名时按文件内容补上）
+//	头部 X-Xiaoju-Album: hidden 时放进“隐藏相册”，不带时放进“相册”
 //	请求体：文件原始内容
 //
 // 文件名去掉自动加的序号后相同、大小也相同的视为已经传过，直接跳过：
@@ -49,7 +56,12 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	ext, sniffed := media.Sniff(head)
 	name := ingestName(r, ext)
 
-	album, err := s.albumFolder(r)
+	folder, ok := ingestAlbums[strings.ToLower(strings.TrimSpace(r.Header.Get("X-Xiaoju-Album")))]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown album")
+		return
+	}
+	album, err := s.albumFolder(r, folder)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -189,14 +201,14 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// albumFolder 返回根目录的“相册”文件夹，没有就新建。
-func (s *Server) albumFolder(r *http.Request) (*meta.File, error) {
+// albumFolder 返回根目录下名为 name 的文件夹（“相册”或“隐藏相册”），没有就新建。
+func (s *Server) albumFolder(r *http.Request, name string) (*meta.File, error) {
 	store := s.svc.Store()
-	f, err := store.FindFolder(r.Context(), s.userID, nil, AlbumFolder)
+	f, err := store.FindFolder(r.Context(), s.userID, nil, name)
 	if errors.Is(err, meta.ErrNotFound) {
-		f, err = store.CreateFolder(r.Context(), s.userID, nil, AlbumFolder)
+		f, err = store.CreateFolder(r.Context(), s.userID, nil, name)
 		if errors.Is(err, meta.ErrConflict) { // 同时有别的请求建好了
-			f, err = store.FindFolder(r.Context(), s.userID, nil, AlbumFolder)
+			f, err = store.FindFolder(r.Context(), s.userID, nil, name)
 		}
 	}
 	return f, err
