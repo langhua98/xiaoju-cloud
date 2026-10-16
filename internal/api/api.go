@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	// 批量上传（快捷指令）：不需要认证，只能往“相册”里添加文件，见 ingest.go
 	api.HandleFunc("POST /api/ingest", s.ingest)
 	api.HandleFunc("GET /api/ingest/exists", s.ingestExists)
+	api.HandleFunc("GET /api/ingest/names", s.ingestNames)
 
 	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。

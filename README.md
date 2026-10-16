@@ -83,7 +83,8 @@ make run
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
 | `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
-| `GET` | `/api/ingest/exists` | 批量上传前先问：头部 `X-File-Name`、`X-File-Size`（字节数）、`X-Xiaoju-Album`，返回 `{"result":"exists"\|"missing"}`（不需要认证） |
+| `GET` | `/api/ingest/exists` | 批量上传前先问：头部 `X-File-Name`、`X-File-Size`（字节数；不带时只看名字）、`X-Xiaoju-Album`，返回 `{"result":"exists"\|"missing"}`（不需要认证） |
+| `GET` | `/api/ingest/names` | 头部 `X-Xiaoju-Album`：相册里已有文件名的 SHA-256（`text/plain`，一行一个；只给摘要，列不出文件名；不需要认证） |
 | `GET` | `/thumb/{id}?exp=..&sig=..` | 320×320 的 JPEG 缩略图（地址来自列目录，无需认证头；做不了的返回 404） |
 
 开启了 Face ID / 指纹或格子口令后，上面这些文件接口需要 `X-Xiaoju-Session` 会话（见下方「刷脸登录」「格子口令」）。
@@ -224,8 +225,10 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
   （已传过的同名同大小文件服务端会跳过）。
 - **备份照片到小桔云盘**（`shortcuts/backup.cherri`）：**上传「文件」里的一个文件夹**。先在照片 App 里把要传的相簿
   （比如“已隐藏”）全选 → 分享 → 存储到“文件”的一个新文件夹，再运行它：选放进网盘的“隐藏相册”（`X-Xiaoju-Album: hidden`）
-  还是“相册”，再选那个文件夹。每个文件先 `GET /api/ingest/exists` 问传过没有（同名同大小），传过的不再发送，
-  所以中途停了再运行一次很快就接着传。上传必须带文件名（`X-File-Name`），没带的返回 400 `missing_name`，快捷指令停下报错；
+  还是“相册”，再选那个文件夹。像断点续传：开始时 `GET /api/ingest/names` 取一次相册里已有文件名的 SHA-256，
+  每个文件只取名字和扩展名、算 SHA-256 在手机上比对，**名字一样就当传过**直接跳过（不读文件大小、不用每个都问服务端），
+  所以中途停了再运行一次很快就接着传。开始时先算一下 `SHA256("xiaoju")` 对不对，不对就退回每个文件 `GET /api/ingest/exists`
+  （只带名字）。上传必须带文件名（`X-File-Name`），没带的返回 400 `missing_name`，快捷指令停下报错；
   以前没带名字传上来、被自动起名“照片 2026-10-16 035540-982f.mp4”的文件，重新运行时按“同文件夹、大小完全一样”认出来，
   改回真名、当作传过。（Cherri 1.3.2 自带的「获取文件的详细信息」把文件放进 `WFFolder` 参数，iPhone 上取到的名字、
   大小全是空的；`backup.cherri` 自己定义了放进 `WFInput` 的版本。）为什么不直接从相册读：
@@ -236,7 +239,7 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 **进度**：快捷指令运行时界面上看不到进度，两个快捷指令都用**不响铃的通知**报进度：开始时一条（共几个 / 从哪天接着传），
 每个视频开始上传时一条（第几个、文件名、大小，大视频要等一会儿），每处理 10 个一条（第几个、新传几个、跳过几个，
-同步相册还会显示已经备份到哪天拍的），最后一条汇总。
+同步相册还会显示已经备份到哪天拍的；备份照片是每传 10 个、每跳过 200 个一条），最后一条汇总。
 
 两个文件都在发布网页时由 `shortcuts/build.py` 自动编译（[Cherri](https://github.com/electrikmilk/cherri)），上传地址取自 `web/config.js`，
 并交给 RoutineHub 的 HubSign 服务签名（iOS 15 起快捷指令文件必须签名才能导入；文件里只有上传地址，没有任何密钥）。
@@ -354,7 +357,7 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 - **「此操作无法在当前用户界面中运行」**：快捷指令运行时 App 进了后台、熄屏或锁屏，「获取 URL 的内容」就会报这个错；
   新装的快捷指令第一次联网要弹窗授权，新版 iOS 的简化运行界面弹不出来也报这个错——让用户在编辑界面点 ▶ 运行一次、选“始终允许”。
   授权过（始终允许）以后，用户实测切到别的 App 也会在后台继续传（灵动岛上有进度圈），锁屏后会不会停还没验证过。
-  长时间上传还是让用户把自动锁定设成“永不”、插着电。（`backup.cherri` 开始时的通知还写着“别切走”，下次改快捷指令时顺手改掉。）
+  长时间上传还是让用户把自动锁定设成“永不”、插着电。
 - 编码视频（「编码视频」Passthrough）在从相册直接读视频时需要；从“文件”传就不用了。
 - 发通知用不响铃的（`showNotification(..., false)`），每 10 个一条，是唯一能在运行中看到进度的办法。
 

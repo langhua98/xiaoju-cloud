@@ -49,3 +49,32 @@ func (s *Store) RenameFile(ctx context.Context, userID, id uuid.UUID, name strin
 	}
 	return nil
 }
+
+// ListFileNames 列出目录下所有（未删除的）文件的名字。
+func (s *Store) ListFileNames(ctx context.Context, userID, parentID uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT name FROM files
+		WHERE user_id = $1 AND parent_id = $2 AND type = 'file' AND status = 'active' AND trashed_at IS NULL`, userID, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// FindFileByName 找目录下同名（不分大小写）的文件；没有时返回 ErrNotFound。
+func (s *Store) FindFileByName(ctx context.Context, userID, parentID uuid.UUID, name string) (*File, error) {
+	return scanFile(s.db.QueryRow(ctx, `
+		SELECT `+fileColumns+` FROM files
+		WHERE user_id = $1 AND parent_id = $2 AND lower(name) = lower($3)
+		  AND type = 'file' AND status = 'active' AND trashed_at IS NULL
+		LIMIT 1`, userID, parentID, name))
+}
