@@ -1,10 +1,12 @@
 // “备份照片到小桔云盘”快捷指令（Cherri 语言，https://github.com/electrikmilk/cherri）。
 // 由 shortcuts/build.py 编译、签名，发布网页时一起放到 GitHub Pages（xiaoju-backup.shortcut）。
 // 从相册多选照片 / 视频，一个个传进网盘根目录的“相册”文件夹（只进不出，不需要密钥），传过的自动跳过。
+// 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始一条、每个视频一条（大视频慢）、每 10 个一条。
 #include 'actions/photos'
 #include 'actions/images'
 #include 'actions/scripting'
 #include 'actions/media'
+#include 'actions/documents'
 #define name 备份照片到小桔云盘
 #define color orange
 #define glyph cloud
@@ -24,9 +26,14 @@ action 'downloadurl' uploadFile(
 @uploadURL = "__INGEST_URL__"
 
 @photos = selectPhotos(true)
+@total = count(photos)
 @uploaded = 0
 @skipped = 0
+@index = 0
+@sinceNote = 0
+showNotification("共 {total} 个，开始上传。传完前别锁屏、别切走", "小桔云盘 · 开始备份", false)
 for photo in photos {
+    @index += 1
     @name = getImageDetail(photo, "Name")
     // 视频先用「编码视频」（Passthrough：原尺寸、不重新压缩）导出成文件再传。直接拿相册里的视频项上传，
     // 某些视频（录屏、慢动作、原片在 iCloud）会报“produced no file representation for type public.mpeg-4”并停下。
@@ -47,6 +54,9 @@ for photo in photos {
     @file = photo
     if isVideo == 1 {
         @file = encodeVideo(photo)
+        @size = getFileDetail(file, "File Size")
+        showNotification("{index}/{total} · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+        @sinceNote = 0
     }
     @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}"})
     // 返回的是 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
@@ -63,6 +73,11 @@ for photo in photos {
             alert("{name} 没传上去：{resp}\n\n已上传 {uploaded} 个。检查网络后再运行一次，传过的会自动跳过。", "上传失败")
             stop()
         }
+    }
+    @sinceNote += 1
+    if sinceNote == 10 {
+        showNotification("{index}/{total} · 新传 {uploaded} 个 · 跳过 {skipped} 个", "小桔云盘 · 备份中", false)
+        @sinceNote = 0
     }
 }
 showNotification("上传 {uploaded} 个，跳过 {skipped} 个（以前传过）", "照片备份完成")

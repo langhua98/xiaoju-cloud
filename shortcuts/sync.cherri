@@ -5,6 +5,7 @@
 // 会超出快捷指令的内存上限，所以每批只查“进度之后”最旧的 50 张，一次运行最多 10 批（500 张）。
 // 进度（已经传到哪张照片的拍摄时间）存在 iCloud 云盘「快捷指令」文件夹的 xiaoju-sync.json 里，每传一张存一次：
 // 中途停了、出错了，下次运行从那张接着传。服务端仍然只进不出、不需要密钥，同名同大小的文件会跳过。
+// 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始一条、每个视频一条（大视频慢）、每 10 张一条。
 #include 'actions/photos'
 #include 'actions/images'
 #include 'actions/scripting'
@@ -45,8 +46,16 @@ if !keyValue {
     @sinceKey = "19710101000000000"
 }
 
+if fresh == 1 {
+    showNotification("第一次同步：从最早的照片开始，这次最多传 500 张。传完前别锁屏、别切走", "小桔云盘 · 开始同步", false)
+} else {
+    showNotification("从 {sinceText} 拍的照片之后接着传，这次最多 500 张。传完前别锁屏、别切走", "小桔云盘 · 开始同步", false)
+}
+
 @uploaded = 0
 @skipped = 0
+@processed = 0
+@sinceNote = 0
 @done = 0
 @stalled = 0
 @progressed = 0
@@ -61,6 +70,7 @@ repeat batch for 10 {
             @createdKey = formatDate(created, "Custom", "yyyyMMddHHmmssSSS")
             @delta = createdKey - sinceKey
             if delta.number > 0 {
+                @processed += 1
                 @name = getImageDetail(photo, "Name")
                 // 视频先用「编码视频」（Passthrough：原尺寸、不重新压缩）导出成文件再传，见 backup.cherri
                 @mediaType = getImageDetail(photo, "Media Type")
@@ -79,6 +89,9 @@ repeat batch for 10 {
                 @file = photo
                 if isVideo == 1 {
                     @file = encodeVideo(photo)
+                    @size = getFileDetail(file, "File Size")
+                    showNotification("第 {processed} 个 · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+                    @sinceNote = 0
                 }
                 @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}"})
                 // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped）
@@ -101,6 +114,11 @@ repeat batch for 10 {
                 @progressed = 1
                 @state = {"since": "{sinceText}", "key": "{sinceKey}"}
                 saveFile(progressFile, state, true)
+                @sinceNote += 1
+                if sinceNote == 10 {
+                    showNotification("已处理 {processed} 张 · 新传 {uploaded} · 跳过 {skipped}\n已备份到 {sinceText} 拍的照片", "小桔云盘 · 同步中", false)
+                    @sinceNote = 0
+                }
             }
         }
         // 不满一批：后面没有照片了。满一批却一张都没处理：日期条件没生效（或 50 张拍摄时间完全相同），不能当成传完了
