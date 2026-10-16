@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -253,6 +254,7 @@ func TestIngest(t *testing.T) {
 	for _, it := range hidden["items"].([]any) {
 		names = append(names, it.(map[string]any)["name"].(string))
 	}
+	sort.Strings(names) // 列目录按拍摄 / 上传时间排，这里只看名字
 	if strings.Join(names, ",") != "IMG_0001.jpg,IMG_0500.MOV" {
 		t.Fatalf("hidden album after rename: %v", names)
 	}

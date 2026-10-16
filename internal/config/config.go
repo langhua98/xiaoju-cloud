@@ -35,6 +35,7 @@ type Config struct {
 	// PasskeyReset 为 true 时启动时清空所有已注册设备和格子口令（全部丢失时的紧急恢复）。
 	PasskeyReset bool
 	// Location 是格子口令判断“出题时是星期几”用的时区（XIAOJU_TIMEZONE，默认 Asia/Shanghai）。
+	// 照片的 EXIF 没写时区时，拍摄时间也按这个时区算。
 	Location *time.Location
 
 	LocalDir string

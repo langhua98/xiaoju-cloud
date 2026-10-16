@@ -131,6 +131,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		return err
 	}
 	thumbs := thumb.New(cfg.TempDir)
+	thumbs.Location = cfg.Location
 	log.Info("thumbnails", "tools", thumbs.Tools())
 	svc := service.New(store, driver, service.Options{
 		MasterKey: cfg.MasterKey, PartSize: cfg.PartSize, TempDir: cfg.TempDir, Log: log,
@@ -140,6 +141,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		go svc.RunBackupSync(ctx, 5*time.Minute)
 	}
 	go svc.RunMaintenance(ctx, time.Hour)
+	go svc.BackfillThumbnails(ctx)
 
 	passkeys, err := auth.NewPasskeys(ctx, store, userID, auth.PasskeyConfig{RPID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins})
 	if err != nil {
@@ -324,6 +326,6 @@ func makeThumb(ctx context.Context, args []string, log *slog.Logger) error {
 	if err := os.WriteFile(args[1], res.JPEG, 0o644); err != nil {
 		return err
 	}
-	log.Info("thumbnail written", "out", args[1], "bytes", len(res.JPEG), "duration", res.Duration)
+	log.Info("thumbnail written", "out", args[1], "bytes", len(res.JPEG), "duration", res.Duration, "taken", res.Taken)
 	return nil
 }

@@ -1396,7 +1396,11 @@ function rowFor(f) {
   name.append(icon, label);
 
   const size = Object.assign(document.createElement("td"), { className: "size", textContent: isFolder ? "" : formatSize(f.size) });
-  const date = Object.assign(document.createElement("td"), { className: "date", textContent: formatDate(f.updated_at) });
+  // 照片、视频显示拍摄时间（列表也按它排），其他显示修改时间
+  const when = f.taken_at || f.updated_at;
+  const date = Object.assign(document.createElement("td"), {
+    className: "date", textContent: formatDate(when), title: (f.taken_at ? "拍摄于 " : "修改于 ") + formatDate(when),
+  });
 
   const ops = document.createElement("td");
   ops.className = "ops";
@@ -1745,7 +1749,7 @@ function renderViewer() {
   vwDialog.classList.remove("zoomed");
   [...vwTrack.children].forEach((slide, k) => fillSlide(slide, vw.items[vw.index + k - 1], k === 1));
   $("#vw-name").textContent = f.name;
-  $("#vw-count").textContent = `${vw.index + 1} / ${vw.items.length}`;
+  $("#vw-count").textContent = `${vw.index + 1} / ${vw.items.length}` + (f.taken_at ? ` · ${formatDate(f.taken_at)}` : "");
   $("#vw-prev").disabled = vw.index === 0;
   $("#vw-next").disabled = vw.index === vw.items.length - 1;
   vwDialog.classList.toggle("is-video", f.mime.startsWith("video/"));

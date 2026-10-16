@@ -1,0 +1,2 @@
+ALTER TABLE thumbnails DROP COLUMN IF EXISTS version;
+ALTER TABLE files DROP COLUMN IF EXISTS taken_at;

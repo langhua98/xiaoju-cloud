@@ -45,6 +45,7 @@ var ErrNoThumbnail = errors.New("thumbnail: unsupported or undecodable file")
 type Result struct {
 	JPEG     []byte
 	Duration time.Duration // 视频时长（照片为 0）
+	Taken    time.Time     // 拍摄时间（读不到时为零值）
 }
 
 // Source 打开文件明文的一个独立读取器。读视频时 ffmpeg 会跳着读，可能同时发几个请求，每个请求各开一个。
@@ -53,6 +54,8 @@ type Source func(ctx context.Context) (io.ReadSeekCloser, error)
 type Generator struct {
 	vips, ffmpeg string
 	tempDir      string
+	// Location：照片的 EXIF 没写时区时，拍摄时间按这个时区算（nil 时按 UTC）。
+	Location *time.Location
 }
 
 // New 在 PATH 里找 vips 和 ffmpeg；tempDir 为空时用系统临时目录。
@@ -145,6 +148,11 @@ func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ st
 	if err != nil {
 		return nil, err
 	}
+	var taken time.Time
+	if f, err := os.Open(in.Name()); err == nil {
+		taken = photoTaken(f, size, typ, g.Location)
+		f.Close()
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, imageTimeout)
 	defer cancel()
@@ -161,13 +169,13 @@ func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ st
 		if err != nil || len(b) == 0 {
 			return nil, fmt.Errorf("%w: vips wrote no output", ErrNoThumbnail)
 		}
-		return &Result{JPEG: b}, nil
+		return &Result{JPEG: b, Taken: taken}, nil
 	}
 	out, err := run(ctx, g.ffmpeg, ffmpegArgs("file", demuxer, in.Name())...)
 	if err != nil {
 		return nil, err
 	}
-	return &Result{JPEG: out.stdout}, nil
+	return &Result{JPEG: out.stdout, Taken: taken}, nil
 }
 
 // ffmpegArgs：从 input 截第一帧，缩放并居中裁剪成 Size×Size 的 JPEG，写到标准输出。
@@ -232,7 +240,7 @@ func (g *Generator) video(ctx context.Context, src Source, typ string) (*Result,
 		}
 		return nil, err
 	}
-	res := &Result{JPEG: out.stdout}
+	res := &Result{JPEG: out.stdout, Taken: videoTaken(out.stderr)}
 	if m := durationRe.FindStringSubmatch(out.stderr); m != nil {
 		h, _ := strconv.Atoi(m[1])
 		min, _ := strconv.Atoi(m[2])

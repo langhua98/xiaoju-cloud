@@ -48,7 +48,12 @@ func TestThumbnails(t *testing.T) {
 		return string(b)
 	}
 	photo := sample("p.jpg", "-f", "lavfi", "-i", "testsrc=size=800x600", "-frames:v", "1")
-	video := sample("v.mp4", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+	video := sample("v.mp4", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+		"-metadata", "creation_time=2022-05-06T07:08:09Z")
+	exif, err := os.ReadFile("../thumb/testdata/taken.jpg") // EXIF 里的拍摄时间是 2023-09-04 12:15:16 +08:00
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, url)
@@ -105,12 +110,23 @@ func TestThumbnails(t *testing.T) {
 	videoID := upload("v.mp4", "video/mp4", video)
 	brokenID := upload("broken.jpg", "image/jpeg", "\xFF\xD8\xFF\xE0 not really a jpeg")
 	docID := upload("a.txt", "text/plain", "hello")
+	oldID := upload("old.jpg", "image/jpeg", string(exif))
+	for _, name := range []string{"b-sub", "a-sub"} {
+		resp := do("POST", "/api/folders", fmt.Sprintf(`{"name":%q,"parent_id":%q}`, name, dir.ID), tok...)
+		resp.Body.Close()
+		if resp.StatusCode != 201 {
+			t.Fatalf("create folder %s: %d", name, resp.StatusCode)
+		}
+	}
 
 	type item struct {
-		ID       string  `json:"id"`
-		Thumb    string  `json:"thumb"`
-		Duration float64 `json:"duration"`
+		ID       string     `json:"id"`
+		Name     string     `json:"name"`
+		Thumb    string     `json:"thumb"`
+		Duration float64    `json:"duration"`
+		TakenAt  *time.Time `json:"taken_at"`
 	}
+	var order []string
 	list := func() map[string]item {
 		t.Helper()
 		resp := do("GET", "/api/folders/"+dir.ID.String()+"/children", "", tok...)
@@ -118,8 +134,10 @@ func TestThumbnails(t *testing.T) {
 		var out struct{ Items []item }
 		json.NewDecoder(resp.Body).Decode(&out)
 		m := map[string]item{}
+		order = order[:0]
 		for _, it := range out.Items {
 			m[it.ID] = it
+			order = append(order, it.Name)
 		}
 		return m
 	}
@@ -157,6 +175,38 @@ func TestThumbnails(t *testing.T) {
 	}
 	if d := list()[videoID].Duration; d < 1.9 || d > 2.1 {
 		t.Fatalf("video duration in listing: %v", d)
+	}
+
+	// 拍摄时间：生成缩略图时读出来；排序是文件夹在前（按名字），文件按拍摄时间新的在前，没有拍摄时间的按上传时间
+	if _, err := svc.Thumbnail(ctx, userID, uuid.MustParse(oldID)); err != nil {
+		t.Fatal(err)
+	}
+	takenOld := time.Date(2023, 9, 4, 4, 15, 16, 0, time.UTC)
+	items = list()
+	if tk := items[oldID].TakenAt; tk == nil || !tk.Equal(takenOld) {
+		t.Fatalf("photo taken_at: %v", tk)
+	}
+	if tk := items[videoID].TakenAt; tk == nil || !tk.Equal(time.Date(2022, 5, 6, 7, 8, 9, 0, time.UTC)) {
+		t.Fatalf("video taken_at: %v", tk)
+	}
+	// 没有拍摄时间的 a.txt、broken.jpg、p.jpg 按上传时间算（刚传的，比 2023 年拍的 old.jpg 新），后传的在前
+	if got, want := strings.Join(order, ","), "a-sub,b-sub,a.txt,broken.jpg,p.jpg,old.jpg,v.mp4"; got != want {
+		t.Fatalf("listing order: %s, want %s", got, want)
+	}
+
+	// 旧版本生成的缩略图（那时没读拍摄时间）：启动后在后台重新生成，补上拍摄时间
+	if _, err := pool.Exec(ctx, `UPDATE thumbnails SET version = 0 WHERE file_id = $1`, oldID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE files SET taken_at = NULL WHERE id = $1`, oldID); err != nil {
+		t.Fatal(err)
+	}
+	svc.BackfillThumbnails(ctx)
+	if th, err := store.GetThumbnail(ctx, uuid.MustParse(oldID)); err != nil || th.Version != meta.ThumbnailVersion {
+		t.Fatalf("backfill did not regenerate the old thumbnail: %+v %v", th, err)
+	}
+	if tk := list()[oldID].TakenAt; tk == nil || !tk.Equal(takenOld) {
+		t.Fatalf("backfill did not restore taken_at: %v", tk)
 	}
 
 	// 签名：改了不行；缩略图签名不能下载原文件，下载签名也不能当缩略图签名

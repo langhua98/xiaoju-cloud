@@ -132,7 +132,11 @@ func (s *Service) makeThumbnail(f *meta.File) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.PutThumbnail(ctx, &meta.Thumbnail{FileID: f.ID, Data: sealed, Duration: res.Duration}); err != nil {
+	th := &meta.Thumbnail{FileID: f.ID, Data: sealed, Duration: res.Duration}
+	if !res.Taken.IsZero() {
+		th.Taken = &res.Taken
+	}
+	if err := s.store.PutThumbnail(ctx, th); err != nil {
 		return nil, err
 	}
 	s.log.Debug("thumbnail generated", "file", f.ID, "bytes", len(res.JPEG), "took", time.Since(start))
@@ -155,10 +159,58 @@ func (s *Service) queueThumbnail(f *meta.File) {
 // thumbnailWorker 一个一个地生成排队的缩略图（只占一个名额，查看时的请求可以插队用其他名额）。
 func (s *Service) thumbnailWorker() {
 	for f := range s.thumbs.queue {
-		if _, err := s.store.GetThumbnail(context.Background(), f.ID); err == nil {
+		if t, err := s.store.GetThumbnail(context.Background(), f.ID); err == nil && t.Version >= meta.ThumbnailVersion {
 			continue
 		}
 		<-s.startThumbnail(f).done
+	}
+}
+
+// BackfillThumbnails 给已经上传的照片、视频补生成缩略图：还没有的，以及旧版本生成的（那时还不读拍摄时间，
+// 相册排序要用）。一个接一个地做，做完一遍就结束；服务启动时在后台调用一次。
+func (s *Service) BackfillThumbnails(ctx context.Context) {
+	if s.thumbs == nil {
+		return
+	}
+	var (
+		afterCreated time.Time
+		afterID      uuid.UUID
+		done, failed int
+	)
+	for ctx.Err() == nil {
+		files, err := s.store.ListThumbnailBackfill(ctx, afterCreated, afterID, 100)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Warn("thumbnail backfill stopped", "err", err)
+			}
+			return
+		}
+		if len(files) == 0 {
+			break
+		}
+		if afterCreated.IsZero() {
+			s.log.Info("thumbnail backfill started")
+		}
+		for _, f := range files {
+			afterCreated, afterID = f.CreatedAt, f.ID
+			if !s.CanThumbnail(f) {
+				continue
+			}
+			select {
+			case <-s.startThumbnail(f).done:
+			case <-ctx.Done():
+				return
+			}
+			// 结果看数据库：生成失败的不算（startThumbnail 的结果可能是别的请求先开始的那次）
+			if t, err := s.store.GetThumbnail(ctx, f.ID); err == nil && t.Version >= meta.ThumbnailVersion {
+				done++
+			} else {
+				failed++
+			}
+		}
+	}
+	if done+failed > 0 {
+		s.log.Info("thumbnail backfill finished", "generated", done, "failed", failed)
 	}
 }
 

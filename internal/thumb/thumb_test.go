@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/langhua98/xiaoju-cloud/internal/media"
 )
 
 // 用 ffmpeg 生成测试素材；没装 ffmpeg 时跳过。
@@ -133,5 +135,70 @@ func TestSourceError(t *testing.T) {
 	_, err := New(t.TempDir()).Generate(context.Background(), src)
 	if !errors.Is(err, boom) {
 		t.Fatalf("got %v, want the storage error (so it can be retried)", err)
+	}
+}
+
+func TestPhotoTaken(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]time.Time{
+		"taken.jpg":   time.Date(2023, 9, 4, 4, 15, 16, 0, time.UTC),    // 12:15:16 +08:00（EXIF 里写了时区）
+		"taken.heic":  time.Date(2021, 2, 2, 20, 5, 6, 0, time.UTC),     // 04:05:06，没写时区，按上海时间算
+		"taken.png":   time.Date(2019, 12, 31, 15, 59, 58, 0, time.UTC), // 只有 IFD0 的 DateTime
+		"sample.heic": {},                                               // 没有 EXIF
+	} {
+		b, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, typ := media.Sniff(b)
+		if got := photoTaken(bytes.NewReader(b), int64(len(b)), typ, shanghai); !got.Equal(want) {
+			t.Errorf("%s (%s): taken %v, want %v", name, typ, got, want)
+		}
+		// 截断的、改坏的文件：读不出来就算了，不能出错
+		for n := 0; n < len(b); n++ {
+			bad := append([]byte(nil), b...)
+			bad[n] ^= 0xA5
+			photoTaken(bytes.NewReader(bad), int64(len(bad)), typ, shanghai)
+			photoTaken(bytes.NewReader(b[:n]), int64(n), typ, shanghai)
+		}
+	}
+
+	// 生成缩略图时一起读出来
+	g := New(t.TempDir())
+	g.Location = shanghai
+	res, err := g.Generate(context.Background(), fileSource("testdata/taken.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2023, 9, 4, 4, 15, 16, 0, time.UTC); !res.Taken.Equal(want) {
+		t.Errorf("Generate: taken %v, want %v", res.Taken, want)
+	}
+}
+
+func TestVideoTaken(t *testing.T) {
+	src := []string{"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p"}
+	iphone := sample(t, "iphone.mov", append(src, "-movflags", "use_metadata_tags",
+		"-metadata", "com.apple.quicktime.creationdate=2023-09-04T12:15:16+0800", "-metadata", "creation_time=2023-09-04T04:15:20Z")...)
+	plain := sample(t, "plain.mp4", append(src, "-metadata", "creation_time=2022-05-06T07:08:09Z")...)
+	none := sample(t, "none.mp4", src...)
+	g := New(t.TempDir())
+	for path, want := range map[string]time.Time{
+		iphone: time.Date(2023, 9, 4, 4, 15, 16, 0, time.UTC), // 优先用 iPhone 写的（带时区）
+		plain:  time.Date(2022, 5, 6, 7, 8, 9, 0, time.UTC),
+		none:   {},
+	} {
+		res, err := g.Generate(context.Background(), fileSource(path))
+		if err != nil {
+			t.Fatalf("%s: %v", filepath.Base(path), err)
+		}
+		if !res.Taken.Equal(want) {
+			t.Errorf("%s: taken %v, want %v", filepath.Base(path), res.Taken, want)
+		}
+	}
+	if got := videoTaken("    creation_time   : 1970-01-01T00:00:00.000000Z\n"); !got.IsZero() {
+		t.Errorf("unset camera clock read as %v", got)
 	}
 }

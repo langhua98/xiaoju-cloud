@@ -37,6 +37,7 @@ type File struct {
 	DEKWrapped []byte     `json:"-"`
 	Status     string     `json:"-"`
 	TrashedAt  *time.Time `json:"trashed_at,omitempty"`
+	TakenAt    *time.Time `json:"taken_at,omitempty"` // 拍摄时间（照片、视频里读出来的；没有时为 nil）
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
@@ -64,12 +65,12 @@ type Store struct {
 
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
-const fileColumns = `id, user_id, parent_id, name, type, size, mime, sha256, dek_wrapped, status, trashed_at, created_at, updated_at`
+const fileColumns = `id, user_id, parent_id, name, type, size, mime, sha256, dek_wrapped, status, trashed_at, taken_at, created_at, updated_at`
 
 func scanFile(row pgx.Row) (*File, error) {
 	var f File
 	err := row.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.Type, &f.Size, &f.Mime,
-		&f.SHA256, &f.DEKWrapped, &f.Status, &f.TrashedAt, &f.CreatedAt, &f.UpdatedAt)
+		&f.SHA256, &f.DEKWrapped, &f.Status, &f.TrashedAt, &f.TakenAt, &f.CreatedAt, &f.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -293,7 +294,7 @@ func (s *Store) Get(ctx context.Context, userID, id uuid.UUID) (*File, error) {
 		WHERE id = $1 AND user_id = $2 AND status = 'active'`, id, userID))
 }
 
-// ListChildren 列出目录下未删除的条目，目录在前。
+// ListChildren 列出目录下未删除的条目：目录在前、按名字排；文件按拍摄时间（没有时用上传时间）排，新的在前。
 func (s *Store) ListChildren(ctx context.Context, userID uuid.UUID, parentID *uuid.UUID) ([]*File, error) {
 	if err := s.checkParent(ctx, userID, parentID); err != nil {
 		return nil, err
@@ -302,7 +303,7 @@ func (s *Store) ListChildren(ctx context.Context, userID uuid.UUID, parentID *uu
 		SELECT `+fileColumns+` FROM files
 		WHERE user_id = $1 AND parent_id IS NOT DISTINCT FROM $2
 		  AND status = 'active' AND trashed_at IS NULL
-		ORDER BY type DESC, name`, userID, parentID)
+		ORDER BY type DESC, CASE WHEN type = 'folder' THEN name END, COALESCE(taken_at, created_at) DESC, name`, userID, parentID)
 	if err != nil {
 		return nil, err
 	}

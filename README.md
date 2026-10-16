@@ -77,7 +77,7 @@ make run
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/api/folders` | 新建目录，body：`{"name": "..", "parent_id": null}` |
-| `GET` | `/api/folders/{id\|root}/children` | 列出目录内容；照片、视频带 `thumb`（签名的缩略图地址）和 `duration`（视频秒数，生成过缩略图后才有） |
+| `GET` | `/api/folders/{id\|root}/children` | 列出目录内容（文件夹在前按名字；文件按拍摄时间、没有时按上传时间，新的在前）；照片、视频带 `thumb`（签名的缩略图地址）、`duration`（视频秒数）和 `taken_at`（拍摄时间），后两个生成过缩略图后才有 |
 | `POST` | `/api/files?name=..&parent_id=..` | 上传，请求体为文件原始内容（流式） |
 | `GET` | `/api/files/{id}` | 文件元数据 |
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
@@ -115,6 +115,9 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 
 **照片墙**：照片、视频占多数的文件夹（比如“相册”）自动用网格显示缩略图（手机上一行 3 张，视频右下角标时长），
 其他文件夹用列表（照片也带小缩略图）；右上角可以切换，按文件夹记住。
+文件按**拍摄时间**排、新的在前（文件夹排最前、按名字）：照片读 EXIF 的 DateTimeOriginal（JPEG、PNG、HEIC，自己解析，
+没写时区时按 `XIAOJU_TIMEZONE` 算），视频读 iPhone 写的 `com.apple.quicktime.creationdate`，没有时读 `creation_time`；
+都在生成缩略图时一起读，存在 `files.taken_at`。读不到的（截图、下载来的图）按上传时间排。
 
 **大图查看**：点开一张后左右滑动切换（电脑上用 ← → 或两侧箭头），双指或双击放大、放大后拖动查看，往下拖关闭，
 单击隐藏顶栏；顶栏可以下载、删除。手机的返回手势也是关闭，不会退出相册。
@@ -319,6 +322,9 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
    `X-Xiaoju-Album: hidden` 放进“隐藏相册”；`GET /api/ingest/exists` 先问传过没有；没带文件名直接 400 `missing_name`；
    以前被自动起名“照片 日期 时分秒-xxxx.ext”的文件，重新上传时按同文件夹同大小认出来改回真名（`uploadedBefore`）。
 5. **快捷指令**（`shortcuts/*.cherri`，`shortcuts/build.py` 编译、补丁、检查嵌套、签名）。来回改了很多版，结论见下面“快捷指令的坑”。
+6. **按拍摄时间排序**（迁移 `0009_taken_at`，`internal/thumb/taken.go`）：拍摄时间在生成缩略图时读出来。`thumbnails.version`
+   记录缩略图是哪一版程序生成的（`meta.ThumbnailVersion`），服务启动时 `BackfillThumbnails` 把旧版本的、还没有缩略图的照片视频
+   在后台一个个重新生成一遍（日志 `thumbnail backfill started / finished`）；以后再要给缩略图加东西，把版本号加一就会自动补。
 
 ### 正在进行（交接时的状态）
 
