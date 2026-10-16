@@ -177,6 +177,7 @@ func TestIngest(t *testing.T) {
 	if code, out := ingest("VID_0001", video); code != 200 || out["result"] != "skipped" {
 		t.Fatalf("video re-run must be skipped: %d %v", code, out)
 	}
+	ingestHeartbeat = 10 * time.Second // 后面的上传要按正常情况回 201
 
 	// 隐藏相册：X-Xiaoju-Album: hidden 放进根目录的“隐藏相册”，和“相册”分开查重；不认识的值拒绝（不能随意建文件夹）
 	if code, out := call("POST", "/api/ingest", jpeg, "X-File-Name", "IMG_0001", "X-Xiaoju-Album", "hidden"); code != 201 || out["name"] != "IMG_0001.jpg" {
