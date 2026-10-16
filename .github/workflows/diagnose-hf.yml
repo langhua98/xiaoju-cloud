@@ -1,6 +1,6 @@
 name: Diagnose Hugging Face Space
 
-# 手动运行：查询线上服务的备份状态和网盘统计，并打印 Space 最近的运行日志（只输出备份、警告和错误相关的行）。
+# 手动运行：查询线上服务的备份状态和网盘统计，并打印 Space 最近的运行日志（只输出备份、批量上传、警告和错误相关的行）。
 # reconcile=report 时附带对账报告（只读）；=apply 时执行对账修复和残块清理（见 README“对账与清理残块”）。
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
                     echo "::endgroup::" ;;
           esac
 
-          echo "::group::space run logs (backup / warnings / errors, last 200)"
+          echo "::group::space run logs (backup / ingest / warnings / errors, last 200)"
           curl -sS -N --max-time 30 -H "Authorization: Bearer $HF" \
             "https://huggingface.co/api/spaces/$SPACE/logs/run" 2>/dev/null \
             | sed -n 's/^data: //p' \
@@ -63,5 +63,5 @@ jobs:
           for line in sys.stdin:
               try: print(json.loads(line).get("data", "").rstrip())
               except ValueError: print(line.rstrip())' \
-            | grep -E "backup|WARN|ERROR|Startup|listening" | tail -200 || true
+            | grep -E "backup|WARN|ERROR|Startup|listening|ingest" | tail -200 || true
           echo "::endgroup::"
