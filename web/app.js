@@ -1120,7 +1120,7 @@ function reverifyFace(body) {
 // ---------- 安全设置：快捷指令批量上传 ----------
 // 上传接口只进不出（不需要密钥，只能往“相册”里添加），快捷指令装上就能用。
 
-const SHORTCUT_FILE = "xiaoju-backup.shortcut"; // 备份照片：自己选照片
+const SHORTCUT_FILE = "xiaoju-backup.shortcut"; // 备份照片：选个起点分批续传
 const SYNC_SHORTCUT_FILE = "xiaoju-sync.shortcut"; // 同步相册：整个相册分批续传
 
 // 网页旁边有没有签好名的快捷指令（GitHub Pages 发布时生成）
@@ -1144,24 +1144,26 @@ async function renderShortcutSec() {
   const url = `${state.api}/api/ingest`;
   const code = (t) => mk("code", { textContent: t });
   const sync = mk("div", { className: "key-install", hidden: true },
-    mk("a", { className: "button primary", href: SYNC_SHORTCUT_FILE, textContent: "安装「同步相册」" }),
+    mk("a", { className: "button", href: SYNC_SHORTCUT_FILE, textContent: "安装「同步相册」" }),
     mk("p", { className: "hint", textContent: "不用选照片：从最早的照片开始，按拍摄时间一批批往后传，一次最多 500 张。"
       + "进度记在 iCloud 云盘「快捷指令」文件夹的 xiaoju-sync.json 里，中途停了再运行一次就接着传；"
       + "每次传完告诉你新上传几张、以前传过几张、已经备份到哪天拍的照片。传的时候别锁屏，第一次运行要允许访问照片和连接网盘。" }));
   const install = mk("div", { className: "key-install", hidden: true },
-    mk("a", { className: "button", href: SHORTCUT_FILE, textContent: "安装「备份照片」" }),
-    mk("p", { className: "hint", textContent: "自己挑照片传：打开「备份照片到小桔云盘」选照片就行，传完会通知上传了几张、跳过了几张。" }),
+    mk("a", { className: "button primary", href: SHORTCUT_FILE, textContent: "安装「备份照片」" }),
+    mk("p", { className: "hint", textContent: "几百上千张都行（不用相册的选择器，那里一次选太多会卡住）：先选从哪开始——接着上次、最近 7 天、"
+      + "最近 30 天、某一天起或整个相册，然后按拍摄时间一批 30 张往后传，一次最多 6000 张，传的时候有通知报进度。"
+      + "进度记在 iCloud 云盘「快捷指令」文件夹的 xiaoju-backup.json 里：中途停了，再运行选「接着上次」接着传；以后选它只传新拍的。" }),
     mk("p", { className: "hint", textContent: "安装：点按钮后 Safari 问是否下载就选「下载」，再在下载列表里点开，在快捷指令 App 里点「添加快捷指令」。"
       + "第一次运行会问能否连接网盘，选「始终允许」。" }));
   const manual = mk("details", { className: "key-manual" },
     mk("summary", { textContent: "自己动手搭建快捷指令" }),
     mk("div", { className: "key-field" }, mk("span", { textContent: "地址" }), mk("code", { textContent: url }), copyButton(url)),
     mk("ol", { className: "key-steps" },
-      mk("li", {}, "「快捷指令」App 点「＋」新建，添加「选择照片」，展开后打开「选择多张」。"),
+      mk("li", {}, "「快捷指令」App 点「＋」新建，添加「选择照片」，展开后打开「选择多张」（一次几十张以内，选太多会卡住）。"),
       mk("li", {}, "添加「重复每一项」，在里面添加「获取 URL 的内容」：URL 粘贴上面的地址；方法 ", code("POST"),
         "；头部加一项 ", code("X-File-Name"), "，值选变量「重复项目」后改成「名称」；请求体选「文件」= 「重复项目」。"),
       mk("li", {}, "运行。中途出错就再运行一次，传过的会自动跳过。")));
-  box.replaceChildren(sync, install, manual,
+  box.replaceChildren(install, sync, manual,
     mk("p", { className: "hint", textContent: "想每天自动备份：在快捷指令「自动化」里新建“特定时间”或“接入充电器”，运行「同步相册到小桔云盘」。" }));
   const [okSync, ok] = await Promise.all([shortcutAvailable(SYNC_SHORTCUT_FILE), shortcutAvailable(SHORTCUT_FILE)]);
   sync.hidden = !okSync;

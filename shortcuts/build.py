@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""编译并签名快捷指令：“备份照片到小桔云盘”（backup，自己选照片）或“同步相册到小桔云盘”（sync，整个相册分批续传）。
+"""编译并签名快捷指令：“备份照片到小桔云盘”（backup，选个起点分批续传）或“同步相册到小桔云盘”（sync，整个相册分批续传）。
 
     python3 shortcuts/build.py [--shortcut backup|sync] --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
 
 1. 用 Cherri 编译 <shortcut>.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
 2. 修正导入问题指向的操作（如果有；Cherri 1.3.2 会把多个问题都指向第 0 个操作）；
-   sync：把占位的「获取最新的照片」换成带日期条件的「查找照片」（Cherri 不支持过滤条件）；
+   把占位的「获取最新的照片」换成带日期条件的「查找照片」（Cherri 不支持过滤条件）；
 3. 检查“如果 / 重复”的开始和结束一一对应（Cherri 1.3.2 编译 else if 会把“结束”放错位置）；
 4. iOS 15 起快捷指令文件必须签名才能导入：交给 RoutineHub 的 HubSign 服务签名（Cherri 在非 macOS 上也用它）。
    文件里只有上传地址（本来就公开在 web/config.js 里），没有任何密钥。
@@ -61,7 +61,7 @@ def fix_questions(wf):
 
 
 def find_photos(wf, since_var="sinceText"):
-    """sync：把占位的「获取最新的照片」换成「查找照片」——创建日期晚于变量 since_var，按创建日期最旧的排最前，
+    """把占位的「获取最新的照片」换成「查找照片」——创建日期晚于变量 since_var，按创建日期最旧的排最前，
     张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
     hits = [a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.getlastphoto"]
     if len(hits) != 1:
@@ -164,8 +164,7 @@ def main():
     source = (HERE / f"{a.shortcut}.cherri").read_text().replace("__INGEST_URL__", api_url(a.api) + "/api/ingest")
     wf = compile_cherri(a.cherri, source)
     fix_questions(wf)
-    if a.shortcut == "sync":
-        find_photos(wf)
+    find_photos(wf)
     check_structure(wf)
     xml = plistlib.dumps(wf, fmt=plistlib.FMT_XML).decode()
     data = xml.encode() if a.skip_sign else sign(SHORTCUTS[a.shortcut], xml)
