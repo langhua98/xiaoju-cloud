@@ -183,28 +183,20 @@ var placeholderName = regexp.MustCompile(`^照片 \d{4}-\d{2}-\d{2} \d{6}-[0-9a-
 // GET /api/ingest/exists（头部 X-File-Name、X-File-Size、X-Xiaoju-Album，同上传）：这个文件是不是已经传过了。
 // 快捷指令先问一下，传过的就不用再把整个文件发一遍（中途停了再运行时省时间、省流量）。
 // 返回 {"result":"exists"} 或 {"result":"missing"}；大小看不懂（比如带单位）时一律回答 missing，照常上传，不会漏传。
-// 不带 X-File-Size 时只看名字（不分大小写）：新版快捷指令为了快，不读文件大小。
-// 只透露“这个名字的文件在不在”，不能列目录、下载。
+// 只透露“同名同大小的文件在不在”，不能列目录、下载。
 func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 	album, ok := s.ingestAlbum(w, r)
 	if !ok {
 		return
 	}
 	missing := map[string]string{"result": "missing"}
+	size := parseByteCount(r.Header.Get("X-File-Size"))
 	name, named := ingestName(r, "")
-	if album == nil || !named {
+	if album == nil || size <= 0 || !named {
 		writeJSON(w, http.StatusOK, missing)
 		return
 	}
-	var f *meta.File
-	var err error
-	if v := strings.TrimSpace(r.Header.Get("X-File-Size")); v == "" {
-		if f, err = s.svc.Store().FindFileByName(r.Context(), s.userID, album.ID, name); errors.Is(err, meta.ErrNotFound) {
-			f, err = nil, nil
-		}
-	} else if size := parseByteCount(v); size > 0 {
-		f, err = s.uploadedBefore(r.Context(), album.ID, name, size)
-	}
+	f, err := s.uploadedBefore(r.Context(), album.ID, name, size)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -216,32 +208,42 @@ func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"result": "exists", "name": f.Name})
 }
 
-// GET /api/ingest/names（头部 X-Xiaoju-Album）：相册里已有文件名的 SHA-256（小写十六进制，一行一个）。
-// 快捷指令开始时取一次，之后每个文件只算名字的 SHA-256 在手机上比对，传过的直接跳过，不用每个文件都问服务端，
-// 也不用读文件大小（像断点续传一样快）。只给摘要：知道文件名的人能确认它在不在（和 exists 一样），
-// 但列不出相册里有哪些文件。
+// GET /api/ingest/names（头部 X-Xiaoju-Album）：相册里每个文件“名字|字节数”的 SHA-256（小写十六进制，一行一个；
+// 名字带自动加的“ (2)”时，去掉序号的也给一行）。快捷指令开始时取一次，之后每个文件取名字和大小、算 SHA-256
+// 在手机上比对，传过的直接跳过，不用每个文件都问服务端（像断点续传一样快）。比对带上大小，换过手机后编号重复的
+// 不同照片不会被当成传过（对不上的照常上传，由上传接口按名字 + 大小判断，同名不同内容自动改名）。
+// 只给摘要：知道名字和大小的人能确认文件在不在（和 exists 一样），但列不出相册里有哪些文件。
 func (s *Server) ingestNames(w http.ResponseWriter, r *http.Request) {
 	album, ok := s.ingestAlbum(w, r)
 	if !ok {
 		return
 	}
-	var names []string
+	var files []meta.NameSize
 	if album != nil {
 		var err error
-		if names, err = s.svc.Store().ListFileNames(r.Context(), s.userID, album.ID); err != nil {
+		if files, err = s.svc.Store().ListNameSizes(r.Context(), s.userID, album.ID); err != nil {
 			s.fail(w, err)
 			return
 		}
 	}
 	var b strings.Builder
-	for _, n := range names {
-		sum := sha256.Sum256([]byte(n))
-		b.WriteString(hex.EncodeToString(sum[:]))
+	for _, f := range files {
+		b.WriteString(nameSizeHash(f.Name, f.Size))
 		b.WriteByte('\n')
+		if base := stripCopySuffix(f.Name); base != f.Name {
+			b.WriteString(nameSizeHash(base, f.Size))
+			b.WriteByte('\n')
+		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	io.WriteString(w, b.String())
+}
+
+// nameSizeHash 是快捷指令比对用的摘要：SHA-256("名字|字节数")，小写十六进制。
+func nameSizeHash(name string, size int64) string {
+	sum := sha256.Sum256([]byte(name + "|" + strconv.FormatInt(size, 10)))
+	return hex.EncodeToString(sum[:])
 }
 
 // ingestAlbum 找 X-Xiaoju-Album 指的文件夹（不新建；还没有时返回 nil）。相册名不对时回 400，ok 为 false。

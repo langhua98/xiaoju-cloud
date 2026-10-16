@@ -9,13 +9,14 @@
 //   - 「查找照片」的过滤条件（拍摄日期、已隐藏）在 iPhone 上实测都不生效（日期条件一张也查不到，已隐藏条件被忽略），
 //     没法分批，也挑不出隐藏的照片。照片 App 自己导出到“文件”最可靠。
 //
-// 像断点续传一样：开始时向服务端要一次相册里已有文件名的 SHA-256，每个文件只取名字、算 SHA-256 在手机上比对，
-// 传过的直接跳过（不读文件大小、不用每个都问服务端），所以中途停了再运行一次很快就能接着传。
-// 只比名字：同一个文件夹里名字一样就当传过了。
+// 像断点续传一样：开始时向服务端要一次相册里已有文件“名字|大小”的 SHA-256，每个文件只取名字和大小（不读内容）、
+// 算 SHA-256 在手机上比对，传过的直接跳过，不用每个都问服务端，所以中途停了再运行一次很快就能接着传。
+// 带上大小比：换过手机后编号重复的不同照片对不上，照常上传，服务端自动改名为“名字 (2)”。
 // 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始一条、每个视频一条（大视频慢）、每传 10 个一条、每跳过 200 个一条。
 #include 'actions/scripting'
 #include 'actions/documents'
 #include 'actions/crypto'
+#include 'actions/text'
 #define name 备份照片到小桔云盘
 #define color orange
 #define glyph cloud
@@ -69,7 +70,7 @@ if total.number == 0 {
     stop()
 }
 
-// 网盘里这个相册已有文件名的 SHA-256（一行一个），只取这一次
+// 网盘里这个相册已有文件“名字|字节数”的 SHA-256（一行一个），只取这一次
 @known = askServer(namesURL, {"X-Xiaoju-Album": "{albumKey}"})
 @knownText = "{known}"
 // 这台 iPhone 算出的 SHA-256 和服务端一致才在本地比对；不一致时退回每个文件问一次服务端（慢一些，但不会重复上传）
@@ -87,21 +88,27 @@ showNotification("共 {total} 个文件，传进网盘的「{folderName}」，�
 @index = 0
 @sinceNote = 0
 @sinceSkip = 0
+@resent = 0
 for file in files {
     @index += 1
     @name = fileDetail(file, "Name")
     @ext = fileDetail(file, "File Extension")
     @extText = "{ext}"
     @fullName = "{name}.{extText}"
+    // 大小只看文件信息、不读内容；「格式化文件大小」按字节给出的是“3,527,694”这样带分隔符的，只留数字
+    @sizeValue = fileDetail(file, "File Size")
+    @sizeText = fileSize(sizeValue, "Bytes")
+    @bytes = replaceText("[^0-9]", "", "{sizeText}", false, true)
+    @key = "{fullName}|{bytes}"
     @seen = 0
     if fast == 1 {
-        @nameHash = hash(fullName, "SHA256")
-        @hashText = "{nameHash}"
+        @keyHash = hash(key, "SHA256")
+        @hashText = "{keyHash}"
         if knownText contains hashText {
             @seen = 1
         }
     } else {
-        @check = askServer(existsURL, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}"})
+        @check = askServer(existsURL, {"X-File-Name": "{fullName}", "X-File-Size": "{bytes}", "X-Xiaoju-Album": "{albumKey}"})
         @checkDict = getDictionary(check)
         @checkValue = getValue(checkDict, "result")
         @checkText = "{checkValue}"
@@ -131,7 +138,6 @@ for file in files {
             @isVideo = 1
         }
         if isVideo == 1 {
-            @sizeValue = fileDetail(file, "File Size")
             showNotification("{index}/{total} · {fullName}（{sizeValue}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
             @sinceNote = 0
         }
@@ -144,8 +150,10 @@ for file in files {
         if result == "uploaded" {
             @uploaded += 1
         } else {
+            // 发过去服务端才认出传过的（手机上没比对上，比如以前从网页传的），最后单独报个数
             if result == "skipped" {
                 @skipped += 1
+                @resent += 1
             } else {
                 alert("第 {index} 个 {fullName} 没传上去：{resp}\n\n这次新上传 {uploaded} 个。检查网络后再运行一次、选同一个文件夹，传过的会很快跳过。", "上传失败")
                 stop()
@@ -158,4 +166,4 @@ for file in files {
         }
     }
 }
-alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个\n📁 都在网盘的「{folderName}」\n\n都传好了：可以在「文件」里删掉这个文件夹（原照片还在相册里）。", "上传完成")
+alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个（其中 {resent} 个是发过去才认出来的）\n📁 都在网盘的「{folderName}」\n\n都传好了：可以在「文件」里删掉这个文件夹（原照片还在相册里）。", "上传完成")

@@ -207,7 +207,7 @@ func TestIngest(t *testing.T) {
 		t.Fatalf("hidden album folder: %q %v", hiddenID, hidden)
 	}
 
-	// 先问再传：同名同大小才算传过；名字没有扩展名时只比前面的部分；大小看不懂就当没传过；不带大小时只看名字
+	// 先问再传：同名同大小才算传过；名字没有扩展名时只比前面的部分；大小看不懂就当没传过
 	size := strconv.Itoa(len(jpeg))
 	for _, c := range []struct {
 		name, size, album, want string
@@ -218,9 +218,7 @@ func TestIngest(t *testing.T) {
 		{"IMG_0001 (3).jpg", size, "", "exists"},
 		{"IMG_0001.jpg", "1," + size[1:], "", "missing"}, // 大小不一样
 		{"IMG_0001.jpg", "2.5 KB", "", "missing"},
-		{"IMG_0001.jpg", "", "", "exists"},
-		{"img_0001.JPG", "", "", "exists"},
-		{"IMG_0009.jpg", "", "", "missing"},
+		{"IMG_0001.jpg", "", "", "missing"},
 		{"IMG_0009.jpg", size, "", "missing"},
 	} {
 		code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", c.name, "X-File-Size", c.size, "X-Xiaoju-Album", c.album)
@@ -263,7 +261,7 @@ func TestIngest(t *testing.T) {
 		t.Fatalf("hidden album after rename: %v", names)
 	}
 
-	// 已有文件名的摘要：快捷指令一次取回，在手机上比对（只给 SHA-256，不给名字）
+	// 已有文件“名字|大小”的摘要：快捷指令一次取回，在手机上比对（只给 SHA-256，不给名字）
 	getNames := func(album string) (int, string) {
 		t.Helper()
 		req, _ := http.NewRequest("GET", ts.URL+"/api/ingest/names", nil)
@@ -276,17 +274,22 @@ func TestIngest(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
+	// 换过手机后编号重复的另一张照片：自动改名为“ (2)”；摘要里也有去掉序号的那一行，再运行时在手机上就能认出来
+	other := "\xFF\xD8\xFF\xE0" + strings.Repeat("y", 777)
+	if code, out := call("POST", "/api/ingest", other, "X-File-Name", "IMG_0001.jpg", "X-Xiaoju-Album", "hidden"); code != 201 || out["name"] != "IMG_0001 (2).jpg" {
+		t.Fatalf("different photo with the same name: %d %v", code, out)
+	}
 	code, body := getNames("hidden")
 	hashes := strings.Fields(body)
 	sort.Strings(hashes)
 	var want []string
-	for _, n := range names {
-		sum := sha256.Sum256([]byte(n))
+	for _, k := range []string{"IMG_0001.jpg|" + size, "IMG_0500.MOV|" + strconv.Itoa(len(video2)), "IMG_0001 (2).jpg|" + strconv.Itoa(len(other)), "IMG_0001.jpg|" + strconv.Itoa(len(other))} {
+		sum := sha256.Sum256([]byte(k))
 		want = append(want, hex.EncodeToString(sum[:]))
 	}
 	sort.Strings(want)
 	if code != 200 || strings.Join(hashes, ",") != strings.Join(want, ",") || strings.Contains(body, "IMG_") {
-		t.Fatalf("names of the hidden album: %d %q, want hashes of %v", code, body, names)
+		t.Fatalf("names of the hidden album: %d %q", code, body)
 	}
 	if code, _ := getNames("x"); code != 400 {
 		t.Errorf("unknown album must be rejected: %d", code)

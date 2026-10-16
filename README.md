@@ -83,8 +83,8 @@ make run
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
 | `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息） |
-| `GET` | `/api/ingest/exists` | 批量上传前先问：头部 `X-File-Name`、`X-File-Size`（字节数；不带时只看名字）、`X-Xiaoju-Album`，返回 `{"result":"exists"\|"missing"}`（不需要认证） |
-| `GET` | `/api/ingest/names` | 头部 `X-Xiaoju-Album`：相册里已有文件名的 SHA-256（`text/plain`，一行一个；只给摘要，列不出文件名；不需要认证） |
+| `GET` | `/api/ingest/exists` | 批量上传前先问：头部 `X-File-Name`、`X-File-Size`（字节数）、`X-Xiaoju-Album`，返回 `{"result":"exists"\|"missing"}`（不需要认证） |
+| `GET` | `/api/ingest/names` | 头部 `X-Xiaoju-Album`：相册里每个文件 `SHA-256("名字\|字节数")`（`text/plain`，一行一个；带“ (2)”序号的另给去掉序号的一行；只给摘要，列不出文件名；不需要认证） |
 | `GET` | `/thumb/{id}?exp=..&sig=..` | 320×320 的 JPEG 缩略图（地址来自列目录，无需认证头；做不了的返回 404） |
 
 开启了 Face ID / 指纹或格子口令后，上面这些文件接口需要 `X-Xiaoju-Session` 会话（见下方「刷脸登录」「格子口令」）。
@@ -225,10 +225,12 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
   （已传过的同名同大小文件服务端会跳过）。
 - **备份照片到小桔云盘**（`shortcuts/backup.cherri`）：**上传「文件」里的一个文件夹**。先在照片 App 里把要传的相簿
   （比如“已隐藏”）全选 → 分享 → 存储到“文件”的一个新文件夹，再运行它：选放进网盘的“隐藏相册”（`X-Xiaoju-Album: hidden`）
-  还是“相册”，再选那个文件夹。像断点续传：开始时 `GET /api/ingest/names` 取一次相册里已有文件名的 SHA-256，
-  每个文件只取名字和扩展名、算 SHA-256 在手机上比对，**名字一样就当传过**直接跳过（不读文件大小、不用每个都问服务端），
-  所以中途停了再运行一次很快就接着传。开始时先算一下 `SHA256("xiaoju")` 对不对，不对就退回每个文件 `GET /api/ingest/exists`
-  （只带名字）。上传必须带文件名（`X-File-Name`），没带的返回 400 `missing_name`，快捷指令停下报错；
+  还是“相册”，再选那个文件夹。像断点续传：开始时 `GET /api/ingest/names` 取一次相册里已有文件的
+  `SHA-256("名字|字节数")`，每个文件只取名字、扩展名和大小（文件信息，不读内容；「格式化文件大小」按字节、去掉分隔符），
+  算 SHA-256 在手机上比对，对上的直接跳过、不用每个都问服务端，所以中途停了再运行一次很快就接着传。带上大小是因为
+  换过手机后编号会重复（`IMG_0001` 又来一遍）：对不上的照常上传，服务端按名字 + 大小判断，同名不同内容自动改名为“名字 (2)”。
+  开始时先算一下 `SHA256("xiaoju")` 对不对，不对就退回每个文件 `GET /api/ingest/exists`。结束时报告“发过去才认出来的”个数，
+  这个数一直很大说明手机上的比对没起作用（比如大小的格式变了）。上传必须带文件名（`X-File-Name`），没带的返回 400 `missing_name`，快捷指令停下报错；
   以前没带名字传上来、被自动起名“照片 2026-10-16 035540-982f.mp4”的文件，重新运行时按“同文件夹、大小完全一样”认出来，
   改回真名、当作传过。（Cherri 1.3.2 自带的「获取文件的详细信息」把文件放进 `WFFolder` 参数，iPhone 上取到的名字、
   大小全是空的；`backup.cherri` 自己定义了放进 `WFInput` 的版本。）为什么不直接从相册读：
