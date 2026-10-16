@@ -77,8 +77,12 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	// 开始收文件时也记一条：大视频要传很久，只有传完才记日志的话，中间看不出在传哪个、是不是卡住了
-	s.log.Info("ingest receiving", "folder", folder, "name", name, "size", r.ContentLength, "client", clientIP(r))
+	// 开始收文件时也记一条：大视频要传很久，只有传完才记日志的话，中间看不出在传哪个、是不是卡住了。
+	// 快捷指令还报了它算出的大小和摘要（X-Debug-*）：和实际收到的对不上，就是本地比对失灵、传过的又发了一遍
+	s.log.Info("ingest receiving", "folder", folder, "name", name, "size", r.ContentLength, "client", clientIP(r),
+		"phone_size", debugHeader(r, "X-Debug-Size"), "phone_size_text", debugHeader(r, "X-Debug-Size-Text"),
+		"phone_bytes", debugHeader(r, "X-Debug-Bytes"),
+		"phone_hash_ok", debugHeader(r, "X-Debug-Hash") == nameSizeHash(name, r.ContentLength))
 	// 已经传过：读完请求体（避免客户端在发送途中被断开而报错），不再写 Telegram
 	if r.ContentLength > 0 {
 		f, err := s.uploadedBefore(ctx, album.ID, name, r.ContentLength)
@@ -233,8 +237,21 @@ func (s *Server) ingestNames(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// 快捷指令每次运行开始时取一次：看得出它开始跑了
-	s.log.Info("ingest names requested", "album", r.Header.Get("X-Xiaoju-Album"), "files", len(files), "client", clientIP(r))
+	// 快捷指令每次运行开始时取一次：看得出它开始跑了。它还报了第一个文件的名字、大小（几种写法），
+	// 和网盘里同名文件的大小放在一起记下来，本地比对对不上时一看就知道差在哪
+	var stored []int64
+	debugName := debugHeader(r, "X-Debug-Name")
+	for _, f := range files {
+		if debugName != "" && strings.EqualFold(f.Name, debugName) {
+			stored = append(stored, f.Size)
+		}
+	}
+	probe := sha256.Sum256([]byte("xiaoju"))
+	s.log.Info("ingest names requested", "album", r.Header.Get("X-Xiaoju-Album"), "files", len(files), "client", clientIP(r),
+		"first_name", debugName, "first_stored_sizes", stored,
+		"phone_size", debugHeader(r, "X-Debug-Size"), "phone_size_text", debugHeader(r, "X-Debug-Size-Text"),
+		"phone_bytes", debugHeader(r, "X-Debug-Bytes"),
+		"phone_probe_ok", debugHeader(r, "X-Debug-Probe") == hex.EncodeToString(probe[:]))
 	var b strings.Builder
 	for _, f := range files {
 		b.WriteString(nameSizeHash(f.Name, f.Size))
@@ -247,6 +264,20 @@ func (s *Server) ingestNames(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	io.WriteString(w, b.String())
+}
+
+// debugHeader 取快捷指令报来的诊断信息（只用来记日志，截短）。
+func debugHeader(r *http.Request, key string) string {
+	v := r.Header.Get(key)
+	if strings.Contains(v, "%") {
+		if u, err := url.PathUnescape(v); err == nil {
+			v = u
+		}
+	}
+	if len(v) > 100 {
+		v = v[:100]
+	}
+	return v
 }
 
 // nameSizeHash 是快捷指令比对用的摘要：SHA-256("名字|字节数")，小写十六进制。

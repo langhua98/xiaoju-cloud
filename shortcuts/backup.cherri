@@ -70,13 +70,20 @@ if total.number == 0 {
     stop()
 }
 
-// 网盘里这个相册已有文件“名字|字节数”的 SHA-256（一行一个），只取这一次
-@known = askServer(namesURL, {"X-Xiaoju-Album": "{albumKey}"})
-@knownText = "{known}"
 // 这台 iPhone 算出的 SHA-256 和服务端一致才在本地比对；不一致时退回每个文件问一次服务端（慢一些，但不会重复上传）
 @probeInput = "xiaoju"
 @probe = hash(probeInput, "SHA256")
 @probeText = "{probe}"
+// 第一个文件的名字和大小（几种写法）一起报给服务端记日志：本地比对对不上时能看出是哪里不一样
+@first = getFirstItem(files)
+@firstName = fileDetail(first, "Name")
+@firstExt = fileDetail(first, "File Extension")
+@firstSize = fileDetail(first, "File Size")
+@firstSizeText = fileSize(firstSize, "Bytes")
+@firstBytes = replaceText("[^0-9]", "", "{firstSizeText}", false, true)
+// 网盘里这个相册已有文件“名字|字节数”的 SHA-256（一行一个），只取这一次
+@known = askServer(namesURL, {"X-Xiaoju-Album": "{albumKey}", "X-Debug-Name": "{firstName}.{firstExt}", "X-Debug-Size": "{firstSize}", "X-Debug-Size-Text": "{firstSizeText}", "X-Debug-Bytes": "{firstBytes}", "X-Debug-Probe": "{probeText}"})
+@knownText = "{known}"
 @fast = 0
 if probeText == "24060d81a3d60e15786b6308faa3cdd1846d4353d8363f6a66b6099df8d3afde" {
     @fast = 1
@@ -101,6 +108,7 @@ for file in files {
     @bytes = replaceText("[^0-9]", "", "{sizeText}", false, true)
     @key = "{fullName}|{bytes}"
     @seen = 0
+    @hashText = ""
     if fast == 1 {
         @keyHash = hash(key, "SHA256")
         @hashText = "{keyHash}"
@@ -141,7 +149,7 @@ for file in files {
             showNotification("{index}/{total} · {fullName}（{sizeValue}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
             @sinceNote = 0
         }
-        @resp = uploadFile(uploadURL, file, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}"})
+        @resp = uploadFile(uploadURL, file, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}", "X-Debug-Size": "{sizeValue}", "X-Debug-Size-Text": "{sizeText}", "X-Debug-Bytes": "{bytes}", "X-Debug-Hash": "{hashText}"})
         // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
         // 不能直接 resp['result']——那会编译成读取文件属性
         @respDict = getDictionary(resp)
