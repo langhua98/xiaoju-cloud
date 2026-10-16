@@ -60,50 +60,80 @@ def fix_questions(wf):
         q["ActionIndex"] = i
 
 
-# 每个快捷指令里「获取最新的照片」占位按顺序换成什么：
-#   (date, hidden)：「查找照片」，date 为真时加“创建日期晚于 sinceText”；hidden 为 None 不管隐藏没隐藏，
-#                   False 只要没隐藏的，True 只要“已隐藏”相簿里的
-#   "keep"：保留「获取最新的照片」（不带任何条件，诊断用）
-# backup 里依次是：普通批次、隐藏相册批次，以及一张也没找到时的三个诊断（只按日期 / 只看隐藏 / 最新照片）
+# 每个快捷指令里「获取最新的照片」占位按顺序换成什么："keep" 保留「获取最新的照片」（没有任何条件），
+# 否则是一个 dict，换成「查找照片」（按创建日期最旧的排最前，张数不变），条件：
+#   date:   日期条件的写法（见 date_template），没有这个键就不加日期条件
+#   var:    日期条件用的变量名；op：比较方式（0 早于、2 晚于、3 不早于，与“如果”的 小于 / 大于 / 大于等于 同一套编号）
+#   hidden: True / False 加“已隐藏 是 真 / 假”，hidden_style 是它的写法（见 hidden_template）
+#
+# 日期、“已隐藏”条件在新版 iOS 上的确切写法查不到资料：sinceText 那种写法在 iPhone 上一张都查不到。
+# 所以 backup 先带一个「🔧 诊断」：前 11 项用不同写法各查一次，看手机认哪一种（结果截图），再改正式用的两项。
+_DATE = {"var": "sinceText", "op": 2, "date": "values-text"}
+_DIAG = [
+    dict(_DATE),                                           # A：现在的写法（日期文字）
+    {"date": "values-var", "var": "probePast", "op": 2},   # B：日期变量，晚于 20 年前
+    {"date": "values-var", "var": "probeFuture", "op": 0}, # C：日期变量，早于明天
+    {"date": "values-var", "var": "probePast", "op": 3},   # D：日期变量，不早于 20 年前
+    {"date": "top-var", "var": "probePast", "op": 2},      # E：日期变量放在条件最外层（旧版写法）
+    {"date": "override", "var": "probePast", "op": 2},     # F：日期变量放在 VariableOverrides 里
+    {"hidden": True, "hidden_style": "top"},               # 已隐藏 是 真：旧版写法
+    {"hidden": True, "hidden_style": "values"},            # 已隐藏 是 真：值放在 Values 里
+    {"hidden": False, "hidden_style": "top"},
+    {"hidden": False, "hidden_style": "values"},
+    {},                                                    # 没有条件：全部照片（对照）
+]
 PLACEHOLDERS = {
-    "sync": [(True, None)],
-    "backup": [(True, False), (True, True), (True, None), (False, True), "keep"],
+    "sync": [dict(_DATE)],
+    "backup": _DIAG + [dict(_DATE, hidden=False, hidden_style="top"), dict(_DATE, hidden=True, hidden_style="top")],
 }
 
 
-def find_photos(wf, specs, since_var="sinceText"):
-    """把占位的「获取最新的照片」按 specs 依次换成「查找照片」（条件见 PLACEHOLDERS），按创建日期最旧的排最前，
-    张数不变。Cherri 没有带过滤条件的「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
+def _token(var, attachment):
+    if attachment:  # 直接引用变量（变量本身是日期）
+        return {"WFSerializationType": "WFTextTokenAttachment", "Value": {"Type": "Variable", "VariableName": var}}
+    return {"WFSerializationType": "WFTextTokenString",  # 文字里嵌一个变量
+            "Value": {"string": "\ufffc", "attachmentsByRange": {"{0, 1}": {"Type": "Variable", "VariableName": var}}}}
+
+
+def date_template(style, var, op):
+    t = {"Bounded": True, "Removable": True, "Property": "Creation Date", "Operator": op}
+    if style == "values-text":
+        t["Values"] = {"Unit": 4, "Date": _token(var, False)}
+    elif style == "values-var":
+        t["Values"] = {"Unit": 4, "Date": _token(var, True)}
+    elif style == "top-var":
+        t.update({"Unit": 4, "Date": _token(var, True)})
+    elif style == "override":
+        t.update({"Unit": 4, "Values": {"Unit": 4}, "VariableOverrides": {"dateValue": _token(var, True)}})
+    else:
+        sys.exit(f"unknown date style {style!r}")
+    return t
+
+
+def hidden_template(style, value):
+    # 是 / 否 类的条件：Operator 4 是“是”
+    if style == "top":
+        return {"Property": "Is Hidden", "Operator": 4, "Bool": value, "Removable": True, "Unit": 4, "VariableOverrides": {}}
+    if style == "values":
+        return {"Property": "Is Hidden", "Operator": 4, "Removable": True, "Values": {"Bool": value, "Unit": 4}}
+    sys.exit(f"unknown hidden style {style!r}")
+
+
+def find_photos(wf, specs):
+    """把占位的「获取最新的照片」按 specs 依次换成「查找照片」（见 PLACEHOLDERS）。Cherri 没有带过滤条件的
+    「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
     hits = [a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.getlastphoto"]
     if len(hits) != len(specs):
         sys.exit(f"expected {len(specs)} getLatestPhotos placeholders, found {len(hits)}")
     for action, spec in zip(hits, specs):
         if spec == "keep":
             continue
-        date, hidden = spec
         old = action["WFWorkflowActionParameters"]
         templates = []
-        if date:
-            templates.append({
-                "Bounded": True,
-                "Removable": True,
-                "Property": "Creation Date",
-                "Operator": 2,  # 日期：0 早于，2 晚于（与“如果”的 小于 / 大于 同一套编号）
-                "Values": {
-                    "Unit": 4,
-                    "Date": {
-                        "WFSerializationType": "WFTextTokenString",
-                        "Value": {"string": "\ufffc", "attachmentsByRange": {
-                            "{0, 1}": {"Type": "Variable", "VariableName": since_var}}},
-                    },
-                },
-            })
-        if hidden is not None:
-            # 是 / 否 类的条件：Operator 4 是“是”，值放在 Bool（和快捷指令 App 里选“已隐藏 是 真 / 假”存下来的一样）
-            templates.append({"Property": "Is Hidden", "Operator": 4, "Bool": hidden, "Removable": True, "Unit": 4,
-                              "VariableOverrides": {}})
-        if not templates:
-            sys.exit(f"placeholder spec {spec} has no condition; use \"keep\"")
+        if "date" in spec:
+            templates.append(date_template(spec["date"], spec["var"], spec["op"]))
+        if "hidden" in spec:
+            templates.append(hidden_template(spec["hidden_style"], spec["hidden"]))
         action["WFWorkflowActionIdentifier"] = "is.workflow.actions.filter.photos"
         action["WFWorkflowActionParameters"] = {
             "UUID": old["UUID"],

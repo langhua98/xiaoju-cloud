@@ -44,13 +44,73 @@ action 'downloadurl' uploadFile(
 
 // 选传什么（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
 if savedKey {
-    @options = list("▶️ 接着上次（只传之后拍的）", "🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始")
+    @options = list("▶️ 接着上次（只传之后拍的）", "🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始", "🔧 诊断（不上传，出问题时截图）")
     @chosen = chooseFromList(options, "要传哪些照片？上次已经传到 {savedSince} 拍的")
 } else {
-    @options = list("🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始")
+    @options = list("🙈 隐藏相册", "🗂 整个相册（从最早的开始）", "📅 最近 7 天", "📅 最近 30 天", "📅 从某一天开始", "🔧 诊断（不上传，出问题时截图）")
     @chosen = chooseFromList(options, "要传哪些照片？")
 }
 @choice = "{chosen}"
+
+// 诊断：一张也不传，用几种不同的写法查照片，看这台手机认哪一种（新版 iOS 的条件写法查不到资料）。
+// build.py 按 PLACEHOLDERS["backup"] 的前 11 项依次把下面的「获取最新的照片」换成不同条件的「查找照片」。
+// 日期 A–F 各查最多 5 张：能查到（5）说明这种写法可以用；隐藏 1–4 各查最多 300 张并取第一张的名字，
+// 和“全部”比：条件没生效时数量、名字都和“全部”一样。
+if choice == "🔧 诊断（不上传，出问题时截图）" {
+    @probeNow = currentDate()
+    @probePast = adjustDate(probeNow, "Subtract", 20, "yr")
+    @probeFuture = adjustDate(probeNow, "Add", 1, "days")
+    @sinceText = "1971-01-01 00:00:00"
+    @pA = getLatestPhotos(5)
+    @pB = getLatestPhotos(5)
+    @pC = getLatestPhotos(5)
+    @pD = getLatestPhotos(5)
+    @pE = getLatestPhotos(5)
+    @pF = getLatestPhotos(5)
+    @h1 = getLatestPhotos(300)
+    @h2 = getLatestPhotos(300)
+    @h3 = getLatestPhotos(300)
+    @h4 = getLatestPhotos(300)
+    @hAll = getLatestPhotos(300)
+    @nA = count(pA)
+    @nB = count(pB)
+    @nC = count(pC)
+    @nD = count(pD)
+    @nE = count(pE)
+    @nF = count(pF)
+    @n1 = count(h1)
+    @n2 = count(h2)
+    @n3 = count(h3)
+    @n4 = count(h4)
+    @nAll = count(hAll)
+    @name1 = ""
+    @name2 = ""
+    @name3 = ""
+    @name4 = ""
+    @nameAll = ""
+    if n1.number > 0 {
+        @first1 = getFirstItem(h1)
+        @name1 = getImageDetail(first1, "Name")
+    }
+    if n2.number > 0 {
+        @first2 = getFirstItem(h2)
+        @name2 = getImageDetail(first2, "Name")
+    }
+    if n3.number > 0 {
+        @first3 = getFirstItem(h3)
+        @name3 = getImageDetail(first3, "Name")
+    }
+    if n4.number > 0 {
+        @first4 = getFirstItem(h4)
+        @name4 = getImageDetail(first4, "Name")
+    }
+    if nAll.number > 0 {
+        @firstAll = getFirstItem(hAll)
+        @nameAll = getImageDetail(firstAll, "Name")
+    }
+    alert("日期 A{nA} B{nB} C{nC} D{nD} E{nE} F{nF}\n隐藏1 {n1} {name1}\n隐藏2 {n2} {name2}\n隐藏3 {n3} {name3}\n隐藏4 {n4} {name4}\n全部 {nAll} {nameAll}\n\n请把这个截图发给维护网盘的人。", "诊断结果")
+    stop()
+}
 @sinceText = ""
 @sinceKey = ""
 @now = currentDate()
@@ -197,16 +257,7 @@ repeat batch for 200 {
 
 if processed == 0 {
     if stalled == 0 {
-        // 一张也没找到：顺便查一下是哪一步查不到（截图发给维护的人就知道原因）。build.py 把下面三步依次换成
-        // 「查找照片：创建日期晚于 1971 年」「查找照片：已隐藏 是 真」，第三步保留「获取最新的照片」（没有任何条件）
-        @sinceText = "1971-01-01 00:00:00"
-        @diagDate = getLatestPhotos(5)
-        @diagHidden = getLatestPhotos(5)
-        @diagLatest = getLatestPhotos(5)
-        @nDate = count(diagDate)
-        @nHidden = count(diagHidden)
-        @nLatest = count(diagLatest)
-        alert("{scope}：{startText} 之后拍的都传过了，或者一张也没找到。\n\n如果明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」；传隐藏相册时可以先到 设置 → App → 照片，关掉「使用面容 ID」，传完再打开。\n\n诊断（各最多 5）：最新 {nLatest} · 按日期 {nDate} · 已隐藏 {nHidden}", "没有新照片")
+        alert("{scope}：{startText} 之后拍的都传过了，或者一张也没找到。\n\n如果明明有：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」；传隐藏相册时可以先到 设置 → App → 照片，关掉「使用面容 ID」。还不行就再运行一次、选「🔧 诊断」，把结果截图发给维护网盘的人。", "没有新照片")
         stop()
     }
 }
