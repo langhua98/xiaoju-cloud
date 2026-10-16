@@ -54,7 +54,15 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	body := bufio.NewReaderSize(r.Body, 64<<10)
 	head, _ := body.Peek(64)
 	ext, sniffed := media.Sniff(head)
-	name := ingestName(r, ext)
+	name, ok := ingestName(r, ext)
+	if !ok {
+		// 快捷指令没给文件名：以前会自动起名“照片 日期…”，结果重新运行时认不出传过、还会重复上传。现在拒绝，
+		// 快捷指令弹出“没传上去”并停下
+		io.Copy(io.Discard, body)
+		s.log.Warn("ingest without a file name rejected", "client", clientIP(r))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file name (X-File-Name)", "code": "missing_name"})
+		return
+	}
 
 	folder, ok := ingestAlbums[strings.ToLower(strings.TrimSpace(r.Header.Get("X-Xiaoju-Album")))]
 	if !ok {
@@ -113,7 +121,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]any{"result": "error", "error": "服务端写入失败，请稍后再运行一次（传过的会自动跳过）"})
 			return
 		}
-		s.log.Info("ingested", "name", f.Name, "size", f.Size, "client", clientIP(r))
+		s.log.Info("ingested", "folder", folder, "name", f.Name, "size", f.Size, "client", clientIP(r))
 		resp := map[string]any{"result": "uploaded", "name": f.Name, "size": f.Size}
 		if started {
 			json.NewEncoder(w).Encode(resp)
@@ -126,6 +134,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 
 // uploadedBefore 找文件夹里已经传过的同一个文件：文件名去掉自动加的序号后相同（不分大小写）、大小也相同。
 // name 没有扩展名时只比较扩展名前面的部分（从相册直接传时快捷指令给的名字没有扩展名）。
+//
+// 以前没给文件名时服务端会自动起名“照片 2026-10-16 035540-982f.mp4”。同一个文件夹里有这种名字、大小又完全一样的，
+// 就是同一个文件当时没带名字传上来的：改回真名，当作传过（不再重复上传）。
 func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name string, size int64) (*meta.File, error) {
 	same, err := s.svc.Store().ListFilesBySize(ctx, s.userID, albumID, size)
 	if err != nil {
@@ -133,6 +144,7 @@ func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name str
 	}
 	want := stripCopySuffix(name)
 	noExt := filepath.Ext(want) == ""
+	var unnamed *meta.File
 	for _, f := range same {
 		got := stripCopySuffix(f.Name)
 		if noExt {
@@ -141,9 +153,30 @@ func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name str
 		if strings.EqualFold(got, want) {
 			return f, nil
 		}
+		if unnamed == nil && placeholderName.MatchString(f.Name) {
+			unnamed = f
+		}
 	}
-	return nil, nil
+	if unnamed == nil {
+		return nil, nil
+	}
+	newName := name
+	if noExt {
+		newName += filepath.Ext(unnamed.Name)
+	}
+	switch err := s.svc.Store().RenameFile(ctx, s.userID, unnamed.ID, newName); {
+	case err == nil:
+		s.log.Info("renamed an upload that came without a file name", "from", unnamed.Name, "to", newName)
+		unnamed.Name = newName
+	case errors.Is(err, meta.ErrConflict): // 真名已经被别的文件占了：保留原来的名字，照样当作传过
+	default:
+		return nil, err
+	}
+	return unnamed, nil
 }
+
+// placeholderName 是以前没给文件名时自动起的名字：“照片 2026-10-16 035540-982f.mp4”。
+var placeholderName = regexp.MustCompile(`^照片 \d{4}-\d{2}-\d{2} \d{6}-[0-9a-f]{4}(\.[A-Za-z0-9]+)?$`)
 
 // GET /api/ingest/exists（头部 X-File-Name、X-File-Size、X-Xiaoju-Album，同上传）：这个文件是不是已经传过了。
 // 快捷指令先问一下，传过的就不用再把整个文件发一遍（中途停了再运行时省时间、省流量）。
@@ -157,8 +190,8 @@ func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 	}
 	missing := map[string]string{"result": "missing"}
 	size := parseByteCount(r.Header.Get("X-File-Size"))
-	name := ingestName(r, "")
-	if size <= 0 {
+	name, named := ingestName(r, "")
+	if size <= 0 || !named {
 		writeJSON(w, http.StatusOK, missing)
 		return
 	}
@@ -291,9 +324,9 @@ func (s *Server) albumFolder(r *http.Request, name string) (*meta.File, error) {
 }
 
 // ingestName 取文件名：?name= 或 X-File-Name（可以是 URL 编码的），去掉路径分隔符；
-// 没有扩展名时按文件内容补上（快捷指令给的照片名称通常没有扩展名）。
-func ingestName(r *http.Request, ext string) string {
-	name := r.URL.Query().Get("name")
+// 没有扩展名时按文件内容补上（快捷指令给的照片名称通常没有扩展名）。没给名字（或只有“.”）时 ok 为 false。
+func ingestName(r *http.Request, ext string) (name string, ok bool) {
+	name = r.URL.Query().Get("name")
 	if name == "" {
 		name = r.Header.Get("X-File-Name")
 		if strings.Contains(name, "%") {
@@ -311,8 +344,8 @@ func ingestName(r *http.Request, ext string) string {
 		}
 		return c
 	}, name))
-	if name == "" || name == "." || name == ".." {
-		name = "照片 " + time.Now().Format("2006-01-02 150405") + "-" + uuid.NewString()[:4]
+	if strings.Trim(name, ".") == "" {
+		return "", false
 	}
 	if filepath.Ext(name) == "" && ext != "" {
 		name += ext
@@ -325,7 +358,7 @@ func ingestName(r *http.Request, ext string) string {
 		}
 		name = string(stem) + ext
 	}
-	return name
+	return name, true
 }
 
 var copySuffix = regexp.MustCompile(` \(\d+\)(\.[^.]*)?$`)

@@ -35,3 +35,17 @@ func (s *Store) ListFilesBySize(ctx context.Context, userID, parentID uuid.UUID,
 	}
 	return out, rows.Err()
 }
+
+// RenameFile 给文件改名（同一文件夹里已有同名的返回 ErrConflict）。
+func (s *Store) RenameFile(ctx context.Context, userID, id uuid.UUID, name string) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE files SET name = $3, updated_at = now()
+		WHERE id = $1 AND user_id = $2 AND type = 'file' AND status = 'active' AND trashed_at IS NULL`, id, userID, name)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

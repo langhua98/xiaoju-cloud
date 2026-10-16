@@ -42,14 +42,17 @@ func TestIngestName(t *testing.T) {
 		{req("?name=a%2Fb.jpg", ""), ".jpg", "a_b.jpg"},      // 不能带路径
 		{req("", "%E5%9B%BE.png"), ".png", "图.png"},          // URL 编码的中文名
 	} {
-		if got := ingestName(c.r, c.ext); got != c.want {
-			t.Errorf("got %q, want %q", got, c.want)
+		if got, ok := ingestName(c.r, c.ext); !ok || got != c.want {
+			t.Errorf("got %q %v, want %q", got, ok, c.want)
 		}
 	}
-	if got := ingestName(req("", ""), ".jpg"); !strings.HasPrefix(got, "照片 ") || !strings.HasSuffix(got, ".jpg") {
-		t.Errorf("default name: %q", got)
+	// 没给名字（快捷指令取不到文件名时会给“.”）：不再自动起名
+	for _, h := range []string{"", ".", "..", " . "} {
+		if got, ok := ingestName(req("", h), ".jpg"); ok {
+			t.Errorf("name %q must be rejected, got %q", h, got)
+		}
 	}
-	if got := ingestName(req("", strings.Repeat("长", 120)+".jpg"), ""); len(got) > 200 || !strings.HasSuffix(got, ".jpg") {
+	if got, _ := ingestName(req("", strings.Repeat("长", 120)+".jpg"), ""); len(got) > 200 || !strings.HasSuffix(got, ".jpg") {
 		t.Errorf("long name not truncated safely: %d bytes", len(got))
 	}
 	if stripCopySuffix("IMG_1 (2).jpg") != "IMG_1.jpg" || withCopySuffix("IMG_1.jpg", 3) != "IMG_1 (3).jpg" {
@@ -227,6 +230,31 @@ func TestIngest(t *testing.T) {
 	}
 	if code, _ := call("GET", "/api/ingest/exists", "", "X-File-Name", "a.jpg", "X-File-Size", "1", "X-Xiaoju-Album", "x"); code != 400 {
 		t.Errorf("unknown album must be rejected: %d", code)
+	}
+
+	// 没带文件名：拒绝（以前会自动起名“照片 日期…”）
+	if code, out := call("POST", "/api/ingest", jpeg+"zz", "X-File-Name", ".", "X-Xiaoju-Album", "hidden"); code != 400 || out["code"] != "missing_name" {
+		t.Fatalf("upload without a name must be rejected: %d %v", code, out)
+	}
+	// 以前没带文件名传上来、被自动起名的：同一个文件夹里大小完全一样的，先问时改回真名、当作传过
+	video2 := "\x00\x00\x00\x14ftypqt  " + strings.Repeat("w", 1234)
+	if code, out := call("POST", "/api/ingest", video2, "X-File-Name", "照片 2026-10-16 035540-982f", "X-Xiaoju-Album", "hidden"); code != 201 || out["name"] != "照片 2026-10-16 035540-982f.mov" {
+		t.Fatalf("placeholder-named upload: %d %v", code, out)
+	}
+	code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", "IMG_0500.MOV", "X-File-Size", strconv.Itoa(len(video2)), "X-Xiaoju-Album", "hidden")
+	if code != 200 || out["result"] != "exists" || out["name"] != "IMG_0500.MOV" {
+		t.Fatalf("placeholder upload must be renamed and reported as existing: %d %v", code, out)
+	}
+	if code, out := call("POST", "/api/ingest", video2, "X-File-Name", "IMG_0500.MOV", "X-Xiaoju-Album", "hidden"); code != 200 || out["result"] != "skipped" {
+		t.Fatalf("renamed file must be skipped: %d %v", code, out)
+	}
+	_, hidden = call("GET", "/api/folders/"+hiddenID+"/children", "", tokenH...)
+	names := []string{}
+	for _, it := range hidden["items"].([]any) {
+		names = append(names, it.(map[string]any)["name"].(string))
+	}
+	if strings.Join(names, ",") != "IMG_0001.jpg,IMG_0500.MOV" {
+		t.Fatalf("hidden album after rename: %v", names)
 	}
 }
 
