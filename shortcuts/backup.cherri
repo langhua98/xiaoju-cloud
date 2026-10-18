@@ -110,8 +110,11 @@ for file in files {
         if knownText contains hashText {
             @seen = 1
         }
-    } else {
-        @check = askServer(existsURL, {"X-File-Name": "{fullName}", "X-File-Size": "{bytes}", "X-Xiaoju-Album": "{albumKey}"})
+    }
+    // 手机上没认出来：上传前再问服务端一次（按名字 + 大小），传过的就不用把整个文件再发一遍。
+    // 顺便报上手机算的摘要，服务端记日志，看得出本地比对为什么没对上
+    if seen == 0 {
+        @check = askServer(existsURL, {"X-File-Name": "{fullName}", "X-File-Size": "{bytes}", "X-Xiaoju-Album": "{albumKey}", "X-Debug-Hash": "{hashText}"})
         @checkDict = getDictionary(check)
         @checkValue = getValue(checkDict, "result")
         @checkText = "{checkValue}"

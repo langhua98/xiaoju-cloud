@@ -215,8 +215,10 @@ func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	// 快捷指令在手机上比对不了（摘要对不上）时才会每个文件来问一次：记下来，看得出它走的是哪条路
-	s.log.Info("ingest exists asked", "name", name, "size", size, "found", f != nil)
+	// 快捷指令在手机上没认出来时才来问：记下来，连同手机算的摘要（传过的文件这里对不上，就是本地比对的问题）
+	s.log.Info("ingest exists asked", "name", name, "size", size, "found", f != nil,
+		"phone_hash", fmt.Sprintf("%q", rawHeader(r, "X-Debug-Hash")),
+		"phone_hashed", guessHashed(rawHeader(r, "X-Debug-Hash"), name, size, "", "", strconv.FormatInt(size, 10)))
 	if f == nil {
 		writeJSON(w, http.StatusOK, missing)
 		return
