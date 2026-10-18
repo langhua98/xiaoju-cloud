@@ -173,18 +173,19 @@ def sign(name, xml):
         "Content-Type": "application/json",
         "User-Agent": "Go-http-client/1.1",
     })
-    for attempt in range(4):
+    tries = 7
+    for attempt in range(tries):
         try:
             with urllib.request.build_opener(_NoRedirect).open(req, timeout=120) as resp:
                 signed = resp.read()
             break
         except urllib.error.HTTPError as e:
             detail = e.read()[:300]
-            # 限流或服务端临时出错：按 Retry-After（默认 30、60、90 秒）等一会儿再试
-            if (e.code == 429 or e.code >= 500) and attempt < 3:
-                wait = int(e.headers.get("Retry-After") or 30 * (attempt + 1))
+            # 限流或服务端临时出错：按 Retry-After（默认 30、60、90……秒，最多 3 分钟）等一会儿再试，一共试 7 次
+            if (e.code == 429 or e.code >= 500) and attempt < tries - 1:
+                wait = min(int(e.headers.get("Retry-After") or 30 * (attempt + 1)), 180)
                 print(f"signing service: HTTP {e.code}, retrying in {wait}s", file=sys.stderr)
-                time.sleep(min(wait, 120))
+                time.sleep(wait)
                 continue
             sys.exit(f"signing service: HTTP {e.code}, location={e.headers.get('Location')!r}, "
                      f"server={e.headers.get('Server')!r}, body={detail!r}")

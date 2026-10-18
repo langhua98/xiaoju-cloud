@@ -48,9 +48,17 @@ jobs:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
         run: |
           status=0
+          live="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           for s in backup sync; do
             python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "web/xiaoju-$s.shortcut" \
-              ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"} || status=1
+              ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"} && continue
+            status=1
+            # 签名失败：沿用网上现在那一份（旧版本），免得安装按钮消失
+            if curl -fsSL "$live/xiaoju-$s.shortcut" -o "web/xiaoju-$s.shortcut"; then
+              echo "::warning::$s shortcut not rebuilt (signing failed); kept the previously published one"
+            else
+              rm -f "web/xiaoju-$s.shortcut"
+            fi
           done
           exit $status
       - name: Stamp version
