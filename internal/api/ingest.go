@@ -83,7 +83,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("ingest receiving", "folder", folder, "name", name, "size", r.ContentLength, "client", clientIP(r),
 		"phone_size", debugHeader(r, "X-Debug-Size"), "phone_size_text", debugHeader(r, "X-Debug-Size-Text"),
 		"phone_bytes", debugHeader(r, "X-Debug-Bytes"),
-		"phone_hash", fmt.Sprintf("%q", rawHeader(r, "X-Debug-Hash")), "want_hash", nameSizeHash(name, r.ContentLength))
+		"phone_hash", fmt.Sprintf("%q", rawHeader(r, "X-Debug-Hash")), "want_hash", nameSizeHash(name, r.ContentLength),
+		"phone_hashed", guessHashed(rawHeader(r, "X-Debug-Hash"), name, r.ContentLength,
+			debugHeader(r, "X-Debug-Size"), debugHeader(r, "X-Debug-Size-Text"), debugHeader(r, "X-Debug-Bytes")))
 	// 已经传过：读完请求体（避免客户端在发送途中被断开而报错），不再写 Telegram
 	if r.ContentLength > 0 {
 		f, err := s.uploadedBefore(ctx, album.ID, name, r.ContentLength)
@@ -267,6 +269,31 @@ func (s *Server) ingestNames(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	io.WriteString(w, b.String())
+}
+
+// guessHashed 猜快捷指令算摘要时用的是什么文字（手机上比对不上时，看差在哪：多了换行、大小的写法不一样……）。
+func guessHashed(phone, name string, size int64, sizeValue, sizeText, bytes string) string {
+	phone = strings.ToLower(strings.TrimSpace(phone))
+	if phone == "" {
+		return "(no hash sent)"
+	}
+	n := strconv.FormatInt(size, 10)
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	candidates := map[string]string{
+		"name|bytes": name + "|" + n, "name|phone_bytes": name + "|" + bytes,
+		"name|size_text": name + "|" + sizeText, "name|size_value": name + "|" + sizeValue,
+		"name\\n|bytes": name + "\n|" + n, "name|bytes\\n": name + "|" + n + "\n", "name|bytes\\r\\n": name + "|" + n + "\r\n",
+		"name |bytes": name + " |" + n, "name| bytes": name + "| " + n, "base|bytes": base + "|" + n,
+		"lower(name)|bytes": strings.ToLower(name) + "|" + n, "upper ext": base + strings.ToUpper(filepath.Ext(name)) + "|" + n,
+		"name": name, "bytes": n, "empty": "",
+	}
+	for label, c := range candidates {
+		sum := sha256.Sum256([]byte(c))
+		if hex.EncodeToString(sum[:]) == phone {
+			return label
+		}
+	}
+	return "(none of the guesses)"
 }
 
 // rawHeader 取头部的原始值（不去掉首尾空白，截短），看得出快捷指令有没有多带换行、空格。
