@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -82,7 +83,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("ingest receiving", "folder", folder, "name", name, "size", r.ContentLength, "client", clientIP(r),
 		"phone_size", debugHeader(r, "X-Debug-Size"), "phone_size_text", debugHeader(r, "X-Debug-Size-Text"),
 		"phone_bytes", debugHeader(r, "X-Debug-Bytes"),
-		"phone_hash_ok", debugHeader(r, "X-Debug-Hash") == nameSizeHash(name, r.ContentLength))
+		"phone_hash", fmt.Sprintf("%q", rawHeader(r, "X-Debug-Hash")), "want_hash", nameSizeHash(name, r.ContentLength))
 	// 已经传过：读完请求体（避免客户端在发送途中被断开而报错），不再写 Telegram
 	if r.ContentLength > 0 {
 		f, err := s.uploadedBefore(ctx, album.ID, name, r.ContentLength)
@@ -212,6 +213,8 @@ func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// 快捷指令在手机上比对不了（摘要对不上）时才会每个文件来问一次：记下来，看得出它走的是哪条路
+	s.log.Info("ingest exists asked", "name", name, "size", size, "found", f != nil)
 	if f == nil {
 		writeJSON(w, http.StatusOK, missing)
 		return
@@ -264,6 +267,18 @@ func (s *Server) ingestNames(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	io.WriteString(w, b.String())
+}
+
+// rawHeader 取头部的原始值（不去掉首尾空白，截短），看得出快捷指令有没有多带换行、空格。
+func rawHeader(r *http.Request, key string) string {
+	v := ""
+	if vs := r.Header.Values(key); len(vs) > 0 {
+		v = vs[0]
+	}
+	if len(v) > 100 {
+		v = v[:100]
+	}
+	return v
 }
 
 // debugHeader 取快捷指令报来的诊断信息（只用来记日志，截短）。
