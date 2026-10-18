@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 )
@@ -45,7 +46,8 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stored := map[string][]int64{}
+	// stored：比较用的名字 → 大小；loose：再去掉空白、控制字符和“_”的名字 → 大小（兜底，见 looseKey）
+	stored, loose := map[string][]int64{}, map[string][]int64{}
 	album, err := s.svc.Store().FindFolder(r.Context(), s.userID, nil, folder)
 	switch {
 	case errors.Is(err, meta.ErrNotFound): // 还没传过任何文件
@@ -61,14 +63,16 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		for _, f := range files {
 			k := planKey(f.Name, true)
 			stored[k] = append(stored[k], f.Size)
+			loose[looseKey(k)] = append(loose[looseKey(k)], f.Size)
 		}
 	}
 
-	var todo []string
+	var todo, firstTodo []string // firstTodo：前几个要传的文件名原样（带引号）记进日志，对不上时看得出差在哪
 	uploaded, unparsed := 0, 0
 	for i, name := range names {
 		match := false
-		if candidates := stored[planKey(name, false)]; len(candidates) > 0 {
+		key := planKey(name, false)
+		if candidates := stored[key]; len(candidates) > 0 {
 			ok, parsed := sizeMatchesAny(sizes[i], candidates)
 			if !parsed {
 				unparsed++
@@ -76,27 +80,60 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 			}
 			match = ok
 		}
+		if !match {
+			// 兜底：名字里有制表符这类看不见的字符时，上传时被换成了“_”，这里两边各去掉再比（大小必须对得上）
+			if candidates := loose[looseKey(key)]; len(candidates) > 0 {
+				if ok, parsed := sizeMatchesAny(sizes[i], candidates); ok && parsed {
+					match = true
+					s.log.Info("ingest plan: matched after ignoring blanks and underscores", "phone_name", strconv.Quote(name))
+				}
+			}
+		}
 		if match {
 			uploaded++
 		} else {
 			todo = append(todo, strconv.Itoa(i+1))
+			if len(firstTodo) < 3 {
+				firstTodo = append(firstTodo, strconv.Quote(name)+" "+strings.TrimSpace(sizes[i]))
+			}
 		}
 	}
 	s.log.Info("ingest plan", "folder", folder, "files", len(names), "uploaded", uploaded, "todo", len(todo),
-		"unparsed_sizes", unparsed, "client", clientIP(r))
+		"unparsed_sizes", unparsed, "first_todo", strings.Join(firstTodo, ", "), "client", clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{"todo": strings.Join(todo, "\n"), "count": len(todo), "uploaded": uploaded})
 }
 
-// splitLines 按行拆开（快捷指令的「合并文本」用换行连接）；空文本是零行。
+// splitLines 按行拆开（快捷指令的「合并文本」用换行连接）；空文本是零行。每一行都以 \r 结尾时（用的是 \r\n）
+// 去掉 \r。别的空白不去掉：文件名里可能就有制表符这类字符（上传时被换成了“_”，比较时 planKey 也会换），
+// 先去掉就对不上了——video_.mov 每次都被当成没传过，就是这样。
 func splitLines(s string) []string {
 	if s == "" {
 		return nil
 	}
-	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
-	for i, l := range lines {
-		lines[i] = strings.TrimSpace(l)
+	lines := strings.Split(s, "\n")
+	crlf := len(lines) > 1
+	for _, l := range lines[:len(lines)-1] {
+		if !strings.HasSuffix(l, "\r") {
+			crlf = false
+			break
+		}
+	}
+	if crlf {
+		for i := range lines {
+			lines[i] = strings.TrimSuffix(lines[i], "\r")
+		}
 	}
 	return lines
+}
+
+// looseKey 去掉比较用的名字里所有空白、控制字符、零宽字符和“_”（兜底比较用，大小也必须对得上）。
+func looseKey(key string) string {
+	return strings.Map(func(c rune) rune {
+		if c == '_' || unicode.IsSpace(c) || unicode.IsControl(c) || unicode.Is(unicode.Cf, c) { // Cf：零宽字符等
+			return -1
+		}
+		return c
+	}, key)
 }
 
 // planKey 是比较用的名字：去掉自动加的序号、扩展名（存着的名字带扩展名，快捷指令给的不带），不分大小写。

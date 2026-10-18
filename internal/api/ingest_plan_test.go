@@ -43,3 +43,24 @@ func TestPlanKey(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitLines(t *testing.T) {
+	for in, want := range map[string][]string{
+		"":              nil,
+		"a":             {"a"},
+		"a\tb\nc ":      {"a\tb", "c "},  // 别的空白原样保留
+		"a\r\nb\r\nc":   {"a", "b", "c"}, // \r\n 分隔
+		"video\r\nb\nc": {"video\r", "b", "c"},
+	} {
+		got := splitLines(in)
+		if len(got) != len(want) {
+			t.Errorf("%q: %q, want %q", in, got, want)
+			continue
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("%q: %q, want %q", in, got, want)
+			}
+		}
+	}
+}

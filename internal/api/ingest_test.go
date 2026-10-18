@@ -312,6 +312,17 @@ func TestIngest(t *testing.T) {
 	if code, out := plan(`{"album":"","names":"IMG_0001","sizes":"5 KB"}`); code != 200 || out["todo"] != "1" {
 		t.Fatalf("plan for the other album: %d %v", code, out)
 	}
+	// 名字里有制表符：上传时存成“clip_.mov”；清单里原样带着制表符，或者制表符丢了，都要认出是传过的
+	clip := "\x00\x00\x00\x14ftypqt  " + strings.Repeat("c", 3000)
+	if code, out := call("POST", "/api/ingest", clip, "X-File-Name", "clip\t.mov", "X-Xiaoju-Album", "hidden"); code != 201 || out["name"] != "clip_.mov" {
+		t.Fatalf("upload with a tab in the name: %d %v", code, out)
+	}
+	for _, n := range []string{"clip\t", "clip", "clip_"} {
+		body, _ := json.Marshal(map[string]string{"album": "hidden", "names": n + "\nnew one", "sizes": kb(len(clip)) + "\n3 KB"})
+		if code, out := plan(string(body)); code != 200 || out["todo"] != "2" {
+			t.Errorf("plan for %q: %d %v", n, code, out)
+		}
+	}
 	if code, _ := plan(`{"album":"hidden","names":"a\nb","sizes":"1 KB"}`); code != 400 {
 		t.Errorf("names and sizes of different lengths must be rejected: %d", code)
 	}
