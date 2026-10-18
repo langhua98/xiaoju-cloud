@@ -74,15 +74,10 @@ if total.number == 0 {
 @probeInput = "xiaoju"
 @probe = hash(probeInput, "SHA256")
 @probeText = "{probe}"
-// 第一个文件的名字和大小（几种写法）一起报给服务端记日志：本地比对对不上时能看出是哪里不一样
-@first = getFirstItem(files)
-@firstName = fileDetail(first, "Name")
-@firstExt = fileDetail(first, "File Extension")
-@firstSize = fileDetail(first, "File Size")
-@firstSizeText = fileSize(firstSize, "Bytes")
-@firstBytes = replaceText("[^0-9]", "", "{firstSizeText}", false, true)
-// 网盘里这个相册已有文件“名字|字节数”的 SHA-256（一行一个），只取这一次
-@known = askServer(namesURL, {"X-Xiaoju-Album": "{albumKey}", "X-Debug-Name": "{firstName}.{firstExt}", "X-Debug-Size": "{firstSize}", "X-Debug-Size-Text": "{firstSizeText}", "X-Debug-Bytes": "{firstBytes}", "X-Debug-Probe": "{probeText}"})
+// 网盘里这个相册已有文件“名字|字节数”的 SHA-256（一行一个），只取这一次。
+// 这个请求里不能带从文件取出的信息（名字、大小）：iOS 会为此弹“是否允许共享”，在快捷指令里弹不出来，
+// 报“此操作无法在当前用户界面中运行”。手机算的大小在上传时报给服务端（X-Debug-*）
+@known = askServer(namesURL, {"X-Xiaoju-Album": "{albumKey}", "X-Debug-Probe": "{probeText}"})
 @knownText = "{known}"
 @fast = 0
 if probeText == "24060d81a3d60e15786b6308faa3cdd1846d4353d8363f6a66b6099df8d3afde" {
