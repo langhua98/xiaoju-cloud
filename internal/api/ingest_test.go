@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -293,6 +294,26 @@ func TestIngest(t *testing.T) {
 	}
 	if code, _ := getNames("x"); code != 400 {
 		t.Errorf("unknown album must be rejected: %d", code)
+	}
+
+	// 整个文件夹的清单一次问：名字不带扩展名，大小是“2.5 KB”这样的文字；回答还没传过的是第几个
+	plan := func(body string) (int, map[string]any) {
+		t.Helper()
+		return call("POST", "/api/ingest/plan", body, "Content-Type", "application/json")
+	}
+	kb := func(n int) string { return strconv.FormatFloat(float64(n)/1000, 'f', 1, 64) + " KB" }
+	planNames := "IMG_0001\nIMG_0500\nIMG_0002\nimg_0001\nIMG_0500"
+	sizesText := kb(len(jpeg)) + "\n" + kb(len(video2)) + "\n5 KB\n" + strconv.Itoa(len(other)) + " bytes\n9.9 MB"
+	code, out = plan(fmt.Sprintf(`{"album":"hidden","names":%q,"sizes":%q}`, planNames, sizesText))
+	// 第 3 个没传过；第 5 个同名但大小不一样（换过手机后编号重复的另一个视频）
+	if code != 200 || out["todo"] != "3\n5" || out["count"] != 2.0 || out["uploaded"] != 3.0 {
+		t.Fatalf("plan: %d %v", code, out)
+	}
+	if code, out := plan(`{"album":"","names":"IMG_0001","sizes":"5 KB"}`); code != 200 || out["todo"] != "1" {
+		t.Fatalf("plan for the other album: %d %v", code, out)
+	}
+	if code, _ := plan(`{"album":"hidden","names":"a\nb","sizes":"1 KB"}`); code != 400 {
+		t.Errorf("names and sizes of different lengths must be rejected: %d", code)
 	}
 }
 

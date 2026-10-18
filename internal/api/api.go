@@ -116,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/ingest", s.ingest)
 	api.HandleFunc("GET /api/ingest/exists", s.ingestExists)
 	api.HandleFunc("GET /api/ingest/names", s.ingestNames)
+	api.HandleFunc("POST /api/ingest/plan", s.ingestPlan)
 
 	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。

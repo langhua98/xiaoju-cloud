@@ -467,16 +467,8 @@ func ingestName(r *http.Request, ext string) (name string, ok bool) {
 			}
 		}
 	}
-	if !utf8.ValidString(name) {
-		name = ""
-	}
-	name = strings.TrimSpace(strings.Map(func(c rune) rune {
-		if c == '/' || c == '\\' || c < 0x20 {
-			return '_'
-		}
-		return c
-	}, name))
-	if strings.Trim(name, ".") == "" {
+	name = cleanName(name)
+	if name == "" {
 		return "", false
 	}
 	if filepath.Ext(name) == "" && ext != "" {
@@ -491,6 +483,23 @@ func ingestName(r *http.Request, ext string) (name string, ok bool) {
 		name = string(stem) + ext
 	}
 	return name, true
+}
+
+// cleanName 整理客户端给的文件名：去掉路径分隔符、控制字符和首尾空白；不是合法的 UTF-8 或只剩“.”时返回空。
+func cleanName(name string) string {
+	if !utf8.ValidString(name) {
+		return ""
+	}
+	name = strings.TrimSpace(strings.Map(func(c rune) rune {
+		if c == '/' || c == '\\' || c < 0x20 {
+			return '_'
+		}
+		return c
+	}, name))
+	if strings.Trim(name, ".") == "" {
+		return ""
+	}
+	return name
 }
 
 var copySuffix = regexp.MustCompile(` \(\d+\)(\.[^.]*)?$`)

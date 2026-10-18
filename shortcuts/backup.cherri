@@ -9,13 +9,15 @@
 //   - 「查找照片」的过滤条件（拍摄日期、已隐藏）在 iPhone 上实测都不生效（日期条件一张也查不到，已隐藏条件被忽略），
 //     没法分批，也挑不出隐藏的照片。照片 App 自己导出到“文件”最可靠。
 //
-// 像断点续传一样：开始时向服务端要一次相册里已有文件“名字|大小”的 SHA-256，每个文件只取名字和大小（不读内容）、
-// 算 SHA-256 在手机上比对，传过的直接跳过，不用每个都问服务端，所以中途停了再运行一次很快就能接着传。
-// 带上大小比：换过手机后编号重复的不同照片对不上，照常上传，服务端自动改名为“名字 (2)”。
-// 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始一条、每个视频一条（大视频慢）、每传 10 个一条、每跳过 200 个一条。
+// 像断点续传一样：开始时对整个文件夹一次取出所有文件的名字、大小（对列表取，几个动作就完成），
+// 一起发给服务端（POST /api/ingest/plan），服务端回答哪几个还没传过；之后只处理这几个。
+// 以前是每个文件在手机上算一遍再比对，快捷指令一个文件要三十多个动作，跳过一个就要 3–5 秒。
+// 名字一样、大小也一样（按“30.4 MB”这样显示的精度比）才算传过；换过手机后编号重复的不同照片照常上传，
+// 服务端自动改名为“名字 (2)”。上传时服务端还会按名字 + 精确的字节数再查一次，真传过的不会重复写入。
+// 快捷指令运行时看不到进度，所以用不响铃的通知报进度：开始时一条（共几个、传过几个、要传几个）、
+// 每个视频一条（大视频慢）、每传 10 个一条。
 #include 'actions/scripting'
 #include 'actions/documents'
-#include 'actions/crypto'
 #include 'actions/text'
 #define name 备份照片到小桔云盘
 #define color orange
@@ -32,23 +34,27 @@ action 'downloadurl' uploadFile(
     "ShowHeaders": true
 }
 
-// 「获取 URL 的内容」：GET，只带头部（问服务端传过没有）
-action 'downloadurl' askServer(
+// 「获取 URL 的内容」：POST JSON（把整个文件夹的文件清单发给服务端）
+action 'downloadurl' askPlan(
     text url: 'WFURL',
-    dictionary! headers: 'WFHTTPHeaders'
+    dictionary! body: 'WFJSONValues'
 ) {
-    "WFHTTPMethod": "GET",
-    "ShowHeaders": true
+    "WFHTTPMethod": "POST",
+    "WFHTTPBodyType": "JSON"
 }
 
 // 「获取文件的详细信息」。不用 Cherri 1.3.2 自带的 getFileDetail：它把文件放进 WFFolder 参数（应该是 WFInput），
-// 在 iPhone 上取到的名字、扩展名、大小全是空的，服务端只好自动起名，也问不出传过没有
+// 在 iPhone 上取到的名字、扩展名、大小全是空的。输入是文件列表时，得到的是每个文件各一个值的列表
 action 'properties.files' fileDetail(variable file: 'WFInput', text detail: 'WFContentItemPropertyName')
+
+// 「从列表中获取项目」：第几个（Cherri 自带的 getListItem 只收数字，循环里的“第几个”是文字）
+action 'getitemfromlist' itemAt(variable list: 'WFInput', variable index: 'WFItemIndex') {
+    "WFItemSpecifier": "Item At Index"
+}
 
 // 上传地址：构建时由 build.py 换成网盘地址
 @uploadURL = "__INGEST_URL__"
-@existsURL = "{uploadURL}/exists"
-@namesURL = "{uploadURL}/names"
+@planURL = "{uploadURL}/plan"
 
 // 放进网盘哪个文件夹（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
 @targets = list("🙈 网盘的「隐藏相册」", "🖼 网盘的「相册」")
@@ -70,106 +76,82 @@ if total.number == 0 {
     stop()
 }
 
-// 这台 iPhone 算出的 SHA-256 和服务端一致才在本地比对；不一致时退回每个文件问一次服务端（慢一些，但不会重复上传）
-@probeInput = "xiaoju"
-@probe = hash(probeInput, "SHA256")
-@probeText = "{probe}"
-// 网盘里这个相册已有文件“名字|字节数”的 SHA-256（一行一个），只取这一次。
-// 这个请求里不能带从文件取出的信息（名字、大小）：iOS 会为此弹“是否允许共享”，在快捷指令里弹不出来，
-// 报“此操作无法在当前用户界面中运行”。手机算的大小在上传时报给服务端（X-Debug-*）
-@known = askServer(namesURL, {"X-Xiaoju-Album": "{albumKey}", "X-Debug-Probe": "{probeText}"})
-@knownText = "{known}"
-@fast = 0
-if probeText == "24060d81a3d60e15786b6308faa3cdd1846d4353d8363f6a66b6099df8d3afde" {
-    @fast = 1
+// 整个文件夹的清单：名字（不带扩展名）、大小各一列（一行一个文件，顺序和文件列表一样），一次发给服务端。
+// 不发扩展名：没有扩展名的文件取出来是空的，可能被列表丢掉，两列就对不齐了；同名的照片和视频（实况照片）靠大小区分
+@names = fileDetail(files, "Name")
+@sizes = fileDetail(files, "File Size")
+@namesText = joinText(names, "\n")
+@sizesText = joinText(sizes, "\n")
+@plan = askPlan(planURL, {"album": "{albumKey}", "names": "{namesText}", "sizes": "{sizesText}"})
+// 回答 {"todo": "3\n7\n8", "count": 3, "uploaded": 120}：todo 是还没传过的是第几个（从 1 开始）
+@planDict = getDictionary(plan)
+@todoValue = getValue(planDict, "todo")
+@todoText = "{todoValue}"
+@countValue = getValue(planDict, "count")
+@todoCount = "{countValue}"
+@doneValue = getValue(planDict, "uploaded")
+@doneCount = "{doneValue}"
+if todoCount == "" {
+    alert("问网盘哪些传过了，没得到回答：{plan}\n\n检查网络后再运行一次。", "连不上网盘")
+    stop()
 }
-showNotification("共 {total} 个文件，传进网盘的「{folderName}」，传过的会很快跳过。传完前别锁屏，插着电", "小桔云盘 · 开始上传", false)
+if todoCount == "0" {
+    alert("这个文件夹的 {total} 个文件都已经在网盘的「{folderName}」里了，不用再传。\n\n可以在「文件」里删掉这个文件夹（原照片还在相册里）。", "都传过了")
+    stop()
+}
+showNotification("共 {total} 个，以前传过 {doneCount} 个，这次要传 {todoCount} 个，传进网盘的「{folderName}」。插着电，最好连 Wi-Fi", "小桔云盘 · 开始上传", false)
 
+@todo = splitText(todoText, "\n")
 @uploaded = 0
 @skipped = 0
-@index = 0
+@done = 0
 @sinceNote = 0
-@sinceSkip = 0
-@resent = 0
-for file in files {
-    @index += 1
+for position in todo {
+    @done += 1
+    @file = itemAt(files, position)
     @name = fileDetail(file, "Name")
     @ext = fileDetail(file, "File Extension")
     @extText = "{ext}"
     @fullName = "{name}.{extText}"
-    // 大小只看文件信息、不读内容；「格式化文件大小」按字节给出的是“3,527,694”这样带分隔符的，只留数字
-    @sizeValue = fileDetail(file, "File Size")
-    @sizeText = fileSize(sizeValue, "Bytes")
-    @bytes = replaceText("[^0-9]", "", "{sizeText}", false, true)
-    @key = "{fullName}|{bytes}"
-    @seen = 0
-    @hashText = ""
-    if fast == 1 {
-        @keyHash = hash(key, "SHA256")
-        @hashText = "{keyHash}"
-        if knownText contains hashText {
-            @seen = 1
-        }
+    @isVideo = 0
+    if extText == "MOV" {
+        @isVideo = 1
     }
-    // 手机上没认出来：上传前再问服务端一次（按名字 + 大小），传过的就不用把整个文件再发一遍。
-    // 顺便报上手机算的摘要，服务端记日志，看得出本地比对为什么没对上
-    if seen == 0 {
-        @check = askServer(existsURL, {"X-File-Name": "{fullName}", "X-File-Size": "{bytes}", "X-Xiaoju-Album": "{albumKey}", "X-Debug-Hash": "{hashText}"})
-        @checkDict = getDictionary(check)
-        @checkValue = getValue(checkDict, "result")
-        @checkText = "{checkValue}"
-        if checkText == "exists" {
-            @seen = 1
-        }
+    if extText == "mov" {
+        @isVideo = 1
     }
-    if seen == 1 {
-        @skipped += 1
-        @sinceSkip += 1
-        if sinceSkip == 200 {
-            showNotification("{index}/{total} · 跳过传过的 {skipped} 个 · 新传 {uploaded} 个", "小桔云盘 · 跳过传过的", false)
-            @sinceSkip = 0
-        }
+    if extText == "MP4" {
+        @isVideo = 1
+    }
+    if extText == "mp4" {
+        @isVideo = 1
+    }
+    if isVideo == 1 {
+        @sizeValue = fileDetail(file, "File Size")
+        showNotification("{done}/{todoCount} · {fullName}（{sizeValue}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+        @sinceNote = 0
+    }
+    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}"})
+    // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
+    // 不能直接 resp['result']——那会编译成读取文件属性
+    @respDict = getDictionary(resp)
+    @resultValue = getValue(respDict, "result")
+    @result = "{resultValue}"
+    if result == "uploaded" {
+        @uploaded += 1
     } else {
-        @isVideo = 0
-        if extText == "MOV" {
-            @isVideo = 1
-        }
-        if extText == "mov" {
-            @isVideo = 1
-        }
-        if extText == "MP4" {
-            @isVideo = 1
-        }
-        if extText == "mp4" {
-            @isVideo = 1
-        }
-        if isVideo == 1 {
-            showNotification("{index}/{total} · {fullName}（{sizeValue}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
-            @sinceNote = 0
-        }
-        @resp = uploadFile(uploadURL, file, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}", "X-Debug-Size": "{sizeValue}", "X-Debug-Size-Text": "{sizeText}", "X-Debug-Bytes": "{bytes}", "X-Debug-Hash": "{hashText}"})
-        // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped），
-        // 不能直接 resp['result']——那会编译成读取文件属性
-        @respDict = getDictionary(resp)
-        @resultValue = getValue(respDict, "result")
-        @result = "{resultValue}"
-        if result == "uploaded" {
-            @uploaded += 1
+        // 清单上说没传过、发过去服务端才认出传过的（大小显示得不精确等），也算传过
+        if result == "skipped" {
+            @skipped += 1
         } else {
-            // 发过去服务端才认出传过的（手机上没比对上，比如以前从网页传的），最后单独报个数
-            if result == "skipped" {
-                @skipped += 1
-                @resent += 1
-            } else {
-                alert("第 {index} 个 {fullName} 没传上去：{resp}\n\n这次新上传 {uploaded} 个。检查网络后再运行一次、选同一个文件夹，传过的会很快跳过。", "上传失败")
-                stop()
-            }
+            alert("{fullName} 没传上去：{resp}\n\n这次新上传 {uploaded} 个。检查网络后再运行一次、选同一个文件夹，传过的会很快跳过。", "上传失败")
+            stop()
         }
-        @sinceNote += 1
-        if sinceNote == 10 {
-            showNotification("{index}/{total} · 新传 {uploaded} 个 · 跳过 {skipped} 个", "小桔云盘 · 上传中", false)
-            @sinceNote = 0
-        }
+    }
+    @sinceNote += 1
+    if sinceNote == 10 {
+        showNotification("{done}/{todoCount} · 新传 {uploaded} 个", "小桔云盘 · 上传中", false)
+        @sinceNote = 0
     }
 }
-alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个（其中 {resent} 个是发过去才认出来的）\n📁 都在网盘的「{folderName}」\n\n都传好了：可以在「文件」里删掉这个文件夹（原照片还在相册里）。", "上传完成")
+alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {doneCount} 个（另有 {skipped} 个发过去才认出传过）\n📁 都在网盘的「{folderName}」\n\n都传好了：可以在「文件」里删掉这个文件夹（原照片还在相册里）。", "上传完成")
