@@ -205,3 +205,32 @@ func TestVideoTaken(t *testing.T) {
 		t.Errorf("unset camera clock read as %v", got)
 	}
 }
+
+func TestPreview(t *testing.T) {
+	g := New(t.TempDir())
+	for _, c := range []struct {
+		size string
+		w, h int
+	}{{"4000x3000", 1600, 1200}, {"1200x2600", 738, 1600}, {"800x600", 800, 600}} {
+		in := sample(t, "p.jpg", "-f", "lavfi", "-i", "testsrc=size="+c.size, "-frames:v", "1")
+		b, err := g.Preview(context.Background(), fileSource(in))
+		if err != nil {
+			t.Fatalf("%s: %v", c.size, err)
+		}
+		img, format, err := image.Decode(bytes.NewReader(b))
+		if err != nil || format != "jpeg" {
+			t.Fatalf("%s: not a JPEG: %v", c.size, err)
+		}
+		if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w < c.w-1 || w > c.w+1 || h != c.h {
+			t.Fatalf("%s: preview is %dx%d, want %dx%d", c.size, w, h, c.w, c.h)
+		}
+	}
+	// 视频不做预览
+	v := sample(t, "v.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=1", "-c:v", "mpeg4")
+	if _, err := g.Preview(context.Background(), fileSource(v)); !errors.Is(err, ErrNoThumbnail) {
+		t.Fatalf("video preview: %v", err)
+	}
+	if !g.SupportsPreview("image/jpeg") || g.SupportsPreview("video/mp4") {
+		t.Fatal("SupportsPreview")
+	}
+}

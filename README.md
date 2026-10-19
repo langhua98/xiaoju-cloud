@@ -89,7 +89,13 @@ make run
 | `GET` | `/api/uploads/{id}` | 断点续传的进度 `{"offset","size"}`；传完了或被清理了 404 |
 | `GET` | `/api/files/{id}` | 文件元数据 |
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
-| `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
+| `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览）；照片另给 `preview`：大图预览 `/pv/{id}?..`（最长边 1600 的 JPEG） |
+| `GET` | `/api/duplicates` | 内容完全一样的文件，按 SHA-256 分组：`{"groups":[{"sha256","size","files":[{文件,"path","in_private","thumb"}]}],"extra_bytes"}`（回收站里的不算） |
+| `POST` | `/api/shares` | 分享链接：`{"file_id","expires_days"（0 不过期）,"password"}` → `{"id","token","expires_at","has_password"}`；网页地址是 `share.html#token` |
+| `GET` / `DELETE` | `/api/shares`、`/api/shares/{id}` | 列出、撤销分享链接 |
+| `GET` | `/api/s/{token}[?folder=id]` | 不需要认证（按 IP 限速）：分享的文件，或文件夹（及子文件夹）里的条目，文件带签名的 `url`、`preview`；设了密码的要带 `X-Share-Key`；没有 / 撤销了 404，过期 410 |
+| `POST` | `/api/s/{token}/unlock` | `{"password"}` → `{"key"}`（12 小时有效）；密码不对 403；每个 IP 每分钟最多 10 次 |
+| `GET` | `/api/maintenance/activity` | 正在进行的上传数、多久没有上传了（部署前用，见“线上部署”） |
 | `PATCH` | `/api/files/{id}` | 只放要改的：`{"name"}` 重命名、`{"parent_id"}` 移动（`null` 是根目录）、`{"private": true}` 文件夹设为私密；重名 409，文件夹移进自己里面 / 文件设私密 400 |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息）；文件夹要先在回收站里，连同里面的文件一起删 |
 | `POST` | `/api/files/{id}/restore` | 从回收站放回原处（原来的文件夹也删了时放回根目录；原处有同名的 409） |
@@ -138,7 +144,18 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 - **私密相册**（`files.private`，隐藏相册、私密相册默认私密）：封面和里面的缩略图默认模糊，点“解锁查看”验证——注册了刷脸设备用
   Face ID / 指纹，否则开了格子口令就答一道题，都没开就点一下。切到别的 App、锁屏后重新遮住（`visibilitychange`）。只是防旁人瞄到：
   原图本来就要登录（和格子口令抽查）才能看。取消私密也要先解锁。
-- **备份状态**：两个 Telegram 账号的双备份进度，以及手机上的照片备份到哪了（`/api/backup/phone`：快捷指令每次运行报的清单）。
+- **备份状态**：两个 Telegram 账号的双备份进度、定期检查的进度，以及手机上的照片备份到哪了（`/api/backup/phone`：快捷指令每次运行报的清单）。
+- **大图预览**：照片先显示服务端缩小的 1600px JPEG（`/pv/`，`service/previews.go`：当场从原图生成，只缓存在内存里约 96MB，
+  不写磁盘也不进数据库），比原图小得多，HEIC 在电脑的 Chrome 里也能看；放大到 1.6 倍以上自动换成原图。
+- **实况照片**：同一个文件夹里同名的一张照片和一段 4 秒以内的 MOV 合成一个，网格里标“实况”，大图左上角点“实况”在照片上播放；
+  选中、移动、删除、下载时两个一起（`pairLivePhotos`、`withLive`）。统计里的视频数仍然算上了这些 MOV。
+- **重复文件**（头像菜单）：内容完全一样的文件一组一组列出来，默认留私密文件夹里的那份（没有就留最早传的），点一下换；
+  “删掉多余的”移进回收站，可以撤销。
+- **分享链接**：文件夹 ⋯、大图右上角、多选（只选一项时）里“分享”，选有效期（1 / 7 / 30 天、永久）和可选的密码，生成
+  `share.html#<随机串>`；头像菜单的“分享的链接”里复制、撤销。打开的人不用登录：`web/share.html` + `share.js` 是单独的页面，
+  能进子文件夹、看大图（预览）、放视频、下载。私密相册里的也能分享（分享时会提醒）。
+- **添加到主屏幕**（`manifest.webmanifest`、`icons/`）：Safari 分享 → 添加到主屏幕，像 App 一样全屏打开。头像菜单里有说明。
+- 回收站里的东西放满 30 天自动永久删除（`PurgeExpiredTrash`，每小时看一次）。
 
 上传 2 个并发，网络中断或服务端出错（多为 Telegram 限流）时自动重试 3 次。
 **16MB 以上的文件断点续传**（`/api/uploads`，`internal/service/resumable.go`）：每段 8MB 一个请求，服务端收到的数据加密后攒在临时文件里，
@@ -334,6 +351,17 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 |---|---|---|
 | `POST` | `/api/ingest` | 不需要认证。头部 `X-File-Name`（或 `?name=`，没有扩展名时按内容补上），请求体是文件原始内容；新文件 `201 {"result":"uploaded"}`，已存在 `200 {"result":"skipped"}`，网盘里已有内容一样的 `200 {"result":"skipped","same_content":true}` |
 
+**文件名**：快捷指令先把文件名做 URL 编码再放进 `X-File-Name`（服务端解码）。以前直接放中文，iOS 的请求头放不了，
+遇到第一个中文字就把后面（连扩展名）全丢了：“video_啦啦啦….mov”存成了“video_.mov”，“@奶茶文.mp4”存成了“@ (3).mp4”，
+上传计划也认不出来，每次运行都重发一遍。已经存成截断名字的，上传计划（手机发来的完整名字 + 大小）和上传时
+（完全一样的字节数）认出来就改回真名（`api/cutnames.go`）。
+
+**边收边写**：大视频收好一个分块就在后台写进 Telegram，接着收下一块（`service.partWriter`），不再收完整个文件才开始写
+（2.8GB 的视频以前收 47 分钟、再写 12 分钟）；临时目录里最多同时三块。
+
+**没传上去时自动重试**：上传失败（服务端在部署、网络断了一下、被限速）时，快捷指令等 1 分钟、2 分钟各再试一次，不用停下来让人重新运行。
+不需要认证的接口按 IP 限速（`api/ratelimit.go`：上传每分钟 120 个，问“传过没有”每分钟 60 次），超过回 429。
+
 **按内容去重**：快捷指令传来的文件，收完（加密存进临时文件）、写 Telegram 之前先看网盘里有没有内容完全一样的
 （整个文件 SHA-256 相同，不在回收站里；传进隐藏相册时只认私密文件夹里的那份，免得照片因为“相册”里有一份就一直露在外面）。
 有就不再存，并在 `content_aliases` 记下手机上的名字和大小：之后的上传计划、`exists`、`names` 都把它当作传过，
@@ -363,7 +391,8 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 - [x] 多 Bot 轮流上传下载、下载并发预读、请求主动排匀、网页断点续传（上传会话）、按内容去重（SHA-256）
 - [ ] V1：回收站清理任务、本地热点缓存
 - [x] 双备份：另一个账号的备份频道双写，主频道读取失败自动切换，旧文件后台补齐
-- [ ] V2：分享链接、WebDAV、按消息说明重建元数据
+- [x] 分享链接、大图预览、实况照片、重复文件清理、定期检查分块、回收站自动清空、添加到主屏幕
+- [ ] V2：WebDAV、按消息说明重建元数据
 - [x] 照片墙：缩略图网格、大图左右滑动、双指缩放
 - [ ] V3：多用户与配额、S3/R2 驱动
 
@@ -395,6 +424,11 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 - 服务端：Hugging Face Space `https://langhua1998-xiaoju-cloud.hf.space`（`.github/workflows/deploy-hf.yml`：
   `test`（带 PostgreSQL 的 `go test`）→ `image`（`image.yml`：构建镜像，在镜像里实际生成 JPEG / HEIC / 视频缩略图）→ `deploy`）。
   只改 `web/**`、`shortcuts/**`、文档时不部署服务端。
+- **部署不打断上传**：`deploy.py` 改 Secrets、上传源码之前（这两样都会让 Space 重启）先问服务端
+  `GET /api/maintenance/activity`，等上传停了 3 分钟再部署，最多等 60 分钟（手动运行时可以填 `max_wait_minutes`，0 是马上部署）；
+  等满了照样部署，快捷指令会等 3 分钟重试。服务端是旧版本、连不上时直接部署。
+- **定期检查**（`service/scrub.go`）：启动 10 分钟后开始，后台一块一块把分块从两个频道下载下来核对 sha256，每块 30 天查一次。
+  主频道的坏了从备份修，备份坏了重新复制，两份都坏了记在 `file_parts.verify_error`，备份状态里显示。读的时候网络出错不算坏，先停下。
 - 推到 `main` 两条流水线同时跑。快捷指令签名用 RoutineHub 的 HubSign，**有频率限制**（常见 429，`build.py` 会等 30/60/90 秒重试），
   不要短时间内反复推送；`shortcut.yml` 只在开发分支上跑。
 - 查线上状态：手动运行 `diagnose-hf.yml`（`reconcile` 选 `none` 就只读）：备份状态、网盘统计、Space 最近的日志
@@ -432,6 +466,12 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
     Go 测试：`TestRangeReader*`、`TestPace*`、`TestPool*`、`TestContentDedupe`、`TestResumableUpload`（含服务重启、断开、
     新请求接手）。网页用 Playwright 走过：改名的照片 / 视频按内容跳过、上传中途断网接着传、刷新页面后接着传、上传中服务端重启
     接着传、70MB 文件在浏览器里分段算的 SHA-256 和服务端一致、旧服务端时退回一次传完。
+11. **第二轮**（2026-10-19）：快捷指令中文文件名修复（URL 编码 + 服务端改回截断的名字）和失败重试、大图预览、实况照片、重复文件、
+    分享链接（迁移 `0013_shares`）、添加到主屏幕、边收边写、部署前等上传停下、定期检查（迁移 `0014_part_checks`）、
+    回收站 30 天自动清空、不需要认证的接口限速。Go 测试：`TestRestoreCutNames`、`TestPreviewLinks`、`TestShares`、
+    `TestSpoolWritesWhileReceiving`、`TestScrubAndTrashExpiry`、`TestIPLimiter`、`TestActivity`，`TestContentDedupe` 里加了重复文件。
+    Playwright 走过：预览 1600px、放大换 3200px 原图、实况标记和播放按钮、重复文件清理、回收站提示、分享（错密码、对密码、
+    分享页大图、撤销后失效）、主屏幕配置。快捷指令改了以后要在网页上重新安装才生效。
 
 ### 正在进行（交接时的状态）
 

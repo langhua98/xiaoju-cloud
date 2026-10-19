@@ -1262,6 +1262,11 @@ function renderStats(el, st) {
 // 线条图标（24×24，描边用当前文字颜色）。HTML 里写 data-icon="名字"，fillIcons() 把图标填进去。
 
 const ICONS = {
+  phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
+  share: '<path d="M12 14.5V3.5M8 7.5l4-4 4 4M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1"/>',
+  link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/>',
+  live: '<circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="9.5" stroke-dasharray="1.6 2.3"/>',
   folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
   "folder-plus": '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 11v6M9 14h6"/>',
   move: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M8.5 14h7M13 11.5l2.5 2.5-2.5 2.5"/>',
@@ -1412,13 +1417,31 @@ function showSkeleton() {
     mk("span", { className: "cover" }), mk("span", { className: "aname" }), mk("span", { className: "acount" }))));
 }
 
+// 实况照片：同一个文件夹里同名（不分大小写、不看扩展名）的一张照片和一段几秒的 MOV。只显示照片，带“实况”标记，
+// 大图里点“实况”播放；选中、移动、删除、下载时两个一起（withLive）。
+const LIVE_MAX_SECONDS = 4;
+const liveKey = (name) => name.replace(/\.[^.]*$/, "").toLowerCase();
+
+function pairLivePhotos(files) {
+  const photos = new Map();
+  for (const f of files) if (/^image\//.test(f.mime || "")) photos.set(liveKey(f.name), f);
+  return files.filter((f) => {
+    const photo = f.mime === "video/quicktime" && !(f.duration > LIVE_MAX_SECONDS) && photos.get(liveKey(f.name));
+    if (!photo || photo.live) return true;
+    photo.live = f;
+    return false;
+  });
+}
+
+const withLive = (list) => list.flatMap((f) => (f.live ? [f, f.live] : [f]));
+
 // 条目内容没变时沿用原来的元素（上传期间列表会反复刷新，缩略图不用重新加载、不闪）
-const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0, f.counts ? countsText(f.counts) : "", f.cover || "", f.private ? 1 : 0].join("|");
+const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0, f.counts ? countsText(f.counts) : "", f.cover || "", f.private ? 1 : 0, f.live?.id || ""].join("|");
 
 function renderItems(items) {
-  state.items = items;
   const folders = items.filter((f) => f.type === "folder");
-  const files = items.filter((f) => f.type !== "folder");
+  const files = pairLivePhotos(items.filter((f) => f.type !== "folder"));
+  state.items = [...folders, ...files];
   state.files = files;
   const atRoot = !state.folderId;
   renderAlbums(folders);
@@ -1550,7 +1573,7 @@ function rowFor(f) {
   const when = f.taken_at || f.updated_at;
   name.append(mk("div", { className: "cell" }, mk("span", { className: "check" }, icon("check")), lead,
     mk("span", { className: "fname" }, mk("span", { textContent: f.name }),
-      mk("small", { textContent: `${formatSize(f.size)} · ${formatDate(when)}` }))));
+      mk("small", { textContent: `${f.live ? "实况 · " : ""}${formatSize(f.size)} · ${formatDate(when)}` }))));
   const size = mk("td", { className: "size", textContent: formatSize(f.size) });
   const date = mk("td", { className: "date", textContent: formatDate(when), title: (f.taken_at ? "拍摄于 " : "修改于 ") + formatDate(when) });
   tr.append(name, size, date);
@@ -1596,6 +1619,11 @@ const dayDiff = (a, b) => Math.round((new Date(b.getFullYear(), b.getMonth(), b.
 
 // 开启了格子口令时，看照片、视频每随机几张服务端会要求先答一道格子题（grid_required）
 async function signedURL(f, inline) {
+  return (await signedLink(f)).url + (inline ? "&inline=1" : "");
+}
+
+// 签名链接：{url: 原图, preview: 大图预览（照片才有）}
+async function signedLink(f) {
   const path = `/api/files/${f.id}/link`;
   let res;
   try {
@@ -1605,7 +1633,7 @@ async function signedURL(f, inline) {
     if (!(await gridGate())) throw new HttpError(0, "", "grid_cancelled"); // 已退出登录
     res = await request("POST", path);
   }
-  return state.api + res.url + (inline ? "&inline=1" : "");
+  return { url: state.api + res.url, preview: res.preview ? state.api + res.preview : "" };
 }
 
 async function download(f) {
@@ -1748,8 +1776,13 @@ function tileFor(f) {
   tile.setAttribute("aria-label", f.name);
   tile.append(thumbImg(f, "thumb", plain));
   if (f.mime.startsWith("video/")) tile.append(videoBadge(f));
+  if (f.live) tile.append(liveBadge());
   tile.append(check);
   return tile;
+}
+
+function liveBadge() {
+  return mk("span", { className: "live-badge" }, icon("live"), "实况");
 }
 
 function thumbImg(f, className, onFail) {
@@ -1893,6 +1926,7 @@ function updateSelbar() {
   $("#sel-all").textContent = n && n === state.items.length ? "全不选" : "全选";
   $("#sel-download").disabled = !picked.some((f) => f.type === "file");
   $("#sel-move").disabled = !n;
+  $("#sel-share").disabled = n !== 1;
   $("#sel-delete").disabled = !n;
 }
 
@@ -1903,7 +1937,7 @@ $("#sel-all").addEventListener("click", () => {
   for (const f of state.items) toggleSelect(f, all);
 });
 $("#sel-download").addEventListener("click", async () => {
-  const files = [...state.selected.values()].filter((f) => f.type === "file");
+  const files = withLive([...state.selected.values()].filter((f) => f.type === "file"));
   if (files.length > 10 && !confirm(`一次下载 ${files.length} 个文件？浏览器可能会问是否允许下载多个文件。`)) return;
   if (isLocked() && !(await unlockPrivate())) return;
   for (const [i, f] of files.entries()) {
@@ -1913,13 +1947,18 @@ $("#sel-download").addEventListener("click", async () => {
   exitSelection();
 });
 $("#sel-move").addEventListener("click", () => moveItems([...state.selected.values()]));
+$("#sel-share").addEventListener("click", () => {
+  const [f] = state.selected.values();
+  if (state.selected.size === 1) { exitSelection(); openShare(f); }
+});
 $("#sel-delete").addEventListener("click", () => trashItems([...state.selected.values()]));
 
 const itemsLabel = (list) => (list.length === 1 ? `“${list[0].name}”` : `${list.length} 项`);
 
 // 移入回收站，提示里可以撤销；文件夹先确认一下（里面的照片会跟着一起进回收站）
-async function trashItems(list) {
-  if (!list.length) return [];
+async function trashItems(picked) {
+  if (!picked.length) return [];
+  const list = withLive(picked);
   const folders = list.filter((f) => f.type === "folder");
   if (folders.length) {
     const inside = folders.reduce((n, f) => n + (f.counts ? f.counts.photos + f.counts.videos + f.counts.others : 0), 0);
@@ -1940,7 +1979,8 @@ async function trashItems(list) {
   refreshBackup();
   if (!done.length) { toast("删除失败，请稍后再试"); return done; }
   const failed = list.length - done.length;
-  toast(`已移入回收站：${itemsLabel(done)}` + (failed ? `（${failed} 项没删掉）` : ""), {
+  const shown = done.filter((f) => picked.includes(f)); // 实况照片的视频不单独算
+  toast(`已移入回收站：${itemsLabel(shown.length ? shown : done)}` + (failed ? `（${failed} 项没删掉）` : ""), {
     action: "撤销",
     async onAction() {
       let back = 0;
@@ -1956,10 +1996,11 @@ async function trashItems(list) {
 }
 
 // 移动：选目标文件夹，一项项移过去；目标里有同名的跳过
-async function moveItems(list) {
-  if (!list.length) return;
-  const target = await pickFolder(list);
+async function moveItems(picked) {
+  if (!picked.length) return;
+  const target = await pickFolder(picked);
   if (target === undefined) return;
+  const list = withLive(picked);
   let moved = 0;
   let clash = 0;
   let other = 0;
@@ -1967,7 +2008,7 @@ async function moveItems(list) {
     if ((f.parent_id || null) === target) continue;
     try {
       await request("PATCH", `/api/files/${f.id}`, { parent_id: target });
-      moved++;
+      if (picked.includes(f)) moved++; // 实况照片的视频不单独算
     } catch (err) {
       if (err.status === 401) { fail(err); return; }
       if (err.status === 409) clash++;
@@ -2065,6 +2106,8 @@ $("#folder-dlg").addEventListener("click", async (e) => {
       await request("PATCH", `/api/files/${f.id}`, { private: !f.private });
       toast(f.private ? "已取消私密" : "已设为私密：照片默认遮住，验证后才显示");
       load();
+    } else if (act === "share") {
+      openShare(f);
     } else if (act === "move") {
       await moveItems([f]);
     } else if (act === "delete") {
@@ -2322,26 +2365,32 @@ const vwNote = (text) => Object.assign(document.createElement("p"), { className:
 
 // 原图的签名链接：同一张只申请一次（只算一次“看了一张”），下载也用它
 async function viewerURL(f) {
-  if (f._url && Date.now() < f._urlUntil) return f._url;
-  const url = await signedURL(f, false);
-  Object.assign(f, { _url: url, _urlUntil: Date.now() + 5 * 3600e3 });
-  return url;
+  return (await viewerLink(f)).url;
+}
+
+async function viewerLink(f) {
+  if (f._link && Date.now() < f._linkUntil) return f._link;
+  const link = await signedLink(f);
+  Object.assign(f, { _link: link, _linkUntil: Date.now() + 5 * 3600e3 });
+  return link;
 }
 
 async function showFull(slide, media, f) {
   const kind = previewKind(f.mime);
-  if (kind !== "img" && kind !== "video") {
+  // 照片先显示服务端缩小的预览（最长边 1600），HEIC 在不支持的浏览器里也能看；放大时再换原图（upgradeToOriginal）
+  const photo = /^image\//.test(f.mime || "");
+  if (kind !== "img" && kind !== "video" && !photo) {
     slide.append(vwNote(f.mime.startsWith("video/")
       ? "这个浏览器播放不了这种视频，可以下载后查看"
-      : "这个浏览器显示不了 HEIC 原图（iPhone、Mac 的 Safari 可以），可以下载后查看"));
+      : "这个浏览器显示不了这种文件，可以下载后查看"));
     return;
   }
   const spin = Object.assign(document.createElement("div"), { className: "vw-spin" });
   slide.append(spin);
   const still = () => slide.isConnected && slide === curSlide() && slide.dataset.id === f.id;
-  let url;
+  let link;
   try {
-    url = await viewerURL(f);
+    link = await viewerLink(f);
   } catch (err) {
     if (err.code === "grid_cancelled") return; // 格子口令没过，已经退出登录
     spin.remove();
@@ -2349,23 +2398,74 @@ async function showFull(slide, media, f) {
     return;
   }
   if (!still()) return;
-  const src = `${url}&inline=1`;
+  const src = `${link.url}&inline=1`;
   if (kind === "video") {
     spin.remove();
     showVideo(slide, media, f, src);
     return;
   }
-  const img = Object.assign(new Image(), { className: "vw-full", alt: f.name, draggable: false });
-  img.decoding = "async";
-  const ok = await new Promise((resolve) => {
-    img.onload = () => resolve(true);
-    img.onerror = () => resolve(false);
-    img.src = src;
+  const load = (url) => new Promise((resolve) => {
+    const img = Object.assign(new Image(), { className: "vw-full", alt: f.name, draggable: false });
+    img.decoding = "async";
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
   });
+  let img = link.preview ? await load(link.preview) : null;
+  if (img && kind === "img") img.dataset.original = src; // 放大时换原图
+  if (!img && kind === "img") img = await load(src); // 没有预览（服务端做不了）：直接看原图
   if (!still()) return;
   spin.remove();
-  if (!ok) { slide.append(vwNote("原图加载失败，可以下载后查看")); return; }
+  if (!img) {
+    slide.append(vwNote(kind === "img" ? "原图加载失败，可以下载后查看" : "这个浏览器显示不了 HEIC 原图（iPhone、Mac 的 Safari 可以），可以下载后查看"));
+    return;
+  }
   media.replaceChildren(img);
+  if (f.live) slide.append(liveButton(slide, media, f));
+  if (vw.zoom.s > 1.6) upgradeToOriginal();
+}
+
+// 大图里的“实况”：点一下在照片上播放那段视频（静音、播完回到照片），再点停下
+function liveButton(slide, media, f) {
+  const btn = mk("button", { type: "button", className: "vw-live", title: "播放实况" }, icon("live"), "实况");
+  let video = null;
+  const stop = () => {
+    video?.remove();
+    video = null;
+    btn.classList.remove("playing");
+  };
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (video) { stop(); return; }
+    btn.classList.add("playing");
+    try {
+      const link = await viewerLink(f.live);
+      if (!btn.classList.contains("playing")) return;
+      video = Object.assign(document.createElement("video"), { className: "vw-live-video", muted: true, playsInline: true, autoplay: true });
+      video.setAttribute("playsinline", "");
+      video.onended = stop;
+      video.onerror = () => { stop(); toast("实况视频播放不了"); };
+      video.src = `${link.url}&inline=1`;
+      media.append(video);
+      video.play().catch(() => {});
+    } catch (err) {
+      stop();
+      if (err.code !== "grid_cancelled") fail(err);
+    }
+  });
+  return btn;
+}
+
+// 放大看细节时把预览换成原图（只换一次；原图加载完再换，换的时候大小、位置不变）
+function upgradeToOriginal() {
+  const img = mediaEl()?.querySelector("img.vw-full[data-original]");
+  if (!img || img.dataset.upgrading) return;
+  img.dataset.upgrading = "1";
+  const full = new Image();
+  full.decoding = "async";
+  full.onload = () => { if (img.isConnected) img.src = full.src; delete img.dataset.original; };
+  full.onerror = () => { delete img.dataset.upgrading; };
+  full.src = img.dataset.original;
 }
 
 // 视频：不用浏览器自带的控件——iPhone 上它会接管视频上的所有手势（左右滑不动），没点播放前也什么都不显示。
@@ -2516,6 +2616,7 @@ function applyZoom(animate) {
   const { s, x, y } = vw.zoom;
   m.style.transform = s === 1 && !x && !y ? "" : `translate(${x}px, ${y}px) scale(${s})`;
   vwDialog.classList.toggle("zoomed", s > 1.01);
+  if (s > 1.6) upgradeToOriginal();
 }
 
 // 放大后最多拖到照片边缘
@@ -2564,7 +2665,7 @@ let tapTimer = 0;
 vwStage.addEventListener("pointerdown", (e) => {
   if ((e.pointerType === "mouse" && e.button !== 0) || vw.animating) return;
   // 视频的播放键、进度条这些控件上的手势交给控件
-  if (e.target.closest(".vw-controls, .vw-play")) return;
+  if (e.target.closest(".vw-controls, .vw-play, .vw-live")) return;
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ptrs.size === 1) {
     gesture = { type: "pending", x0: e.clientX, y0: e.clientY, t0: performance.now(), zoom0: { ...vw.zoom } };
@@ -2704,6 +2805,10 @@ $("#vw-download").addEventListener("click", async () => {
     a.remove();
   } catch (err) { fail(err); }
 });
+$("#vw-share").addEventListener("click", () => {
+  const f = curItem();
+  if (f) openShare(f);
+});
 $("#vw-delete").addEventListener("click", async () => {
   const f = curItem();
   if (!f || !(await trashItems([f])).length) return;
@@ -2736,6 +2841,9 @@ document.addEventListener("click", (e) => {
 const ACTIONS = {
   backup: () => openBackup(),
   trash: () => openTrash(),
+  duplicates: () => openDuplicates(),
+  shares: () => openShares(),
+  install: () => installApp(),
   security: () => openSecurity(),
   shortcuts: () => openShortcuts(),
   logout: () => logout(),
@@ -2839,7 +2947,8 @@ async function renderTrash() {
         refreshBackup();
       } catch (err) { setButtonBusy(purge, false); fail(err); }
     });
-    const meta = `删除于 ${relTime(f.trashed_at)}` + (f.type === "file" ? ` · ${formatSize(f.size)}` : "");
+    const left = Math.max(1, Math.ceil(30 - (Date.now() - new Date(f.trashed_at)) / 86400e3));
+    const meta = `删除于 ${relTime(f.trashed_at)}` + (f.type === "file" ? ` · ${formatSize(f.size)}` : "") + ` · ${left} 天后自动永久删除`;
     return mk("li", {}, icon(fileIcon(f), "ic lead"),
       mk("div", { className: "info" }, mk("b", { textContent: f.name }), mk("small", { textContent: meta })),
       mk("div", { className: "acts" }, restore, purge));
@@ -2863,6 +2972,177 @@ $("#trash-empty").addEventListener("click", async () => {
   toast(done === items.length ? "回收站已清空" : `删掉了 ${done} 项，${items.length - done} 项没删掉，稍后再试`);
   renderTrash();
   refreshBackup();
+});
+
+// ---------- 添加到主屏幕 ----------
+// 从主屏幕打开像 App 一样全屏（manifest.webmanifest）。安卓的 Chrome 会给安装提示，iPhone 只能在 Safari 的分享菜单里加。
+
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; });
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+$("#menu-install").hidden = standalone();
+
+function installApp() {
+  if (installPrompt) {
+    installPrompt.prompt();
+    installPrompt = null;
+    return;
+  }
+  alert(/iPhone|iPad|iPod/.test(navigator.userAgent)
+    ? "在 Safari 里点底部的分享按钮（方框加箭头）→“添加到主屏幕”。以后从主屏幕打开，像 App 一样全屏，没有地址栏。"
+    : "在浏览器菜单里选“添加到主屏幕”或“安装应用”。以后从主屏幕打开，像 App 一样全屏。");
+}
+
+// ---------- 分享链接 ----------
+// 给一个文件或文件夹生成链接（POST /api/shares），打开的人不用登录，在 share.html 里看。有效期、密码可选；
+// 头像菜单的“分享的链接”里复制、撤销。
+
+const shareURL = (token) => new URL(`share.html#${token}`, location.href.replace(/[?#].*$/, "")).href;
+let sharing = null; // 正在分享的条目
+
+function openShare(f) {
+  sharing = f;
+  const dlg = $("#share-dlg");
+  $("#share-title").textContent = `分享“${f.name}”`;
+  $("#share-form").hidden = false;
+  $("#share-result").hidden = true;
+  $("#share-password").value = "";
+  $("#share-private-note").hidden = !(state.privateHere || f.private);
+  if (!dlg.open) dlg.showModal();
+}
+
+function shareSummary(sh) {
+  const parts = [sh.expires_at ? (sh.expired ? "已过期" : `${formatDate(sh.expires_at)} 失效`) : "永久有效"];
+  if (sh.has_password) parts.push("有密码");
+  if (sh.views) parts.push(`打开过 ${sh.views} 次`);
+  if (sh.trashed) parts.push("分享的东西在回收站里，打不开");
+  return parts.join(" · ");
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false; // 没有权限（比如不是 https）：让用户自己长按复制
+  }
+}
+
+$("#share-create").addEventListener("click", async () => {
+  const btn = $("#share-create");
+  setButtonBusy(btn, true, "正在生成…", "生成链接");
+  try {
+    const sh = await request("POST", "/api/shares", {
+      file_id: sharing.id, expires_days: Number($("#share-expiry").value), password: $("#share-password").value,
+    });
+    const url = shareURL(sh.token);
+    $("#share-url").value = url;
+    $("#share-meta").textContent = shareSummary(sh) + (sh.has_password ? "：把密码另外告诉对方" : "");
+    $("#share-native").hidden = !navigator.share;
+    $("#share-form").hidden = true;
+    $("#share-result").hidden = false;
+    $("#share-url").select();
+  } catch (err) {
+    fail(err);
+  } finally {
+    setButtonBusy(btn, false, "正在生成…", "生成链接");
+  }
+});
+$("#share-copy").addEventListener("click", async () => {
+  const url = $("#share-url").value;
+  if (await copyText(url)) toast("已复制链接");
+  else { $("#share-url").select(); toast("长按上面的链接复制"); }
+});
+$("#share-native").addEventListener("click", () => {
+  navigator.share({ title: sharing?.name || "小桔云盘", url: $("#share-url").value }).catch(() => {});
+});
+
+async function openShares() {
+  const dlg = $("#shares-dlg");
+  if (!dlg.open) dlg.showModal();
+  const list = $("#shares-list");
+  list.replaceChildren(mk("li", { className: "hint", textContent: "正在读取…" }));
+  let items;
+  try {
+    items = (await request("GET", "/api/shares")).items || [];
+  } catch (err) {
+    list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
+    return;
+  }
+  if (!items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "还没有分享过" })); return; }
+  list.replaceChildren(...items.map((sh) => {
+    const copy = mk("button", { type: "button", className: "small" }, icon("link"), "复制");
+    const revoke = mk("button", { type: "button", className: "small danger" }, "撤销");
+    copy.addEventListener("click", async () => toast((await copyText(shareURL(sh.token))) ? "已复制链接" : shareURL(sh.token)));
+    revoke.addEventListener("click", async () => {
+      if (!confirm(`撤销“${sh.file.name}”的分享链接？打开过的人也看不了了。`)) return;
+      try {
+        await request("DELETE", `/api/shares/${sh.id}`);
+        toast("已撤销");
+        openShares();
+      } catch (err) { fail(err); }
+    });
+    return mk("li", {}, icon(sh.file.type === "folder" ? "folder" : fileIcon(sh.file), "ic lead"),
+      mk("div", { className: "info" }, mk("b", { textContent: sh.file.name }), mk("small", { textContent: shareSummary(sh) })),
+      mk("div", { className: "acts" }, copy, revoke));
+  }));
+}
+
+// ---------- 重复文件 ----------
+// 内容完全一样的文件（GET /api/duplicates，按 SHA-256 分组）。每组默认留私密文件夹里的那份（照片多半是有意藏起来的），
+// 没有就留最早传的；点一下换成留哪个。“删掉多余的”把其余的移进回收站，提示里可以撤销。
+
+let dupGroups = [];
+
+async function openDuplicates() {
+  const dlg = $("#dup-dlg");
+  if (!dlg.open) dlg.showModal();
+  const list = $("#dup-list");
+  list.replaceChildren(mk("p", { className: "hint", textContent: "正在查找…" }));
+  $("#dup-clean").disabled = true;
+  let res;
+  try {
+    res = await request("GET", "/api/duplicates");
+  } catch (err) {
+    list.replaceChildren(mk("p", { className: "error", textContent: err.message }));
+    return;
+  }
+  dupGroups = (res.groups || []).map((g) => ({ ...g, keep: (g.files.find((f) => f.in_private) || g.files[0]).id }));
+  renderDuplicates(res.extra_bytes || 0);
+}
+
+function renderDuplicates(extra) {
+  const list = $("#dup-list");
+  const extras = dupGroups.reduce((n, g) => n + g.files.length - 1, 0);
+  $("#dup-hint").textContent = dupGroups.length
+    ? `找到 ${dupGroups.length} 组，多出来 ${extras} 个文件，占 ${formatSize(extra)}。每组点一下要留的那个，其余移进回收站（可以撤销）。`
+    : "没有重复的文件。";
+  $("#dup-clean").disabled = !extras;
+  $("#dup-clean").textContent = extras ? `删掉多余的 ${extras} 个` : "删掉多余的";
+  list.replaceChildren(...dupGroups.map((g) => mk("section", { className: "dup-group" },
+    mk("h3", { textContent: `${g.files.length} 份 · ${formatSize(g.size)}` }),
+    ...g.files.map((f) => {
+      const hide = f.in_private && !state.unlocked; // 私密文件夹里的：没解锁时不显示缩略图
+      const lead = f.thumb && !hide
+        ? Object.assign(document.createElement("img"), { className: "dup-thumb", src: state.api + f.thumb, alt: "", loading: "lazy" })
+        : mk("span", { className: "dup-thumb ph" }, icon(hide ? "lock" : fileIcon(f)));
+      const row = mk("button", { type: "button", className: "dup-row" + (g.keep === f.id ? " keep" : "") }, lead,
+        mk("span", { className: "info" }, mk("b", { textContent: f.name }),
+          mk("small", { textContent: `${f.path || "根目录"} · ${formatDate(f.taken_at || f.created_at)}` })),
+        mk("span", { className: "tag", textContent: g.keep === f.id ? "留下" : "删掉" }));
+      row.addEventListener("click", () => { g.keep = f.id; renderDuplicates(extra); });
+      return row;
+    }))));
+}
+
+$("#dup-clean").addEventListener("click", async () => {
+  const extra = dupGroups.flatMap((g) => g.files.filter((f) => f.id !== g.keep));
+  if (!extra.length || !confirm(`把 ${extra.length} 个重复的文件移进回收站？每组留下标着“留下”的那个，之后可以在回收站里恢复。`)) return;
+  const btn = $("#dup-clean");
+  btn.disabled = true;
+  btn.textContent = "正在移进回收站…";
+  await trashItems(extra);
+  openDuplicates();
 });
 
 // ---------- 备份状态 ----------
@@ -2923,6 +3203,12 @@ function telegramCard(st, stats) {
     return card;
   }
   const files = stats ? `${stats.backed_up_files} / ${stats.files} 个文件` : `${st.backed_up} / ${st.parts} 个分块`;
+  // 定期检查（服务端每 30 天把每个分块从两个频道各下载一遍核对）
+  const checks = st.parts
+    ? mk("p", { className: "hint" + (st.verify_errors ? " warn" : ""), textContent: st.verify_errors
+      ? `定期检查发现 ${st.verify_errors} 个分块两份都坏了，修不了（其他的坏了会自动从另一份修好）`
+      : `定期检查：最近 30 天核对过 ${st.verified || 0} / ${st.parts} 个分块，坏了的会自动从另一份修好` })
+    : "";
   if (st.backed_up >= st.parts) {
     head.append(mk("span", { className: "pill ok", textContent: "已完成" }));
     card.append(mk("p", { textContent: `所有文件都在两个 Telegram 账号的频道里各存了一份（${files}，${formatSize(st.bytes)}）。一个账号出问题，另一个还在。` }));
@@ -2931,6 +3217,7 @@ function telegramCard(st, stats) {
     head.append(mk("span", { className: "pill busy", textContent: `${pct}%` }));
     card.append(meterEl(pct), mk("p", { textContent: `正在把新文件复制到备份账号：${files}（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）。后台自动进行，关掉页面也会继续。` }));
   }
+  if (checks) card.append(checks);
   return card;
 }
 

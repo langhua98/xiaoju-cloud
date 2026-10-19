@@ -41,3 +41,12 @@ jobs:
           done
           # 拍摄时间（相册排序用）从 HEIC 的 EXIF 里读出来了
           grep -q 'taken=2021-02-03T04:05:06' /tmp/t/taken.heic.log
+          # 大图预览：最长边不超过 1600、不裁剪（4000×3000 的照片缩成 1600×1200，小照片原样大小），HEIC 也能做
+          run ffmpeg -nostdin -v error -f lavfi -i testsrc=size=4000x3000 -frames:v 1 -y /t/big.jpg
+          run xiaoju preview /t/big.jpg /t/big.preview.jpg
+          run vipsheader /t/big.preview.jpg | tee /dev/stderr | grep -q ': 1600x1200 '
+          run xiaoju preview /t/a.jpg /t/a.preview.jpg
+          run vipsheader /t/a.preview.jpg | tee /dev/stderr | grep -q ': 800x600 '
+          run xiaoju preview /t/sample.heic /t/sample.preview.jpg
+          run vipsheader /t/sample.preview.jpg | tee /dev/stderr | grep -q 'jpegload'
+          ! run xiaoju preview /t/v.mov /t/v.preview.jpg

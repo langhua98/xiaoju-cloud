@@ -82,7 +82,7 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	matched, keys := make([]bool, len(names)), make([]string, len(names))
+	matched, keys, checks := make([]bool, len(names)), make([]string, len(names)), make([]planCheck, len(names))
 	var dateMismatch []int // 名字（和大小）对得上、拍摄日期差得远的：多半是同名的另一张照片
 	nameMatched, dateAgreed, unparsedSizes, unparsedDates := 0, 0, 0, 0
 	for i, name := range names {
@@ -100,7 +100,7 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		key := planKey(name, isMediaExt(filepath.Ext(name))) // 名字万一带着照片、视频的扩展名（IMG_0001.HEIC），也去掉
-		keys[i] = key
+		keys[i], checks[i] = key, c
 		byName, agreed := false, false
 		for _, f := range stored[key] {
 			if !c.sizeOK(f) {
@@ -150,6 +150,11 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		s.log.Info("ingest plan: same name, taken on another day", "phone_name", strconv.Quote(names[i]),
 			"phone_date", strconv.Quote(dates[i]), "stored", takenDays(stored[keys[i]], s.loc))
+	}
+
+	// 以前被 iOS 截断了名字存进来的（见 cutnames.go）：改回真名，当作传过
+	if n := s.restoreCutNamesInPlan(r.Context(), names, keys, checks, stored, matched); n > 0 {
+		s.log.Info("ingest plan: restored file names that iOS had cut", "files", n)
 	}
 
 	var todo, firstTodo []string // firstTodo：前几个要传的文件名原样（带引号）记进日志，对不上时看得出差在哪

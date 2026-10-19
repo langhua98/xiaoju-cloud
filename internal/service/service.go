@@ -32,6 +32,7 @@ type Service struct {
 	tempDir   string
 	log       *slog.Logger
 	thumbs    *thumbnails // nil 时不生成缩略图
+	previews  *previews   // 大图预览的内存缓存（见 previews.go）
 
 	uploadsMu sync.Mutex
 	uploads   map[uuid.UUID]*resumable // 断点续传中的上传（见 resumable.go）
@@ -61,6 +62,7 @@ func New(store *meta.Store, driver storage.Driver, opt Options) *Service {
 		tempDir:   opt.TempDir,
 		log:       opt.Log,
 		uploads:   map[uuid.UUID]*resumable{},
+		previews:  newPreviews(),
 	}
 	if opt.Thumbs != nil {
 		s.thumbs = newThumbnails(opt.Thumbs)
@@ -113,11 +115,7 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 	}
 
 	var uploaded, uploadedBackup []storage.Location
-	var sealed []*sealedPart
 	defer func() {
-		for _, sp := range sealed {
-			sp.remove()
-		}
 		if err == nil {
 			return
 		}
@@ -162,6 +160,20 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		checked = true
 		return same(total, fileHash.Sum(nil))
 	}
+	// Spool（快捷指令上传）边收边写：前面的分块一收好就交给后台写进存储端，接着收下一块；最后一块等整个文件收完、
+	// 按内容查过、开始发心跳（OnSpooled）后再写。以前是整个文件收完才开始写：2.8GB 的视频收了 47 分钟，又写了 12 分钟，
+	// 临时目录还得放下整个文件。
+	var bg *partWriter
+	if req.Spool {
+		bg = newPartWriter(store)
+		defer bg.wait() // 比上面的清理先执行：清理要等后台写完
+	}
+	var lastPart *sealedPart
+	defer func() {
+		if lastPart != nil {
+			lastPart.remove()
+		}
+	}()
 	for partNo := 0; ; partNo++ {
 		sp, perr := s.sealPart(partNo, dek, body)
 		if perr != nil {
@@ -172,15 +184,20 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		}
 		total += sp.size
 		last := sp.size < s.partSize
-		if req.Spool {
-			sealed = append(sealed, sp) // 先全部读完，下面再写存储端
-		} else {
-			if last { // 整个文件读完了：先看网盘里有没有一样的，再写最后一块
-				if err := check(); err != nil {
-					sp.remove()
-					return nil, err
-				}
+		if last { // 整个文件读完了：先看网盘里有没有一样的，再写最后一块
+			if err := check(); err != nil {
+				sp.remove()
+				return nil, err
 			}
+		}
+		switch {
+		case bg != nil && last:
+			lastPart = sp
+		case bg != nil:
+			if err := bg.add(sp); err != nil {
+				return nil, err
+			}
+		default:
 			err := store(sp)
 			sp.remove()
 			if err != nil {
@@ -196,15 +213,18 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 			return nil, err
 		}
 	}
-	if req.Spool {
+	if bg != nil {
 		if req.OnSpooled != nil {
 			req.OnSpooled()
 		}
-		for _, sp := range sealed {
-			if err := store(sp); err != nil {
+		if sp := lastPart; sp != nil {
+			lastPart = nil
+			if err := bg.add(sp); err != nil {
 				return nil, err
 			}
-			sp.remove()
+		}
+		if err := bg.wait(); err != nil {
+			return nil, err
 		}
 	}
 	done, err := s.store.ActivateFile(ctx, f.ID, total, fileHash.Sum(nil))
@@ -212,6 +232,57 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		s.queueThumbnail(done)
 	}
 	return done, err
+}
+
+// partWriter 在后台按顺序把分块写进存储端（边收边写，见 Upload）。最多排着一块，存储端慢的时候收数据的一方等着，
+// 临时目录里最多同时有三块。写失败后不再写，之后交来的分块直接删掉。
+type partWriter struct {
+	queue chan *sealedPart
+	done  chan struct{}
+	once  sync.Once
+	mu    sync.Mutex
+	err   error
+}
+
+func newPartWriter(store func(*sealedPart) error) *partWriter {
+	w := &partWriter{queue: make(chan *sealedPart, 1), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		for sp := range w.queue {
+			if w.failed() == nil {
+				if err := store(sp); err != nil {
+					w.mu.Lock()
+					w.err = err
+					w.mu.Unlock()
+				}
+			}
+			sp.remove()
+		}
+	}()
+	return w
+}
+
+func (w *partWriter) failed() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
+
+// add 交给后台写；前面已经写失败了就返回那个错误。
+func (w *partWriter) add(sp *sealedPart) error {
+	if err := w.failed(); err != nil {
+		sp.remove()
+		return err
+	}
+	w.queue <- sp
+	return nil
+}
+
+// wait 等交来的分块都写完（可以调用多次）。
+func (w *partWriter) wait() error {
+	w.once.Do(func() { close(w.queue) })
+	<-w.done
+	return w.failed()
 }
 
 // sameContentCheck 返回检查“网盘里有没有内容一样的文件”的函数（读完整个文件后调用，传入大小和摘要）。
@@ -432,6 +503,7 @@ func (s *Service) purgeFile(ctx context.Context, f *meta.File) error {
 	if err := s.driver.Delete(ctx, locs); err != nil {
 		return err
 	}
+	s.previews.forget(f.ID)
 	// 备份删除失败只记录日志：主存储已删，不能因为备份端的问题让文件“删不掉”
 	if s.backup != nil && len(backupLocs) > 0 {
 		if err := s.backup.Delete(ctx, backupLocs); err != nil {

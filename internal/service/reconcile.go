@@ -370,11 +370,40 @@ func (s *Service) discardUpload(ctx context.Context, id uuid.UUID) error {
 	return s.store.DeleteRow(ctx, id)
 }
 
-// RunMaintenance 定期清理中断的上传，直到 ctx 取消。
+// TrashKeep：回收站里的东西放这么久后自动永久删除。
+const TrashKeep = 30 * 24 * time.Hour
+
+// PurgeExpiredTrash 永久删除在回收站里放了超过 TrashKeep 的条目（文件夹连同里面的文件）。删不掉的跳过，下次再试。
+func (s *Service) PurgeExpiredTrash(ctx context.Context) (int, error) {
+	items, err := s.store.ListExpiredTrash(ctx, time.Now().Add(-TrashKeep))
+	if err != nil {
+		return 0, err
+	}
+	purged := 0
+	for _, f := range items {
+		if err := s.Purge(ctx, f.UserID, f.ID); err != nil {
+			if ctx.Err() != nil {
+				return purged, ctx.Err()
+			}
+			s.log.Warn("trash: could not delete an expired item", "file", f.ID, "err", err)
+			continue
+		}
+		purged++
+	}
+	if purged > 0 {
+		s.log.Info("trash: deleted items kept for 30 days", "items", purged)
+	}
+	return purged, nil
+}
+
+// RunMaintenance 定期清理中断的上传、回收站里放满 30 天的东西，直到 ctx 取消。
 func (s *Service) RunMaintenance(ctx context.Context, every time.Duration) {
 	for {
 		if _, err := s.CleanupStaleUploads(ctx); err != nil && ctx.Err() == nil {
 			s.log.Error("cleanup stale uploads", "err", err)
+		}
+		if _, err := s.PurgeExpiredTrash(ctx); err != nil && ctx.Err() == nil {
+			s.log.Error("purge expired trash", "err", err)
 		}
 		s.evictIdleResumables(resumableIdle, nil)
 		select {

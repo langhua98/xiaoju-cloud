@@ -121,35 +121,44 @@ func (g *Generator) Generate(ctx context.Context, src Source) (*Result, error) {
 	return nil, ErrNoThumbnail
 }
 
-func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ string) (*Result, error) {
-	demuxer := ffmpegImage[typ]
-	if g.vips == "" && (g.ffmpeg == "" || demuxer == "") {
-		return nil, ErrNoThumbnail
-	}
-	size, err := rd.Seek(0, io.SeekEnd)
-	if err != nil {
-		return nil, err
+// copyImage 把照片拷进临时文件交给外部程序（vips 要能跳着读）；太大的不做。用完要删掉返回的文件。
+func (g *Generator) copyImage(rd io.ReadSeeker, ext string) (path string, size int64, err error) {
+	if size, err = rd.Seek(0, io.SeekEnd); err != nil {
+		return "", 0, err
 	}
 	if size > maxImageBytes {
-		return nil, ErrNoThumbnail
+		return "", 0, ErrNoThumbnail
 	}
 	if _, err := rd.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		return "", 0, err
 	}
 	in, err := os.CreateTemp(g.tempDir, "xiaoju-thumb-*"+ext)
 	if err != nil {
-		return nil, err
+		return "", 0, err
 	}
-	defer os.Remove(in.Name())
 	_, err = io.Copy(in, rd)
 	if cerr := in.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
+		os.Remove(in.Name())
+		return "", 0, err
+	}
+	return in.Name(), size, nil
+}
+
+func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ string) (*Result, error) {
+	demuxer := ffmpegImage[typ]
+	if g.vips == "" && (g.ffmpeg == "" || demuxer == "") {
+		return nil, ErrNoThumbnail
+	}
+	path, size, err := g.copyImage(rd, ext)
+	if err != nil {
 		return nil, err
 	}
+	defer os.Remove(path)
 	var taken time.Time
-	if f, err := os.Open(in.Name()); err == nil {
+	if f, err := os.Open(path); err == nil {
 		taken = photoTaken(f, size, typ, g.Location)
 		f.Close()
 	}
@@ -157,10 +166,10 @@ func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ st
 	ctx, cancel := context.WithTimeout(ctx, imageTimeout)
 	defer cancel()
 	if g.vips != "" {
-		out := in.Name() + ".jpg"
+		out := path + ".jpg"
 		defer os.Remove(out)
 		s := strconv.Itoa(Size)
-		_, err := run(ctx, g.vips, "thumbnail", in.Name(), fmt.Sprintf("%s[Q=%d,strip]", out, quality), s,
+		_, err := run(ctx, g.vips, "thumbnail", path, fmt.Sprintf("%s[Q=%d,strip]", out, quality), s,
 			"--height", s, "--crop", "centre", "--export-profile", "srgb")
 		if err != nil {
 			return nil, err
@@ -171,11 +180,67 @@ func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ st
 		}
 		return &Result{JPEG: b, Taken: taken}, nil
 	}
-	out, err := run(ctx, g.ffmpeg, ffmpegArgs("file", demuxer, in.Name())...)
+	out, err := run(ctx, g.ffmpeg, ffmpegArgs("file", demuxer, path)...)
 	if err != nil {
 		return nil, err
 	}
 	return &Result{JPEG: out.stdout, Taken: taken}, nil
+}
+
+// PreviewSize 是大图预览最长边的像素（手机屏幕 3 倍图约 1170×2532，1600 看着清楚，每张二三百 KB）。
+const PreviewSize = 1600
+
+// SupportsPreview 按 MIME 类型判断能不能做大图预览（只做照片）。
+func (g *Generator) SupportsPreview(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "image/") && g.Supported(mimeType)
+}
+
+// Preview 把照片缩小成最长边不超过 PreviewSize 的 JPEG（按 EXIF 方向转正、不裁剪、不放大），大图查看时先显示它：
+// 比原图小得多（HEIC、PNG 原图常常好几 MB 到几十 MB），而且 HEIC 在不支持的浏览器里也能看。不是照片返回 ErrNoThumbnail。
+func (g *Generator) Preview(ctx context.Context, src Source) ([]byte, error) {
+	rd, err := src(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rd.Close()
+	head := make([]byte, 64)
+	n, err := io.ReadFull(rd, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	ext, typ := media.Sniff(head[:n])
+	demuxer := ffmpegImage[typ]
+	if !strings.HasPrefix(typ, "image/") || g.vips == "" && (g.ffmpeg == "" || demuxer == "") {
+		return nil, ErrNoThumbnail
+	}
+	path, _, err := g.copyImage(rd, ext)
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(path)
+	ctx, cancel := context.WithTimeout(ctx, imageTimeout)
+	defer cancel()
+	s := strconv.Itoa(PreviewSize)
+	if g.vips != "" {
+		out := path + ".jpg"
+		defer os.Remove(out)
+		if _, err := run(ctx, g.vips, "thumbnail", path, out+"[Q=82,strip]", s, "--height", s, "--size", "down",
+			"--export-profile", "srgb"); err != nil {
+			return nil, err
+		}
+		b, err := os.ReadFile(out)
+		if err != nil || len(b) == 0 {
+			return nil, fmt.Errorf("%w: vips wrote no output", ErrNoThumbnail)
+		}
+		return b, nil
+	}
+	out, err := run(ctx, g.ffmpeg, "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-f", demuxer, "-i", path,
+		"-frames:v", "1", "-vf", fmt.Sprintf("scale=w='min(%s,iw)':h='min(%s,ih)':force_original_aspect_ratio=decrease", s, s),
+		"-an", "-sn", "-q:v", "3", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1")
+	if err != nil {
+		return nil, err
+	}
+	return out.stdout, nil
 }
 
 // ffmpegArgs：从 input 截第一帧，缩放并居中裁剪成 Size×Size 的 JPEG，写到标准输出。

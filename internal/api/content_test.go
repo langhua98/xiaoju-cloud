@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -245,5 +246,32 @@ func TestContentDedupe(t *testing.T) {
 	}
 	if code, out := ingest("IMG_5", "", hiddenShot); code != 200 || out["same_content"] != true {
 		t.Fatalf("a private copy counts for the public album: %d %v", code, out)
+	}
+
+	// 重复文件：shot 在“相册”和“隐藏相册”各一份，photo 在 Photos、Other、Secret 各一份；回收站里的不算
+	code, dup := call("GET", "/api/duplicates", "")
+	if code != 200 {
+		t.Fatalf("duplicates: %d %v", code, dup)
+	}
+	groups := dup["groups"].([]any)
+	if len(groups) != 2 {
+		t.Fatalf("duplicate groups: %v", groups)
+	}
+	describe := func(g any) string {
+		var parts []string
+		for _, f := range g.(map[string]any)["files"].([]any) {
+			m := f.(map[string]any)
+			parts = append(parts, fmt.Sprintf("%s/%s:%v", m["path"], m["name"], m["in_private"] == true))
+		}
+		return strings.Join(parts, ",")
+	}
+	if got := describe(groups[0]); got != AlbumFolder+"/IMG_1.jpg:false,"+HiddenAlbumFolder+"/IMG_1.jpg:true" {
+		t.Fatalf("first group: %s", got)
+	}
+	if got := describe(groups[1]); got != "Photos/orig-"+sum(photo)[:6]+":false,Other/copy.jpg:false,Secret/p.jpg:true" {
+		t.Fatalf("second group: %s", got)
+	}
+	if dup["extra_bytes"] != float64(804+2*504) {
+		t.Fatalf("extra bytes: %v", dup["extra_bytes"])
 	}
 }

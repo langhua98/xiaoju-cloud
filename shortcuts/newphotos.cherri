@@ -15,6 +15,7 @@
 #include 'actions/photos'
 #include 'actions/images'
 #include 'actions/scripting'
+#include 'actions/web'
 #include 'actions/media'
 #include 'actions/text'
 #define name 自动备份新照片
@@ -123,11 +124,30 @@ for position in todo {
         @sinceNote = 0
     }
     // 名字没有扩展名，服务端按文件内容补上
-    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}"})
+    // 文件名先做 URL 编码：iOS 的请求头放不了中文，以前遇到第一个中文字就把后面全丢了
+    // （“video_啦啦啦….mov”到服务端只剩“video_.mov”）。服务端会解码
+    @encodedName = urlEncode(name)
+    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}"})
     // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped）
     @respDict = getDictionary(resp)
     @resultValue = getValue(respDict, "result")
     @result = "{resultValue}"
+    // 没传上去（多半是服务端在更新，要一两分钟；或者网络断了一下）：1 分钟、2 分钟后各再试一次。
+    // 传过的服务端会跳过，重试不会重复上传
+    @pause = 60
+    repeat attempt for 2 {
+        if result != "uploaded" {
+            if result != "skipped" {
+                showNotification("{name} 没传上去，{pause} 秒后再试（服务端可能在更新）", "小桔云盘 · 等一下", false)
+                wait(pause)
+                @resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}"})
+                @respDict = getDictionary(resp)
+                @resultValue = getValue(respDict, "result")
+                @result = "{resultValue}"
+                @pause = 120
+            }
+        }
+    }
     if result == "uploaded" {
         @uploaded += 1
     } else {

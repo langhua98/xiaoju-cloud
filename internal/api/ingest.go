@@ -186,6 +186,9 @@ func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name str
 			unnamed = f
 		}
 	}
+	if f, err := s.cutBefore(ctx, same, name); f != nil || err != nil {
+		return f, err
+	}
 	if unnamed == nil {
 		return s.aliasedBefore(ctx, albumID, name, size)
 	}

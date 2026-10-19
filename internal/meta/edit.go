@@ -220,3 +220,24 @@ func (s *Store) PhoneBackup(ctx context.Context, userID uuid.UUID, folders []str
 	}
 	return out, rows.Err()
 }
+
+// ListExpiredTrash 返回在回收站里放得比 before 还早的条目（单独删掉的那些；文件夹里的跟着文件夹走），所有用户的。
+func (s *Store) ListExpiredTrash(ctx context.Context, before time.Time) ([]*File, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+fileColumns+` FROM files
+		WHERE status = 'active' AND trashed_at IS NOT NULL AND trashed_at < $1
+		ORDER BY trashed_at`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}

@@ -53,19 +53,21 @@ func (s *Store) RenameFile(ctx context.Context, userID, id uuid.UUID, name strin
 
 // NameSize 是一个文件的名字、大小和拍摄时间（生成缩略图时从文件里读出来，不知道时为 nil）。
 type NameSize struct {
+	ID      uuid.UUID // 文件 ID；别名（Alias）时是内容相同的那个文件
 	Name    string
 	Size    int64
 	TakenAt *time.Time
+	Alias   bool // 按内容认出来、没有再存的名字（content_aliases），不是真的文件名
 }
 
 // ListNameSizes 列出目录下所有（未删除的）文件的名字、大小和拍摄时间，
 // 加上按内容认出来、没有再存的别名（content_aliases，拍摄时间取内容相同的那个文件的）。
 func (s *Store) ListNameSizes(ctx context.Context, userID, parentID uuid.UUID) ([]NameSize, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT name, size, taken_at FROM files
+		SELECT id, name, size, taken_at, false FROM files
 		WHERE user_id = $1 AND parent_id = $2 AND type = 'file' AND status = 'active' AND trashed_at IS NULL
 		UNION ALL
-		SELECT a.name, a.size, f.taken_at FROM content_aliases a JOIN files f ON f.id = a.file_id
+		SELECT f.id, a.name, a.size, f.taken_at, true FROM content_aliases a JOIN files f ON f.id = a.file_id
 		WHERE a.folder_id = $2 AND f.user_id = $1 AND f.status = 'active' AND f.trashed_at IS NULL`, userID, parentID)
 	if err != nil {
 		return nil, err
@@ -74,7 +76,7 @@ func (s *Store) ListNameSizes(ctx context.Context, userID, parentID uuid.UUID) (
 	var out []NameSize
 	for rows.Next() {
 		var f NameSize
-		if err := rows.Scan(&f.Name, &f.Size, &f.TakenAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.Size, &f.TakenAt, &f.Alias); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

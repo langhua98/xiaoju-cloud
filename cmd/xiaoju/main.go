@@ -48,10 +48,10 @@ func main() {
 
 func run(ctx context.Context, args []string, log *slog.Logger) error {
 	if len(args) == 0 {
-		return errors.New("usage: xiaoju <serve|migrate [up|down]|check|thumb IN OUT>")
+		return errors.New("usage: xiaoju <serve|migrate [up|down]|check|thumb IN OUT|preview IN OUT>")
 	}
-	if args[0] == "thumb" { // 不需要任何配置
-		return makeThumb(ctx, args[1:], log)
+	if args[0] == "thumb" || args[0] == "preview" { // 不需要任何配置
+		return makeThumb(ctx, args[0], args[1:], log)
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -143,6 +143,8 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		go svc.RunBackupSync(ctx, 5*time.Minute)
 	}
 	go svc.RunMaintenance(ctx, time.Hour)
+	// 定期检查（启动 10 分钟后开始，查完一轮每小时看一次有没有到期要查的）
+	go svc.RunScrub(ctx, 10*time.Minute, time.Hour)
 	go svc.BackfillThumbnails(ctx)
 
 	passkeys, err := auth.NewPasskeys(ctx, store, userID, auth.PasskeyConfig{RPID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins})
@@ -362,14 +364,26 @@ func botID(token string) string {
 	return id
 }
 
-// makeThumb 给本地文件生成缩略图：xiaoju thumb IN OUT.jpg
-func makeThumb(ctx context.Context, args []string, log *slog.Logger) error {
+// makeThumb 给本地文件生成缩略图（xiaoju thumb IN OUT.jpg）或大图预览（xiaoju preview IN OUT.jpg）。
+func makeThumb(ctx context.Context, kind string, args []string, log *slog.Logger) error {
 	if len(args) != 2 {
-		return errors.New("usage: xiaoju thumb IN OUT.jpg")
+		return fmt.Errorf("usage: xiaoju %s IN OUT.jpg", kind)
 	}
 	g := thumb.New("")
 	log.Info("thumbnail tools", "found", g.Tools())
-	res, err := g.Generate(ctx, func(context.Context) (io.ReadSeekCloser, error) { return os.Open(args[0]) })
+	src := func(context.Context) (io.ReadSeekCloser, error) { return os.Open(args[0]) }
+	if kind == "preview" {
+		b, err := g.Preview(ctx, src)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(args[1], b, 0o644); err != nil {
+			return err
+		}
+		log.Info("preview written", "out", args[1], "bytes", len(b))
+		return nil
+	}
+	res, err := g.Generate(ctx, src)
 	if err != nil {
 		return err
 	}

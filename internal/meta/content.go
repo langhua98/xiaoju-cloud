@@ -76,3 +76,64 @@ func (s *Store) ListAliasNames(ctx context.Context, folderID uuid.UUID, size int
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
+
+// Duplicate 是内容和别的文件一样的一个文件：所在的路径（“相册/2024”，根目录是空的），在不在私密文件夹里。
+type Duplicate struct {
+	*File
+	Path      string `json:"path"`
+	InPrivate bool   `json:"in_private,omitempty"`
+}
+
+// ListDuplicates 列出内容相同（整个文件的 SHA-256 一样）的文件，按摘要分组；回收站里的（包括所在文件夹进了回收站的）不算。
+// 大的在前，同一组里先上传的在前。
+func (s *Store) ListDuplicates(ctx context.Context, userID uuid.UUID) ([][]Duplicate, error) {
+	rows, err := s.db.Query(ctx, `
+		WITH RECURSIVE dup AS (
+			SELECT sha256 FROM files
+			WHERE user_id = $1 AND type = 'file' AND status = 'active' AND trashed_at IS NULL AND sha256 IS NOT NULL AND size > 0
+			GROUP BY sha256 HAVING count(*) > 1
+		), up AS (
+			SELECT f.id, f.parent_id AS at, ''::text AS path, false AS trashed, false AS private
+			FROM files f JOIN dup USING (sha256)
+			WHERE f.user_id = $1 AND f.type = 'file' AND f.status = 'active' AND f.trashed_at IS NULL
+			UNION ALL
+			SELECT up.id, p.parent_id, CASE WHEN up.path = '' THEN p.name ELSE p.name || '/' || up.path END,
+			       up.trashed OR p.trashed_at IS NOT NULL, up.private OR p.private
+			FROM up JOIN files p ON p.id = up.at
+		), done AS (
+			SELECT id, path, trashed, private FROM up WHERE at IS NULL
+		)
+		SELECT `+prefixed("f", fileColumns)+`, d.path, d.private FROM files f JOIN done d ON d.id = f.id
+		WHERE NOT d.trashed
+		ORDER BY f.size DESC, f.sha256, f.created_at, f.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var groups [][]Duplicate
+	for rows.Next() {
+		var f File
+		var d Duplicate
+		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.Type, &f.Size, &f.Mime,
+			&f.SHA256, &f.DEKWrapped, &f.Status, &f.TrashedAt, &f.TakenAt, &f.Private, &f.CreatedAt, &f.UpdatedAt,
+			&d.Path, &d.InPrivate); err != nil {
+			return nil, err
+		}
+		d.File = &f
+		if n := len(groups); n > 0 && string(groups[n-1][0].SHA256) == string(f.SHA256) {
+			groups[n-1] = append(groups[n-1], d)
+		} else {
+			groups = append(groups, []Duplicate{d})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := groups[:0]
+	for _, g := range groups {
+		if len(g) > 1 { // 另一份在回收站里的不算重复
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}

@@ -2,8 +2,17 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>小桔云盘</title>
+  <!-- 加到主屏幕：像 App 一样全屏打开（Safari 分享 → 添加到主屏幕） -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="小桔云盘">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0a0b" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f5f3" media="(prefers-color-scheme: light)">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='17' r='12' fill='%23f59e0b'/%3E%3Cpath d='M16 5c2-3 6-3 7-1-3 0-5 1-7 1z' fill='%2316a34a'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css?v=10">
   <script src="config.js?v=10"></script>
@@ -28,8 +37,11 @@
   <div id="menu" class="menu" role="menu" hidden>
     <button type="button" role="menuitem" data-act="backup" data-icon="cloud">备份状态</button>
     <button type="button" role="menuitem" data-act="trash" data-icon="trash">回收站</button>
+    <button type="button" role="menuitem" data-act="duplicates" data-icon="copy">重复文件</button>
+    <button type="button" role="menuitem" data-act="shares" data-icon="link">分享的链接</button>
     <button type="button" role="menuitem" data-act="security" data-icon="shield">登录安全</button>
     <button type="button" role="menuitem" data-act="shortcuts" data-icon="bolt">快捷指令批量备份</button>
+    <button type="button" role="menuitem" data-act="install" data-icon="phone" id="menu-install">添加到主屏幕</button>
     <hr>
     <button type="button" role="menuitem" data-act="logout" data-icon="logout" class="danger">退出登录</button>
   </div>
@@ -109,6 +121,7 @@
     </div>
     <div class="selbar-actions">
       <button id="sel-download" type="button" data-icon="download">下载</button>
+      <button id="sel-share" type="button" data-icon="share">分享</button>
       <button id="sel-move" type="button" data-icon="move">移动</button>
       <button id="sel-delete" type="button" class="danger" data-icon="trash">删除</button>
     </div>
@@ -212,12 +225,63 @@
   <!-- 回收站 -->
   <dialog id="trash-dlg">
     <h2>回收站</h2>
-    <p class="hint">删除的文件先放在这里，可以恢复；永久删除后两个 Telegram 频道里的数据也一起删掉，无法恢复。</p>
+    <p class="hint">删除的文件先放在这里，可以恢复；放满 30 天自动永久删除。永久删除后两个 Telegram 频道里的数据也一起删掉，无法恢复。</p>
     <ul id="trash-list" class="trash-list"></ul>
     <div class="dialog-actions sec-footer">
       <button id="trash-empty" type="button" class="danger">清空回收站</button>
       <button type="button" class="ghost" data-close>关闭</button>
     </div>
+  </dialog>
+
+  <!-- 重复文件：内容完全一样的，每组留一个 -->
+  <dialog id="dup-dlg">
+    <h2>重复文件</h2>
+    <p id="dup-hint" class="hint">内容完全一样的文件（改过名、在不同文件夹里的也算）。每组点一下要留的那个，其余移进回收站，可以撤销。</p>
+    <div id="dup-list" class="dup-list"></div>
+    <div class="dialog-actions sec-footer">
+      <button id="dup-clean" type="button" class="danger" disabled>删掉多余的</button>
+      <button type="button" class="ghost" data-close>关闭</button>
+    </div>
+  </dialog>
+
+  <!-- 分享：生成链接，知道链接的人不用登录就能看 -->
+  <dialog id="share-dlg">
+    <h2 id="share-title">分享</h2>
+    <div id="share-form">
+      <p class="hint">知道链接的人不用登录就能看（文件夹连同子文件夹），能看大图、播放视频和下载；随时可以在头像菜单的“分享的链接”里撤销。</p>
+      <p id="share-private-note" class="hint warn" hidden>这是私密相册里的内容，打开链接的人不用验证就能看。</p>
+      <label class="field">有效期
+        <select id="share-expiry">
+          <option value="1">1 天</option>
+          <option value="7" selected>7 天</option>
+          <option value="30">30 天</option>
+          <option value="0">永久有效</option>
+        </select>
+      </label>
+      <label class="field">密码（可以不填）
+        <input id="share-password" type="text" autocomplete="off" maxlength="64" placeholder="不填就不用密码">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" data-close>取消</button>
+        <button id="share-create" type="button" class="primary"><span class="spinner" aria-hidden="true"></span><span class="label">生成链接</span></button>
+      </div>
+    </div>
+    <div id="share-result" hidden>
+      <p id="share-meta" class="hint"></p>
+      <input id="share-url" class="share-url" type="text" readonly>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" data-close>完成</button>
+        <button id="share-native" type="button" hidden>发送…</button>
+        <button id="share-copy" type="button" class="primary">复制链接</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 分享的链接：复制、撤销 -->
+  <dialog id="shares-dlg">
+    <h2>分享的链接</h2>
+    <ul id="shares-list" class="trash-list"></ul>
+    <div class="dialog-actions"><button type="button" class="ghost" data-close>关闭</button></div>
   </dialog>
 
   <!-- 移动到… -->
@@ -237,6 +301,7 @@
     <div class="action-list">
       <button type="button" data-act="rename" data-icon="edit">重命名</button>
       <button type="button" data-act="private" data-icon="lock"><span class="label">设为私密</span></button>
+      <button type="button" data-act="share" data-icon="share">分享…</button>
       <button type="button" data-act="move" data-icon="move">移动到…</button>
       <button type="button" data-act="delete" data-icon="trash" class="danger">删除文件夹</button>
     </div>
@@ -268,6 +333,7 @@
     <div class="vw-bar">
       <button id="vw-close" type="button" class="vw-btn" aria-label="关闭"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg></button>
       <div class="vw-title"><b id="vw-name"></b><small id="vw-count"></small></div>
+      <button id="vw-share" type="button" class="vw-btn" aria-label="分享"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12.5V3M6.5 6.5L10 3l3.5 3.5M6 9.5H5a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 5 17.5h10a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 15 9.5h-1"/></svg></button>
       <button id="vw-download" type="button" class="vw-btn" aria-label="下载"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M5.5 8.5L10 13l4.5-4.5M4 16.5h12"/></svg></button>
       <button id="vw-delete" type="button" class="vw-btn" aria-label="删除"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h13M8 5.5V3.8h4v1.7M5.5 5.5l.8 11h7.4l.8-11M8.5 8.5v5M11.5 8.5v5"/></svg></button>
     </div>

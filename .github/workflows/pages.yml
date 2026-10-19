@@ -68,9 +68,9 @@ jobs:
           v="${GITHUB_SHA::7}"
           printf '{"version":"%s"}\n' "$v" > web/version.json
           sed -i "s/^const WEB_VERSION = \"dev\";/const WEB_VERSION = \"$v\";/" web/app.js
-          sed -i -E "s/\?v=[0-9a-z]+\"/?v=$v\"/g" web/index.html
+          sed -i -E "s/\?v=[0-9a-z]+\"/?v=$v\"/g" web/index.html web/share.html
           grep -q "^const WEB_VERSION = \"$v\";" web/app.js
-          grep -o '?v=[0-9a-z]*' web/index.html
+          grep -o '?v=[0-9a-z]*' web/index.html web/share.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

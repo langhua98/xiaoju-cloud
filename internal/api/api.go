@@ -39,6 +39,12 @@ type Server struct {
 	sessions    *auth.Sessions
 	views       *auth.Views // 每个会话看了几张照片、视频（格子口令抽查用）
 	loc         *time.Location
+
+	// 不需要认证的接口按 IP 限速（见 ratelimit.go）
+	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit *ipLimiter
+
+	act     activity // 正在进行的上传（部署前问一下，见 activity.go）
+	started time.Time
 }
 
 type Options struct {
@@ -70,6 +76,10 @@ func New(svc *service.Service, opt Options) *Server {
 	return &Server{
 		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
 		passkeys: opt.Passkeys, grid: opt.Grid, sessions: sessions, views: auth.NewViews(), loc: loc,
+		// 快捷指令跳过传过的最快每秒两三个；问“传过没有”的接口一次运行只调一两次
+		ingestLimit: newIPLimiter(120, 60), ingestAskLimit: newIPLimiter(60, 30),
+		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
+		started: time.Now(),
 	}
 }
 
@@ -92,11 +102,15 @@ func (s *Server) Handler() http.Handler {
 
 	files("POST /api/folders", s.createFolder)
 	files("GET /api/folders/{id}/children", s.listChildren)
-	files("POST /api/files", s.upload)
+	files("POST /api/files", s.tracked(s.upload))
 	files("POST /api/files/known", s.knownContent)
-	files("POST /api/uploads", s.startUpload)
+	files("GET /api/duplicates", s.listDuplicates)
+	files("POST /api/shares", s.createShare)
+	files("GET /api/shares", s.listShares)
+	files("DELETE /api/shares/{id}", s.deleteShare)
+	files("POST /api/uploads", s.tracked(s.startUpload))
 	files("GET /api/uploads/{id}", s.uploadStatus)
-	files("PUT /api/uploads/{id}", s.writeUpload)
+	files("PUT /api/uploads/{id}", s.tracked(s.writeUpload))
 	files("GET /api/files/{id}", s.getFile)
 	files("GET /api/files/{id}/content", s.download)
 	files("POST /api/files/{id}/link", s.createLink)
@@ -120,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 	// 对账：GET 只出报告；POST 执行修复和残块清理
 	ops("GET /api/maintenance/reconcile", s.reconcile(false))
 	ops("POST /api/maintenance/reconcile", s.reconcile(true))
+	ops("GET /api/maintenance/activity", s.activityStatus)
 
 	login("POST /api/auth/session", s.createSession)
 	passkey("POST /api/auth/passkey/login/begin", s.passkeyLoginBegin)
@@ -129,15 +144,19 @@ func (s *Server) Handler() http.Handler {
 	login("POST /api/auth/recovery/passkey", s.recoveryPasskey)
 
 	// 批量上传（快捷指令）：不需要认证，只能往“相册”里添加文件，见 ingest.go
-	api.HandleFunc("POST /api/ingest", s.ingest)
-	api.HandleFunc("GET /api/ingest/exists", s.ingestExists)
-	api.HandleFunc("GET /api/ingest/names", s.ingestNames)
-	api.HandleFunc("POST /api/ingest/plan", s.ingestPlan)
+	api.HandleFunc("POST /api/ingest", s.limited(s.ingestLimit, s.tracked(s.ingest)))
+	api.HandleFunc("GET /api/ingest/exists", s.limited(s.ingestAskLimit, s.ingestExists))
+	api.HandleFunc("GET /api/ingest/names", s.limited(s.ingestAskLimit, s.ingestNames))
+	api.HandleFunc("POST /api/ingest/plan", s.limited(s.ingestAskLimit, s.tracked(s.ingestPlan)))
+	// 分享链接：不需要认证，见 shares.go
+	api.HandleFunc("GET /api/s/{token}", s.limited(s.shareLimit, s.openShare))
+	api.HandleFunc("POST /api/s/{token}/unlock", s.limited(s.shareUnlockLimit, s.unlockShare))
 
 	mux.Handle("/api/", s.cors(api))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
 	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
+	mux.HandleFunc("GET /pv/{id}", s.signedPreview)
 	return mux
 }
 
@@ -156,7 +175,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			if allowed {
 				h := w.Header()
 				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE")
-				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, Content-Type, Range")
+				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, X-Share-Key, Content-Type, Range")
 				h.Set("Access-Control-Max-Age", "86400")
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -355,10 +374,44 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	exp := time.Now().Add(downloadLinkTTL).Unix()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"url":        fmt.Sprintf("/dl/%s?exp=%d&sig=%s", id, exp, s.linkSig(id, exp)),
+	sig := s.linkSig(id, exp)
+	link := map[string]any{
+		"url":        fmt.Sprintf("/dl/%s?exp=%d&sig=%s", id, exp, sig),
 		"expires_at": time.Unix(exp, 0).UTC(),
-	})
+	}
+	// 照片另给一个大图预览的地址（最长边 1600 的 JPEG），网页先显示它，放大看细节时再换原图
+	if s.svc.CanPreview(f) {
+		link["preview"] = fmt.Sprintf("/pv/%s?exp=%d&sig=%s", id, exp, sig)
+	}
+	writeJSON(w, http.StatusOK, link)
+}
+
+// GET /pv/{id}?exp=..&sig=..：大图预览（签名和下载链接一样，createLink 给出）。做不了的返回 404，网页改用原图。
+func (s *Server) signedPreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
+	if err != nil || time.Now().Unix() > exp ||
+		!hmac.Equal([]byte(q.Get("sig")), []byte(s.linkSig(id, exp))) {
+		writeError(w, http.StatusForbidden, "invalid or expired link")
+		return
+	}
+	b, err := s.svc.Preview(r.Context(), s.userID, id)
+	if errors.Is(err, service.ErrNoThumbnail) {
+		writeError(w, http.StatusNotFound, "no preview for this file")
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "image/jpeg")
+	h.Set("Cache-Control", fmt.Sprintf("private, max-age=%d, immutable", max(0, exp-time.Now().Unix())))
+	w.Write(b)
 }
 
 // GET /dl/{id}?exp=..&sig=..[&inline=1]

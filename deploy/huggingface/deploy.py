@@ -101,6 +101,41 @@ def print_logs(token, repo_id, kind, seconds):
     log(f"----- end of {kind} logs -----")
 
 
+def wait_for_quiet(host):
+    """部署会重启服务端，正在传的文件会断掉。先问服务端（GET /api/maintenance/activity），
+    等上传停了 QUIET_SECONDS 秒再部署；最多等 DEPLOY_MAX_WAIT_MINUTES 分钟（之后照样部署：快捷指令会等 3 分钟重试）。
+    服务端还不支持、连不上时直接部署。只打印个数，不打印文件名（Actions 日志是公开的）。"""
+    token = os.environ.get("XIAOJU_ADMIN_TOKEN", "").strip()
+    max_wait = int(os.environ.get("DEPLOY_MAX_WAIT_MINUTES", "").strip() or "60") * 60
+    quiet = int(os.environ.get("QUIET_SECONDS", "").strip() or "180")
+    if not token or max_wait <= 0:
+        return
+    url = f"https://{host}/api/maintenance/activity"
+    deadline = time.time() + max_wait
+    last = None
+    while True:
+        try:
+            r = requests.get(url, headers={"X-Xiaoju-Token": token}, timeout=20)
+        except requests.RequestException as e:
+            log(f"upload activity: cannot ask the server ({type(e).__name__}); deploying")
+            return
+        if r.status_code != 200:
+            log(f"upload activity: HTTP {r.status_code} (server too old or not running); deploying")
+            return
+        a = r.json()
+        if a.get("active", 0) == 0 and a.get("idle_seconds", 0) >= quiet:
+            log(f"no uploads for {a.get('idle_seconds')}s; deploying")
+            return
+        if time.time() > deadline:
+            log(f"uploads still going after {max_wait // 60} min; deploying anyway (shortcuts retry for 3 minutes)")
+            return
+        state = (a.get("active"), a.get("idle_seconds", 0) >= quiet)
+        if state != last:
+            log(f"uploads in progress (active={a.get('active')}, idle={a.get('idle_seconds')}s); waiting until quiet for {quiet}s")
+            last = state
+        time.sleep(30)
+
+
 def main():
     token = os.environ.get("HF_TOKEN", "").strip()
     if not token:
@@ -111,6 +146,8 @@ def main():
     user = api.whoami()["name"]
     repo_id = os.environ.get("HF_SPACE_ID", "").strip() or f"{user}/xiaoju-cloud"
     log(f"deploying to space {repo_id} (https://{space_host(repo_id)})")
+    # 改 Secrets、上传源码都会让 Space 重启：先等上传停下来
+    wait_for_quiet(space_host(repo_id))
 
     # 网页前端（GitHub Pages）需要公开 Space：私有 Space 的网关会拦截浏览器的跨域预检请求。
     # 公开后 API 仍由 XIAOJU_ADMIN_TOKEN 保护。

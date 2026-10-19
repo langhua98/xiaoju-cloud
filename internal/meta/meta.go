@@ -326,6 +326,9 @@ type BackupStats struct {
 	BackedUp    int64 `json:"backed_up"`
 	Bytes       int64 `json:"bytes"`
 	BackedBytes int64 `json:"backed_up_bytes"`
+	// 定期检查（见 service/scrub.go）：最近 ScrubEvery 里核对过的分块数、上次检查发现问题还没修好的分块数
+	Verified     int64 `json:"verified"`
+	VerifyErrors int64 `json:"verify_errors"`
 }
 
 // BackupStats 统计已上传完成文件的分块备份进度。
@@ -335,9 +338,11 @@ func (s *Store) BackupStats(ctx context.Context) (BackupStats, error) {
 		SELECT count(*),
 		       count(*) FILTER (WHERE p.backup_message_id IS NOT NULL),
 		       COALESCE(sum(p.size), 0),
-		       COALESCE(sum(p.size) FILTER (WHERE p.backup_message_id IS NOT NULL), 0)
+		       COALESCE(sum(p.size) FILTER (WHERE p.backup_message_id IS NOT NULL), 0),
+		       count(*) FILTER (WHERE p.verified_at > now() - interval '30 days' AND p.verify_error IS NULL),
+		       count(*) FILTER (WHERE p.verify_error IS NOT NULL)
 		FROM file_parts p JOIN files f ON f.id = p.file_id AND f.status = 'active'`).
-		Scan(&st.Parts, &st.BackedUp, &st.Bytes, &st.BackedBytes)
+		Scan(&st.Parts, &st.BackedUp, &st.Bytes, &st.BackedBytes, &st.Verified, &st.VerifyErrors)
 	return st, err
 }
 
@@ -449,5 +454,30 @@ func mapErr(err error) error {
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return ErrConflict
 	}
+	return err
+}
+
+// ListPartsToVerify 返回最久没检查过的一批分块（从没检查过的在前，只看已上传完成的文件）。
+func (s *Store) ListPartsToVerify(ctx context.Context, before time.Time, limit int) ([]Part, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT `+partColumns+` FROM file_parts p
+		JOIN files f ON f.id = p.file_id AND f.status = 'active'
+		WHERE p.verified_at IS NULL OR p.verified_at < $1
+		ORDER BY p.verified_at NULLS FIRST, p.created_at
+		LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanPart)
+}
+
+// SetPartVerified 记下这个分块检查过了；problem 不为空时是没修好的问题（下次再试）。
+func (s *Store) SetPartVerified(ctx context.Context, fileID uuid.UUID, partNo int, problem string) error {
+	var p *string
+	if problem != "" {
+		p = &problem
+	}
+	_, err := s.db.Exec(ctx, `UPDATE file_parts SET verified_at = now(), verify_error = $3 WHERE file_id = $1 AND part_no = $2`,
+		fileID, partNo, p)
 	return err
 }
