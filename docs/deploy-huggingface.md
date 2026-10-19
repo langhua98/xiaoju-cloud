@@ -79,6 +79,18 @@ GitHub Actions ──上传源码 + 写入 Secrets──▶ HF 私有 Space（xi
 重新运行工作流，日志出现 `backup channel connected` 和 `backup sync started` 即生效；旧文件会在后台逐步复制到备份频道，
 进度见 `GET /api/backup/status`。说明见 README“双备份”。
 
+## 可选：多个 Bot 轮流用
+
+用同一个账号在 @BotFather 再建几个 Bot，都设为存储频道的管理员，然后在 GitHub Secrets 中添加：
+
+| Secret | 值 |
+|---|---|
+| `TG_EXTRA_BOT_TOKENS` | 这几个 Bot 的 token，逗号或换行分隔 |
+| `TG_BACKUP_EXTRA_BOT_TOKENS` | （可选）第二个账号再建的几个 Bot，设为备份频道管理员 |
+
+重新运行工作流，日志出现 `extra bot added` 即生效（`extra bot skipped` 表示那个 Bot 连不上或不是频道管理员，不影响服务）。
+说明见 README“多个 Bot 轮流用”。
+
 ## 使用
 
 Space 是私有的，请求需同时带 HF token（给 HF 网关）和本服务的令牌：

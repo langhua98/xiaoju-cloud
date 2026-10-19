@@ -28,6 +28,9 @@ SECRET_KEYS = [
     "TG_CHANNEL_ID",
     "TG_BACKUP_BOT_TOKEN",
     "TG_BACKUP_CHANNEL_ID",
+    # 可选：额外的 Bot（同一个频道的管理员），和主 Bot 轮流上传、下载
+    "TG_EXTRA_BOT_TOKENS",
+    "TG_BACKUP_EXTRA_BOT_TOKENS",
 ]
 VARIABLE_KEYS = [
     "TG_TRANSPORT",

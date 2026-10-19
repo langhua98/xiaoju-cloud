@@ -120,11 +120,24 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		f, err := s.svc.Upload(uploadCtx, service.UploadRequest{
 			UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Body: body,
 			Spool: true, OnSpooled: func() { received = time.Now(); hb = startHeartbeat(w) },
+			SkipSameContent: true,
 		})
 		started := hb.end() // 之后只有这里写回复
 		// 重名在读请求体之前就会发现（hb 还没创建），可以换个名字重试
 		if errors.Is(err, meta.ErrConflict) && hb == nil && i < 100 {
 			continue
+		}
+		// 内容和网盘里的某个文件完全一样（改过名、挪到了别的文件夹……）：不再存。记下手机上的名字，
+		// 之后的上传计划就当作传过了。回复里不说是哪个文件（这个接口不用认证，不透露网盘里有什么名字）
+		var same *service.SameContentError
+		if errors.As(err, &same) && !started {
+			if err := s.svc.Store().RecordAlias(ctx, album.ID, name, same.File.Size, same.File.ID); err != nil {
+				s.log.Warn("ingest: record alias", "name", name, "err", err)
+			}
+			s.log.Info("ingest skipped: same content already in the drive", "folder", folder, "name", name, "size", same.File.Size,
+				"took", time.Since(start).Round(100*time.Millisecond))
+			writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": name, "same_content": true})
+			return
 		}
 		if err != nil {
 			if !started {
@@ -174,7 +187,7 @@ func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name str
 		}
 	}
 	if unnamed == nil {
-		return nil, nil
+		return s.aliasedBefore(ctx, albumID, name, size)
 	}
 	newName := name
 	if noExt {
@@ -189,6 +202,27 @@ func (s *Server) uploadedBefore(ctx context.Context, albumID uuid.UUID, name str
 		return nil, err
 	}
 	return unnamed, nil
+}
+
+// aliasedBefore 找按内容认出来、没有再存的同一个文件（见 meta.RecordAlias），名字的比法和 uploadedBefore 一样。
+// 返回的只带名字（手机上的名字），不是网盘里那个文件。
+func (s *Server) aliasedBefore(ctx context.Context, albumID uuid.UUID, name string, size int64) (*meta.File, error) {
+	names, err := s.svc.Store().ListAliasNames(ctx, albumID, size)
+	if err != nil {
+		return nil, err
+	}
+	want := stripCopySuffix(name)
+	noExt := filepath.Ext(want) == ""
+	for _, n := range names {
+		got := stripCopySuffix(n)
+		if noExt {
+			got = strings.TrimSuffix(got, filepath.Ext(got))
+		}
+		if strings.EqualFold(got, want) {
+			return &meta.File{Name: n, Size: size}, nil
+		}
+	}
+	return nil, nil
 }
 
 // placeholderName 是以前没给文件名时自动起的名字：“照片 2026-10-16 035540-982f.mp4”。

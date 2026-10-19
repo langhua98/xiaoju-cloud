@@ -74,6 +74,8 @@ jobs:
           TG_CHANNEL_ID: ${{ secrets.TG_CHANNEL_ID }}
           TG_BACKUP_BOT_TOKEN: ${{ secrets.TG_BACKUP_BOT_TOKEN }}
           TG_BACKUP_CHANNEL_ID: ${{ secrets.TG_BACKUP_CHANNEL_ID }}
+          TG_EXTRA_BOT_TOKENS: ${{ secrets.TG_EXTRA_BOT_TOKENS }}
+          TG_BACKUP_EXTRA_BOT_TOKENS: ${{ secrets.TG_BACKUP_EXTRA_BOT_TOKENS }}
           TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
           XIAOJU_PART_SIZE: ${{ vars.XIAOJU_PART_SIZE }}
           XIAOJU_CORS_ORIGINS: ${{ vars.XIAOJU_CORS_ORIGINS }}

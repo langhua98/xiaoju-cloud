@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -284,7 +286,7 @@ func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (stora
 	if err != nil {
 		return nil, nil, err
 	}
-	return d, done, nil
+	return withExtraBots(ctx, cfg, d, t.ChannelID, t.SessionFile, t.ExtraBotTokens, log), done, nil
 }
 
 // newBackupDriver 用另一个账号的 Bot 连接备份频道；未配置备份时返回 nil。
@@ -309,7 +311,55 @@ func newBackupDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 		return nil, nil, fmt.Errorf("backup: %w", err)
 	}
 	log.Info("backup channel connected")
-	return d, done, nil
+	return withExtraBots(ctx, cfg, d, t.BackupChannelID, t.BackupSessionFile, t.BackupExtraBotTokens, blog), done, nil
+}
+
+// withExtraBots 让额外的 Bot 和主 Bot 轮流用（见 telegram.Pool）；没配置时原样返回 d。
+// 额外的 Bot 在后台一个个连接，能登录、能访问频道的才加进来；连不上、不是频道管理员的只记日志，不影响服务。
+func withExtraBots(ctx context.Context, cfg *config.Config, d *telegram.Driver, channelID int64, sessionFile string, tokens []string, log *slog.Logger) storage.Driver {
+	if len(tokens) == 0 {
+		return d
+	}
+	pool := telegram.NewPool(d, log)
+	t := cfg.Telegram
+	go func() {
+		seen := map[string]bool{botID(t.BotToken): true, botID(t.BackupBotToken): true}
+		for _, token := range tokens {
+			id := botID(token)
+			blog := log.With("bot", id) // Bot 的数字 ID 不是秘密（令牌冒号后面那段才是）
+			if id == "" || seen[id] {
+				blog.Warn("extra bot skipped: not a bot token, or the same bot as another one")
+				continue
+			}
+			seen[id] = true
+			api, _, err := telegram.Start(ctx, telegram.ClientConfig{
+				AppID: t.AppID, AppHash: t.AppHash, BotToken: token, Transport: t.Transport,
+				SessionFile: filepath.Join(filepath.Dir(sessionFile), "tg-session-bot"+id+".json"),
+			}, blog)
+			if err == nil {
+				var extra *telegram.Driver
+				if extra, err = telegram.New(ctx, api, channelID); err == nil {
+					pool.Add(extra)
+					blog.Info("extra bot added", "bots", pool.Bots())
+					continue
+				}
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			blog.Warn("extra bot skipped", "err", err)
+		}
+	}()
+	return pool
+}
+
+// botID 取 Bot 令牌冒号前面的数字（Bot 的用户 ID）；不像令牌时返回空。
+func botID(token string) string {
+	id, _, ok := strings.Cut(token, ":")
+	if !ok || id == "" || strings.Trim(id, "0123456789") != "" {
+		return ""
+	}
+	return id
 }
 
 // makeThumb 给本地文件生成缩略图：xiaoju thumb IN OUT.jpg

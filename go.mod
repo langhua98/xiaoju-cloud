@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gotd/td v0.162.0
 	github.com/jackc/pgx/v5 v5.11.0
+	golang.org/x/time v0.14.0
 )
 
 require (

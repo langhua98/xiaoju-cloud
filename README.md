@@ -38,7 +38,11 @@
 
 - 上传：`upload.saveBigFilePart`（512KB 分片，4 并发）→ `messages.sendMedia` 发到频道，记录 `message_id`；
 - 下载：`channels.getMessages` 拿到文档位置（缓存 30 分钟），`upload.getFile` 按 1MB 对齐读取；`FILE_REFERENCE_EXPIRED` 时自动刷新重试；
-- `FLOOD_WAIT_X`：中间件自动等待并重试（最多 3 次，单次最长 1 分钟）；
+  一个读取流同时下载后面最多 4 块（滑动窗口，从 1 块开始、读得越多同时下得越多：看视频、下载大文件快，缩略图、视频探测这种
+  只读一小段的不会多下）——思路来自 Teldrive 1.x（见文末“参考”）；
+- `FLOOD_WAIT_X`：中间件自动等待并重试（最多 3 次，单次最长 1 分钟）；发消息、取消息、删消息这类请求还会主动排匀
+  （平均 100ms 一个，最多连着 5 个，Teldrive 的默认值），对账扫描、批量删除时不容易被限流；上传、下载文件分片的请求不限；
+- 可选：多个 Bot 轮流上传、下载（见下面“多个 Bot 轮流用”）；
 - 连接方式 `TG_TRANSPORT`：`tcp` 直连数据中心 IP（不依赖 DNS，Hugging Face Spaces 上只能用这个），或 `websocket` 经 `*.web.telegram.org:443`；启动 90 秒内连不上会报错退出；
 - 每条消息的说明里写入 `{"f": 文件ID, "p": 分块号, "sha256": ...}`，作为数据库丢失时的兜底线索。
 
@@ -78,7 +82,11 @@ make run
 |---|---|---|
 | `POST` | `/api/folders` | 新建目录，body：`{"name": "..", "parent_id": null}` |
 | `GET` | `/api/folders/{id\|root}/children` | 列出目录内容（文件夹在前按名字；文件按拍摄时间、没有时按上传时间，新的在前）；照片、视频带 `thumb`（签名的缩略图地址）、`duration`（视频秒数）和 `taken_at`（拍摄时间），后两个生成过缩略图后才有；文件夹带 `counts`（里面连同子文件夹有几张照片、几个视频、几个其他文件）、`cover`（封面：最新一张照片 / 视频的缩略图地址）和 `private` |
-| `POST` | `/api/files?name=..&parent_id=..` | 上传，请求体为文件原始内容（流式） |
+| `POST` | `/api/files?name=..&parent_id=..[&dedupe=1]` | 上传，请求体为文件原始内容（流式）；`dedupe=1` 时网盘里已有内容完全一样（整个文件 SHA-256 相同）的文件就不再存，返回 `200 {"same_content":true,"file":那个文件}` |
+| `POST` | `/api/files/known` | `{"sha256":["十六进制",…],"parent_id":..}`：这些内容网盘里已经有了吗，回答 `{"known":{"十六进制":文件}}`（不在回收站里的；传进私密文件夹时只认私密文件夹里的那份）。网页上传照片前先问 |
+| `POST` | `/api/uploads` | 断点续传开始：`{"name","parent_id","size","mime","probe","dedupe"}` → `201 {"id","offset":0,"chunk"}`；同一个文件夹里有同名、同大小、`probe`（开头结尾各 1MB 的 SHA-256）也一样的没传完的，返回 `200` 和它的进度 |
+| `PUT` | `/api/uploads/{id}?offset=N` | 传一段（请求体是文件里从 N 开始的字节，建议 `chunk` 那么多）→ `{"offset"}`；传完 `201 {"file"}`；N 和服务端收到的对不上 `409 {"offset":实际收到的}` |
+| `GET` | `/api/uploads/{id}` | 断点续传的进度 `{"offset","size"}`；传完了或被清理了 404 |
 | `GET` | `/api/files/{id}` | 文件元数据 |
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
 | `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览） |
@@ -121,7 +129,9 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 - 根目录：文件夹是带封面的相册卡片（封面是里面最新一张的缩略图，下面写“361 张照片 · 148 个视频”），散落的文件在下面“其他文件”。
   进了文件夹：大标题 + 一行统计（只算这个文件夹的），子文件夹也是卡片，照片按拍摄日期分组（今天、昨天、10月18日 周六；
   照片稀疏时按月），超过 60 个时右边有时间滑条，按住拖动快速跳到某个月。
-- 右下角 ＋：上传照片和视频（传进当前文件夹，根目录时进“相册”；文件名和大小相同的跳过，同名不同内容改名“名字 (2)”）、
+- 右下角 ＋：上传照片和视频（传进当前文件夹，根目录时进“相册”；文件名和大小相同的跳过，同名不同内容改名“名字 (2)”；
+  **名字不同但内容一样的也跳过**：浏览器先算每个文件的 SHA-256（64MB 以下用 `crypto.subtle`，更大的用 `app.js` 里能分段算的
+  `Sha256`，每次读 4MB），20 个一批问 `/api/files/known`，算完第一批就开始传，后面边传边算；网盘里改过名、挪到别的文件夹的照片都认得出来）、
   上传文件、新建文件夹、快捷指令。
 - 长按（或点“选择”）进入多选：底部“下载 / 移动 / 删除”。删除是移入回收站，提示里可以撤销；回收站在头像菜单里，可以恢复或永久删除。
   每行不再有删除按钮。文件夹右上角 ⋯：重命名、设为 / 取消私密、移动、删除。
@@ -131,6 +141,11 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 - **备份状态**：两个 Telegram 账号的双备份进度，以及手机上的照片备份到哪了（`/api/backup/phone`：快捷指令每次运行报的清单）。
 
 上传 2 个并发，网络中断或服务端出错（多为 Telegram 限流）时自动重试 3 次。
+**16MB 以上的文件断点续传**（`/api/uploads`，`internal/service/resumable.go`）：每段 8MB 一个请求，服务端收到的数据加密后攒在临时文件里，
+攒满一个分块就写进 Telegram，同时把进度和整个文件 SHA-256 的中间状态记进 `upload_sessions`。网络断了、页面进了后台：
+等几秒问服务端收到了多少，从那里接着传（最多连着失败 30 次才算失败）；服务端重启（部署）了：从最后一个写进 Telegram 的分块接着传；
+刷新页面后重新选同一个文件：按名字、大小、开头结尾 1MB 的摘要认出来接着传。旧请求挂住时（手机断网，服务端还在等数据）新请求直接接手；
+30 秒收不到数据就不等了。24 小时没动静的会被清理（分块一起删）。服务端还没有这个接口时退回一个请求传完。
 上传期间屏幕保持常亮（支持屏幕唤醒锁的浏览器），显示预计剩余时间，传完可以“继续选下一批”。
 
 > iPhone 上一次选几百张时，点“添加”后系统要先把每张照片准备好（必要时转换格式、从 iCloud 下载原图）才交给网页，
@@ -184,6 +199,21 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 - `GET /api/backup/status` 查看进度：`{"enabled":true,"parts":120,"backed_up":118,...}`。
 
 备份频道连不上时服务照常运行（只用主频道），原因写在日志和状态接口的 `error` 字段里。
+备份频道也可以加额外的 Bot（`TG_BACKUP_EXTRA_BOT_TOKENS`，用第二个账号创建，见下一节）。
+
+## 多个 Bot 轮流用（可选）
+
+Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速（日志里的 `telegram flood wait`），可以多建几个 Bot 轮流用：
+
+1. 用**同一个账号**找 @BotFather 再建几个 Bot（建议 2–4 个）；
+2. 把它们都加成存储频道的管理员（发布、删除消息权限），和主 Bot 一样；
+3. GitHub 仓库 Secret `TG_EXTRA_BOT_TOKENS` 填它们的令牌（逗号、空格或换行分隔），重新部署。
+   备份频道同理：用第二个账号建，加进备份频道，填 `TG_BACKUP_EXTRA_BOT_TOKENS`。
+
+启用后上传的每个分块、下载的每 1MB 轮流交给不同的 Bot（`internal/storage/telegram/pool.go`，思路来自 Teldrive 1.x 的
+`bot_selector.go`）。删除、对账只用主 Bot。额外的 Bot 在服务启动后在后台连接，日志 `extra bot added`；连不上、不是频道管理员的
+只记 `extra bot skipped`，不影响服务。用的时候出错（比如文件在别的数据中心）这一次改用主 Bot，那个 Bot 停用 10 分钟。
+每个 Bot 的登录状态存在主 Bot 会话文件旁边的 `tg-session-bot<数字ID>.json`。
 两个频道都在 Telegram，防不了 Telegram 整体不可用；重要文件请另外保留原件。
 
 ## 刷脸登录（Face ID / 指纹）
@@ -302,7 +332,13 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/api/ingest` | 不需要认证。头部 `X-File-Name`（或 `?name=`，没有扩展名时按内容补上），请求体是文件原始内容；新文件 `201 {"result":"uploaded"}`，已存在 `200 {"result":"skipped"}` |
+| `POST` | `/api/ingest` | 不需要认证。头部 `X-File-Name`（或 `?name=`，没有扩展名时按内容补上），请求体是文件原始内容；新文件 `201 {"result":"uploaded"}`，已存在 `200 {"result":"skipped"}`，网盘里已有内容一样的 `200 {"result":"skipped","same_content":true}` |
+
+**按内容去重**：快捷指令传来的文件，收完（加密存进临时文件）、写 Telegram 之前先看网盘里有没有内容完全一样的
+（整个文件 SHA-256 相同，不在回收站里；传进隐藏相册时只认私密文件夹里的那份，免得照片因为“相册”里有一份就一直露在外面）。
+有就不再存，并在 `content_aliases` 记下手机上的名字和大小：之后的上传计划、`exists`、`names` 都把它当作传过，
+不会每次运行都再发一遍（比如照片在网盘里改过名、挪到了别的文件夹）。那个文件永久删除时这条记录跟着删，再运行就会重新传。
+回复里不说是网盘里哪个文件（这个接口不用认证）。
 
 ## 对账与清理残块
 
@@ -324,9 +360,10 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 ## 路线图
 
 - [x] **MVP**：单 Bot、单频道；目录 / 上传 / 下载 / Range / 回收站；分块加密；网页前端（GitHub Pages）
-- [ ] V1：多 Bot 池并发与调度、分片断点续传（上传会话）、回收站清理任务、本地热点缓存
+- [x] 多 Bot 轮流上传下载、下载并发预读、请求主动排匀、网页断点续传（上传会话）、按内容去重（SHA-256）
+- [ ] V1：回收站清理任务、本地热点缓存
 - [x] 双备份：另一个账号的备份频道双写，主频道读取失败自动切换，旧文件后台补齐
-- [ ] V2：秒传去重、分享链接、WebDAV、按消息说明重建元数据
+- [ ] V2：分享链接、WebDAV、按消息说明重建元数据
 - [x] 照片墙：缩略图网格、大图左右滑动、双指缩放
 - [ ] V3：多用户与配额、S3/R2 驱动
 
@@ -334,6 +371,16 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 把 Telegram 当作存储后端属于非常规用法：账号或 Bot 可能被限制，没有可用性保证（SLA）。
 适合个人 / 小团队自用；重要数据请另行备份，**PostgreSQL 与主密钥必须备份**——数据库丢失后频道里的数据无法按文件名还原。
+
+## 参考
+
+- [Teldrive](https://github.com/tgdrive/teldrive)：同样把文件存进 Telegram 频道的开源网盘，也用 gotd/td + PostgreSQL。
+  这里参考了它 1.x 版（MIT 许可，Copyright (c) 2024 divyam234）的三个做法，代码是自己写的：下载时并发预读几块
+  （`internal/reader/tg_reader.go`）、多个 Bot 轮流用（`internal/tgc/bot_selector.go`）、请求限速的默认值。
+  它 2.0 版（2026-10 重写）删掉了许可证，那一版的代码没有用；按内容去重、断点续传只参考了思路。
+- 用到的库：[gotd/td](https://github.com/gotd/td)（MIT）、[pgx](https://github.com/jackc/pgx)（MIT）、
+  [go-webauthn](https://github.com/go-webauthn/webauthn)（BSD-3）、[google/uuid](https://github.com/google/uuid)（BSD-3）、
+  `golang.org/x/time`（BSD-3）；镜像里的 libvips、ffmpeg 作为独立程序调用；快捷指令用 [Cherri](https://github.com/electrikmilk/cherri) 编译。
 
 ## 开发交接（给接手的人）
 
@@ -377,6 +424,14 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
    网页 `app.js` 的“目录浏览”到“时间滑条”几节、“顶栏菜单、＋、弹窗”一节是新写的；登录、刷脸、格子口令、大图查看、上传基本没动。
    Playwright 在手机尺寸（深色、浅色）和电脑宽屏上走过：相册卡片、日期分组、滑条、长按多选、删除撤销、移动、私密相册遮住 /
    刷脸解锁（虚拟验证器）/ 切后台重新遮住、回收站恢复 / 永久删除、上传去重、备份状态。
+10. **参考 Teldrive 做的几件事**（2026-10-19）：下载并发预读（`telegram/driver.go` 的 `rangeReader`）、请求主动排匀（`client.go` 的 `pace`）、
+    多个 Bot 轮流（`telegram/pool.go`，`TG_EXTRA_BOT_TOKENS`，默认不启用）、按内容去重（迁移 `0011`：`files.sha256` 索引、
+    `content_aliases`；`meta/content.go`、`/api/files/known`、上传 `dedupe=1`、快捷指令上传）、网页断点续传（迁移 `0012`
+    `upload_sessions`；`service/resumable.go`、`api/uploads.go`，CORS 预检加了 `PUT`）。去重用的是服务端本来就在存的
+    SHA-256（旧文件都有，不用补算；浏览器、快捷指令也都能算），没用 Teldrive 的 BLAKE3。
+    Go 测试：`TestRangeReader*`、`TestPace*`、`TestPool*`、`TestContentDedupe`、`TestResumableUpload`（含服务重启、断开、
+    新请求接手）。网页用 Playwright 走过：改名的照片 / 视频按内容跳过、上传中途断网接着传、刷新页面后接着传、上传中服务端重启
+    接着传、70MB 文件在浏览器里分段算的 SHA-256 和服务端一致、旧服务端时退回一次传完。
 
 ### 正在进行（交接时的状态）
 
@@ -418,7 +473,8 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 ### 其他注意
 
-- Telegram 写入有频率限制（每个频道大约每分钟 20 条，日志里会看到 `telegram flood wait`），上传上千个文件要一两个小时以上。
+- Telegram 写入有频率限制（每个 Bot 在一个频道里大约每分钟 20 条，日志里会看到 `telegram flood wait`），上传上千个文件要一两个小时以上；
+  加几个额外的 Bot 可以分摊（见“多个 Bot 轮流用”）。
 - **上传速度**（2026-10-16 实测，手机走蜂窝网络）：小照片每个约 5–6 秒（固定开销：快捷指令动作、网络往返、两次写 Telegram），
   大视频约 1 MB/s。快捷指令是一个接一个传的，每个文件都要等服务端写完 Telegram 才传下一个。批量上传的日志行
   `ingested ... receive=… store=…` 分别是手机传到服务端、写进 Telegram 的用时，用来判断慢在哪边。

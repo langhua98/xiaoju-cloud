@@ -181,10 +181,13 @@ func (s *Store) FileExists(ctx context.Context, id uuid.UUID) (bool, error) {
 	return ok, err
 }
 
-// ListStaleUploads 返回创建时间早于 before 仍处于上传中的文件（上传被中断，如服务重启）。
-func (s *Store) ListStaleUploads(ctx context.Context, before time.Time) ([]uuid.UUID, error) {
+// ListStaleUploads 返回已经中断的上传：普通上传创建时间早于 before 还没传完（如服务重启）；
+// 断点续传的上传最后一次收到数据早于 sessionsBefore（用户不会再接着传了）。
+func (s *Store) ListStaleUploads(ctx context.Context, before, sessionsBefore time.Time) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id FROM files WHERE status = 'uploading' AND created_at < $1 ORDER BY created_at`, before)
+		SELECT f.id FROM files f LEFT JOIN upload_sessions u ON u.file_id = f.id
+		WHERE f.status = 'uploading' AND CASE WHEN u.file_id IS NULL THEN f.created_at < $1 ELSE u.updated_at < $2 END
+		ORDER BY f.created_at`, before, sessionsBefore)
 	if err != nil {
 		return nil, err
 	}

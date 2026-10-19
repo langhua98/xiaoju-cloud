@@ -19,6 +19,8 @@ import (
 const (
 	// StaleUploadAge 之前开始、至今仍未完成的上传视为已中断（如服务重启），可以清理。
 	StaleUploadAge = 6 * time.Hour
+	// ResumableUploadTTL：断点续传的上传这么久没收到新数据就清理（不会再接着传了）。
+	ResumableUploadTTL = 24 * time.Hour
 	// OrphanMinAge 之内的分块不当作残块：它可能属于正在进行的上传或备份，只是还没写进数据库。
 	OrphanMinAge = 24 * time.Hour
 )
@@ -89,7 +91,7 @@ func (s *Service) Reconcile(ctx context.Context, apply bool) (*ReconcileReport, 
 		rep.Backup = &ChannelReport{}
 	}
 
-	stale, err := s.store.ListStaleUploads(ctx, time.Now().Add(-StaleUploadAge))
+	stale, err := s.store.ListStaleUploads(ctx, time.Now().Add(-StaleUploadAge), time.Now().Add(-ResumableUploadTTL))
 	if err != nil {
 		return nil, err
 	}
@@ -313,47 +315,59 @@ func (s *Service) restorePrimaryFromBackup(ctx context.Context, p *meta.Part) er
 	return s.store.SetPartPrimary(ctx, p.FileID, p.PartNo, loc.ChannelID, loc.MessageID)
 }
 
-// CleanupStaleUploads 清理中断超过 StaleUploadAge 的上传：删除已经传上去的分块和记录。
-// 某个文件的分块删除失败时保留它的记录，下次再试。返回清理掉的文件数。
+// CleanupStaleUploads 清理中断超过 StaleUploadAge 的上传（断点续传的是 ResumableUploadTTL 没动静的）：
+// 删除已经传上去的分块和记录。某个文件的分块删除失败时保留它的记录，下次再试。返回清理掉的文件数。
 func (s *Service) CleanupStaleUploads(ctx context.Context) (int, error) {
-	ids, err := s.store.ListStaleUploads(ctx, time.Now().Add(-StaleUploadAge))
+	ids, err := s.store.ListStaleUploads(ctx, time.Now().Add(-StaleUploadAge), time.Now().Add(-ResumableUploadTTL))
 	if err != nil {
 		return 0, err
 	}
-	cleaned := 0
+	cleaned := map[uuid.UUID]bool{}
 	for _, id := range ids {
-		parts, err := s.store.ListParts(ctx, id)
-		if err != nil {
-			return cleaned, err
-		}
-		var locs, backupLocs []storage.Location
-		for i := range parts {
-			locs = append(locs, storage.Location{ChannelID: parts[i].ChannelID, MessageID: parts[i].MessageID})
-			if parts[i].HasBackup() {
-				backupLocs = append(backupLocs, backupLocation(&parts[i]))
-			}
-		}
-		if len(locs) > 0 {
-			if err := s.driver.Delete(ctx, locs); err != nil {
-				s.log.Warn("cleanup stale upload: delete parts", "file", id, "err", err)
+		if err := s.discardUpload(ctx, id); err != nil {
+			if errors.Is(err, errKeepRecord) {
 				continue
 			}
+			return len(cleaned), err
 		}
-		if len(backupLocs) > 0 && s.backup != nil {
-			if err := s.backup.Delete(ctx, backupLocs); err != nil {
-				s.log.Warn("cleanup stale upload: delete backup parts", "file", id, "err", err)
-				continue
-			}
-		}
-		if err := s.store.DeleteRow(ctx, id); err != nil {
-			return cleaned, err
-		}
-		cleaned++
+		cleaned[id] = true
 	}
-	if cleaned > 0 {
-		s.log.Info("cleaned up interrupted uploads", "files", cleaned)
+	s.evictIdleResumables(0, cleaned)
+	if len(cleaned) > 0 {
+		s.log.Info("cleaned up interrupted uploads", "files", len(cleaned))
 	}
-	return cleaned, nil
+	return len(cleaned), nil
+}
+
+// errKeepRecord：存储端的分块没删掉，记录先留着（下次再删）。
+var errKeepRecord = errors.New("parts not deleted; keeping the record")
+
+// discardUpload 删掉一个没传完的上传：存储端（含备份）已经传上去的分块，和数据库记录。
+func (s *Service) discardUpload(ctx context.Context, id uuid.UUID) error {
+	parts, err := s.store.ListParts(ctx, id)
+	if err != nil {
+		return err
+	}
+	var locs, backupLocs []storage.Location
+	for i := range parts {
+		locs = append(locs, storage.Location{ChannelID: parts[i].ChannelID, MessageID: parts[i].MessageID})
+		if parts[i].HasBackup() {
+			backupLocs = append(backupLocs, backupLocation(&parts[i]))
+		}
+	}
+	if len(locs) > 0 {
+		if err := s.driver.Delete(ctx, locs); err != nil {
+			s.log.Warn("discard upload: delete parts", "file", id, "err", err)
+			return errKeepRecord
+		}
+	}
+	if len(backupLocs) > 0 && s.backup != nil {
+		if err := s.backup.Delete(ctx, backupLocs); err != nil {
+			s.log.Warn("discard upload: delete backup parts", "file", id, "err", err)
+			return errKeepRecord
+		}
+	}
+	return s.store.DeleteRow(ctx, id)
 }
 
 // RunMaintenance 定期清理中断的上传，直到 ctx 取消。
@@ -362,6 +376,7 @@ func (s *Service) RunMaintenance(ctx context.Context, every time.Duration) {
 		if _, err := s.CleanupStaleUploads(ctx); err != nil && ctx.Err() == nil {
 			s.log.Error("cleanup stale uploads", "err", err)
 		}
+		s.evictIdleResumables(resumableIdle, nil)
 		select {
 		case <-time.After(every):
 		case <-ctx.Done():

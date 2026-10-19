@@ -58,11 +58,15 @@ type NameSize struct {
 	TakenAt *time.Time
 }
 
-// ListNameSizes 列出目录下所有（未删除的）文件的名字、大小和拍摄时间。
+// ListNameSizes 列出目录下所有（未删除的）文件的名字、大小和拍摄时间，
+// 加上按内容认出来、没有再存的别名（content_aliases，拍摄时间取内容相同的那个文件的）。
 func (s *Store) ListNameSizes(ctx context.Context, userID, parentID uuid.UUID) ([]NameSize, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT name, size, taken_at FROM files
-		WHERE user_id = $1 AND parent_id = $2 AND type = 'file' AND status = 'active' AND trashed_at IS NULL`, userID, parentID)
+		WHERE user_id = $1 AND parent_id = $2 AND type = 'file' AND status = 'active' AND trashed_at IS NULL
+		UNION ALL
+		SELECT a.name, a.size, f.taken_at FROM content_aliases a JOIN files f ON f.id = a.file_id
+		WHERE a.folder_id = $2 AND f.user_id = $1 AND f.status = 'active' AND f.trashed_at IS NULL`, userID, parentID)
 	if err != nil {
 		return nil, err
 	}

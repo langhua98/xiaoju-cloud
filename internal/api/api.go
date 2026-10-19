@@ -93,6 +93,10 @@ func (s *Server) Handler() http.Handler {
 	files("POST /api/folders", s.createFolder)
 	files("GET /api/folders/{id}/children", s.listChildren)
 	files("POST /api/files", s.upload)
+	files("POST /api/files/known", s.knownContent)
+	files("POST /api/uploads", s.startUpload)
+	files("GET /api/uploads/{id}", s.uploadStatus)
+	files("PUT /api/uploads/{id}", s.writeUpload)
 	files("GET /api/files/{id}", s.getFile)
 	files("GET /api/files/{id}/content", s.download)
 	files("POST /api/files/{id}/link", s.createLink)
@@ -151,7 +155,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if allowed {
 				h := w.Header()
-				h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
+				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE")
 				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, Content-Type, Range")
 				h.Set("Access-Control-Max-Age", "86400")
 			}
@@ -238,7 +242,8 @@ func (s *Server) withCounts(ctx context.Context, items []listItem) error {
 	return nil
 }
 
-// POST /api/files?name=xxx[&parent_id=uuid]，请求体是文件原始内容（流式，不走 multipart）。
+// POST /api/files?name=xxx[&parent_id=uuid][&dedupe=1]，请求体是文件原始内容（流式，不走 multipart）。
+// dedupe=1 时网盘里已经有内容完全相同的文件就不再存，返回 200 {"same_content": true, "file": 那个文件}。
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	name := q.Get("name")
@@ -265,7 +270,13 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := s.svc.Upload(r.Context(), service.UploadRequest{
 		UserID: s.userID, ParentID: parent, Name: name, Mime: ct, Body: r.Body,
+		SkipSameContent: q.Get("dedupe") == "1",
 	})
+	var same *service.SameContentError
+	if errors.As(err, &same) {
+		writeJSON(w, http.StatusOK, map[string]any{"same_content": true, "file": same.File})
+		return
+	}
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -457,7 +468,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, meta.ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, service.ErrFolderPurge), errors.Is(err, meta.ErrNotFolder), errors.Is(err, meta.ErrMoveIntoSelf):
+	case errors.Is(err, service.ErrFolderPurge), errors.Is(err, meta.ErrNotFolder), errors.Is(err, meta.ErrMoveIntoSelf),
+		errors.Is(err, service.ErrEmptyUpload), errors.Is(err, service.ErrBodyTooLong):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		s.log.Error("request failed", "err", err)

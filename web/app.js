@@ -2966,6 +2966,112 @@ function albumCard(a) {
   return card;
 }
 
+// ---------- SHA-256（按内容去重用） ----------
+// 浏览器自带的 crypto.subtle.digest 只能一次算一整块数据：小文件用它（最快）；大视频用下面这个能分段算的，
+// 每次读 4MB，手机内存不会被撑爆。结果都是整个文件的 SHA-256（小写十六进制），和服务端存的一样。
+
+const SHA256_K = new Int32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+class Sha256 {
+  constructor() {
+    this.h = new Int32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+    this.w = new Int32Array(64);
+    this.tail = new Uint8Array(64); // 不满 64 字节、等着下一段的数据
+    this.tailLen = 0;
+    this.length = 0;
+  }
+
+  update(data) {
+    let i = 0;
+    this.length += data.length;
+    if (this.tailLen) {
+      i = Math.min(64 - this.tailLen, data.length);
+      this.tail.set(data.subarray(0, i), this.tailLen);
+      this.tailLen += i;
+      if (this.tailLen < 64) return this;
+      this.block(this.tail, 0);
+      this.tailLen = 0;
+    }
+    for (; i + 64 <= data.length; i += 64) this.block(data, i);
+    if (i < data.length) {
+      this.tail.set(data.subarray(i));
+      this.tailLen = data.length - i;
+    }
+    return this;
+  }
+
+  block(d, p) {
+    const w = this.w, h = this.h, k = SHA256_K;
+    for (let j = 0; j < 16; j++, p += 4) w[j] = (d[p] << 24) | (d[p + 1] << 16) | (d[p + 2] << 8) | d[p + 3];
+    for (let j = 16; j < 64; j++) {
+      const x = w[j - 15], y = w[j - 2];
+      const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+      const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+      w[j] = (w[j - 16] + s0 + w[j - 7] + s1) | 0;
+    }
+    let a = h[0], b = h[1], c = h[2], e = h[4], f = h[5], g = h[6], hh = h[7], dd = h[3];
+    for (let j = 0; j < 64; j++) {
+      const t1 = (hh + (((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7)))
+        + ((e & f) ^ (~e & g)) + k[j] + w[j]) | 0;
+      const t2 = ((((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10)))
+        + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      hh = g; g = f; f = e; e = (dd + t1) | 0; dd = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + dd) | 0;
+    h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + hh) | 0;
+  }
+
+  hex() {
+    const bits = this.length * 8;
+    const pad = new Uint8Array((this.tailLen < 56 ? 64 : 128) - this.tailLen);
+    pad[0] = 0x80;
+    const v = new DataView(pad.buffer);
+    v.setUint32(pad.length - 8, Math.floor(bits / 2 ** 32));
+    v.setUint32(pad.length - 4, bits >>> 0);
+    this.update(pad);
+    return [...this.h].map((x) => (x >>> 0).toString(16).padStart(8, "0")).join("");
+  }
+}
+
+// 小于这个的整个读进来交给浏览器算（快）；更大的分段算
+const SUBTLE_MAX = 64 << 20;
+const HASH_SLICE = 4 << 20;
+
+async function sha256Hex(buf) {
+  if (globalThis.crypto?.subtle) { // 只在 https（或 localhost）下有
+    const d = await crypto.subtle.digest("SHA-256", buf);
+    return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return new Sha256().update(new Uint8Array(buf)).hex();
+}
+
+async function fileSha256(file) {
+  if (file.size <= SUBTLE_MAX) return sha256Hex(await file.arrayBuffer());
+  const h = new Sha256();
+  for (let off = 0; off < file.size; off += HASH_SLICE) {
+    h.update(new Uint8Array(await file.slice(off, off + HASH_SLICE).arrayBuffer()));
+    await new Promise((r) => setTimeout(r)); // 让一下主线程，页面不卡
+  }
+  return h.hex();
+}
+
+// 断点续传时认文件用：开头、结尾各 1MB 的 SHA-256（很快）。刷新页面后重新选了同名同大小的文件，
+// 这个也一样才接着传，否则从头传。
+async function fileProbe(file) {
+  const M = 1 << 20;
+  const blob = file.size <= 2 * M ? file : new Blob([file.slice(0, M), file.slice(file.size - M)]);
+  return sha256Hex(await blob.arrayBuffer());
+}
+
 // ---------- 上传 ----------
 
 const CONCURRENCY = 2;
@@ -2976,10 +3082,15 @@ const STALL_MS = 60_000;
 // 文件传完后，服务端加密并写入 Telegram（含限流等待）最多等这么久
 const SERVER_WAIT_MS = 6 * 60_000;
 const ALBUM = "相册";
+// 这么大的文件分段传（断点续传）：网络断了、页面进了后台，回来从断的地方接着传
+const RESUMABLE_MIN = 16 << 20;
+// 断点续传有一段没传上去时，等这么久再问服务端收到了多少、接着传（之后都按最后一个）；连着失败这么多次才算失败
+const RESUME_DELAYS = [3, 5, 10, 20, 30, 60];
+const RESUME_TRIES = 30;
 
 const queue = [];
 let active = 0;
-let stats = null; // 本轮上传的统计：{ uploaded, skipped, failed, sync, started, received }
+let stats = null; // 本轮上传的统计，见 newStats；same 是按内容认出来的，checking/checked 是正在算指纹的
 
 // 上传期间保持屏幕常亮：iPhone 锁屏后网页会被暂停，几百张照片要传十几分钟
 let wakeLock = null;
@@ -3012,9 +3123,9 @@ function formatDuration(ms) {
 
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 
-// items: [{ file, name }]；sync=true 表示来自“同步相册”，同名已存在视为已同步
+// items: [{ file, name }]；sync=true 表示来自“上传照片和视频”：同名已存在视为传过，网盘里已有内容一样的也不再存
 function enqueue(items, parent = state.folderId, sync = false) {
-  stats ??= { uploaded: 0, skipped: 0, failed: 0, sync: false, started: Date.now() };
+  stats ??= newStats();
   stats.sync ||= sync;
   for (const { file, name } of items) queue.push({ file, name: name || file.name, parent, sync });
   $("#upload-more").hidden = true;
@@ -3022,6 +3133,8 @@ function enqueue(items, parent = state.folderId, sync = false) {
   keepAwake(true);
   pump();
 }
+
+const newStats = () => ({ uploaded: 0, skipped: 0, same: 0, failed: 0, sync: false, started: Date.now(), checking: 0, checked: 0 });
 
 function pump() {
   while (active < CONCURRENCY && queue.length) {
@@ -3041,25 +3154,27 @@ function updateSummary() {
   const left = queue.length + active;
   const parts = [`已上传 ${s.uploaded}`];
   if (left) parts.push(`剩余 ${left}`);
-  if (s.skipped) parts.push(`跳过 ${s.skipped}（已存在）`);
+  if (s.checking) parts.push(`正在检查 ${s.checked} / ${s.checking}`);
+  if (s.skipped) parts.push(`跳过 ${s.skipped}（已存在${s.same ? `，其中 ${s.same} 个名字不同、内容一样` : ""}）`);
   if (s.failed) parts.push(`失败 ${s.failed}`);
   // 传了几个之后按平均速度估算剩余时间
   if (left && s.uploaded >= 3) {
     const eta = ((Date.now() - s.started) / s.uploaded) * left;
     parts.push(eta < 60_000 ? "预计不到 1 分钟" : `预计还要 ${formatDuration(eta)}`);
   }
-  if (left) parts.push(wakeLock ? "屏幕会保持常亮，请别切走" : "请保持这个页面在前台、不要锁屏");
+  if (left || s.checking) parts.push(wakeLock ? "屏幕会保持常亮，请别切走" : "请保持这个页面在前台、不要锁屏");
   $("#upload-summary").textContent = (s.sync ? "上传照片：" : "上传：") + parts.join(" · ");
   $("#uploads").hidden = false;
 }
 
 function finishBatch() {
   const s = stats;
+  if (!s || s.checking) return; // 还在边算边排队
   stats = null;
-  if (!s) return;
   let msg = `上传完成：新传 ${s.uploaded} 个`;
-  if (s.skipped) msg += `，跳过 ${s.skipped} 个（已存在）`;
+  if (s.skipped) msg += `，跳过 ${s.skipped} 个（已存在${s.same ? `，其中 ${s.same} 个名字不同、内容一样` : ""}）`;
   if (s.failed) msg += `，失败 ${s.failed} 个（见上方列表）`;
+  if (!s.uploaded && !s.failed && s.skipped) msg = `没有新的：选中的 ${s.skipped} 个都已经在网盘里了`;
   toast(msg);
   $("#upload-summary").textContent = msg;
   keepAwake(false);
@@ -3089,7 +3204,13 @@ async function runJob(job) {
 
   for (let attempt = 0; ; attempt++) {
     try {
-      await uploadOne(job, status, bar);
+      const res = await uploadOne(job, status, bar);
+      if (res?.same) { // 传完才发现网盘里有内容一样的（服务端没再存）
+        stats.skipped++;
+        stats.same++;
+        row.remove();
+        return;
+      }
       stats.uploaded++;
       status.textContent = "完成";
       bar.value = 1;
@@ -3112,7 +3233,6 @@ async function runJob(job) {
       const retryable = err.status === 0 || err.status >= 500;
       if (retryable && attempt < RETRY_DELAYS.length) {
         status.textContent = `${err.message}，${RETRY_DELAYS[attempt]} 秒后重试`;
-        bar.value = 0;
         await sleep(RETRY_DELAYS[attempt]);
         if (!state.session) { row.remove(); return; } // 已退出登录
         continue;
@@ -3125,10 +3245,82 @@ async function runJob(job) {
   }
 }
 
-function uploadOne({ file, name, parent }, status, bar) {
+// 传一个文件：大文件分段传（断点续传），小文件一个请求传完。返回 { same: true } 表示网盘里已有内容一样的、没有再存。
+async function uploadOne(job, status, bar) {
+  if (job.file.size >= RESUMABLE_MIN) {
+    try {
+      return await uploadResumable(job, status, bar);
+    } catch (err) {
+      if (!err.noResumable) throw err; // 服务端还是旧版本（没有断点续传）：一个请求传完
+    }
+  }
+  const q = new URLSearchParams({ name: job.name });
+  if (job.parent) q.set("parent_id", job.parent);
+  if (job.sync) q.set("dedupe", "1");
+  bar.value = 0;
+  const data = await xhrUpload("POST", `/api/files?${q}`, job.file, job.file.type || "application/octet-stream", (loaded, sent) => {
+    bar.value = loaded / job.file.size;
+    status.textContent = sent ? "加密并写入 Telegram…" : `${formatSize(loaded)} / ${formatSize(job.file.size)}`;
+  });
+  return data.same_content ? { same: true } : {};
+}
+
+// 断点续传：每段 chunk 字节一个请求。一段没传上去（网络断了、页面进了后台、服务端出错），等一会儿问服务端收到了多少，
+// 从那里接着传；服务端会记住已经收到的部分，刷新页面后重新选同一个文件也能接着传。
+async function uploadResumable({ file, name, parent, sync }, status, bar) {
+  status.textContent = "准备上传…";
+  const probe = await fileProbe(file);
+  const s = await request("POST", "/api/uploads", { name, parent_id: parent || null, size: file.size, mime: file.type || "", probe, dedupe: sync })
+    .catch((err) => {
+      err.noResumable = err.status === 404 || err.status === 405;
+      throw err;
+    });
+  const chunk = s.chunk || 8 << 20;
+  let offset = s.offset;
+  const show = (n) => {
+    bar.value = n / file.size;
+    status.textContent = `${formatSize(n)} / ${formatSize(file.size)}`;
+  };
+  // 传完了、只是回复丢了（或者被清理了）：看看文件在不在
+  const finished = () => request("GET", `/api/files/${s.id}`).catch(() => null);
+  show(offset);
+  if (offset) status.textContent += "（接着上次传）";
+  for (let fails = 0; ;) {
+    const end = Math.min(file.size, offset + chunk);
+    try {
+      const res = await xhrUpload("PUT", `/api/uploads/${s.id}?offset=${offset}`, file.slice(offset, end), "application/octet-stream", (loaded, sent) => {
+        show(offset + loaded);
+        if (sent && end === file.size) status.textContent = "加密并写入 Telegram…";
+      });
+      if (res.same_content) return { same: true };
+      if (res.file) return {};
+      offset = res.offset;
+      fails = 0;
+    } catch (err) {
+      if (err.status === 409 && Number.isFinite(err.data?.offset)) { // 服务端收到的和这边以为的不一样：按服务端的来
+        offset = err.data.offset;
+        continue;
+      }
+      if (err.status === 404 && await finished()) return {};
+      if (err.status && err.status < 500) throw err;
+      if (++fails > RESUME_TRIES) throw err;
+      const wait = RESUME_DELAYS[Math.min(fails, RESUME_DELAYS.length) - 1];
+      status.textContent = `${err.status ? `服务端出错（${err.status}）` : "网络断了"}，${wait} 秒后从 ${formatSize(offset)} 接着传`;
+      await sleep(wait);
+      if (!state.session) throw new HttpError(0, "已退出登录");
+      try {
+        offset = (await request("GET", `/api/uploads/${s.id}`)).offset;
+      } catch (e) {
+        if (e.status === 404 && await finished()) return {};
+        if (e.status && e.status < 500) throw e;
+      }
+    }
+  }
+}
+
+// 用 XMLHttpRequest 发请求体（fetch 拿不到上传进度）。onProgress(已发字节, 是否发完)；成功返回回复的 JSON。
+function xhrUpload(method, path, body, type, onProgress) {
   return new Promise((resolve, reject) => {
-    const q = new URLSearchParams({ name });
-    if (parent) q.set("parent_id", parent);
     const xhr = new XMLHttpRequest();
     let settled = false;
     let lastProgress = Date.now();
@@ -3152,31 +3344,27 @@ function uploadOne({ file, name, parent }, status, bar) {
       }
     }, 5000);
 
-    xhr.open("POST", `${state.api}/api/files?${q}`);
+    xhr.open(method, state.api + path);
     for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.setRequestHeader("Content-Type", type);
     xhr.upload.onprogress = (e) => {
       lastProgress = Date.now();
-      if (!e.lengthComputable) return;
-      bar.value = e.loaded / e.total;
-      status.textContent = e.loaded < e.total
-        ? `${formatSize(e.loaded)} / ${formatSize(e.total)}`
-        : "加密并写入 Telegram…";
+      if (e.lengthComputable) onProgress(e.loaded, e.loaded >= e.total);
     };
     xhr.upload.onload = () => {
       bodySent = true;
       lastProgress = Date.now();
-      status.textContent = "加密并写入 Telegram…";
+      onProgress(body.size, true);
     };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) return settle(resolve);
       let data = {};
       try { data = JSON.parse(xhr.responseText) || {}; } catch { /* 非 JSON */ }
-      settle(reject, new HttpError(xhr.status, errorText(xhr.status, data.error, data.code), data.code));
+      if (xhr.status >= 200 && xhr.status < 300) return settle(resolve, data);
+      settle(reject, new HttpError(xhr.status, errorText(xhr.status, data.error, data.code, data), data.code, data));
     };
     xhr.onerror = () => settle(reject, new HttpError(0, "上传中断（网络错误或连接超时）"));
     xhr.onabort = () => settle(reject, new HttpError(0, "上传已中断"));
-    xhr.send(file);
+    xhr.send(body);
   });
 }
 
@@ -3281,11 +3469,59 @@ async function uploadMedia(files) {
       return;
     }
     if (state.folderId !== target) location.hash = `#/f/${target}`;
-    enqueue(todo, target, true);
-    stats.skipped += skipped;
-    updateSummary();
+    await enqueueNewContent(todo, target, skipped);
   } catch (err) {
     fail(err);
+  }
+}
+
+// 按内容去重：一批一批算 SHA-256，问服务端哪些内容已经有了（改过名、挪到别的文件夹的也认得出来），没有的才排进
+// 上传队列。算完第一批就开始传，后面的边传边算。算不出来的（文件读不了）照常传，服务端传完时还会再查一次。
+const HASH_BATCH = 20;
+
+async function enqueueNewContent(todo, target, skipped) {
+  stats ??= newStats();
+  const st = stats; // 还在算的时候 finishBatch 不会清掉它（又选了一批也是同一个）
+  st.sync = true;
+  st.skipped += skipped;
+  st.checking += todo.length;
+  let hashed = 0;
+  const seen = new Set(); // 同一批里选了两张一样的
+  try {
+    for (let i = 0; i < todo.length; i += HASH_BATCH) {
+      const batch = todo.slice(i, i + HASH_BATCH);
+      for (const job of batch) {
+        try { job.sha256 = await fileSha256(job.file); } catch { job.sha256 = ""; }
+        hashed++;
+        st.checked++;
+        updateSummary();
+      }
+      const sums = batch.map((j) => j.sha256).filter(Boolean);
+      let known = {};
+      if (sums.length) {
+        try {
+          known = (await request("POST", "/api/files/known", { sha256: sums, parent_id: target })).known || {};
+        } catch (err) {
+          if (err.status === 401) throw err; // 其他错误（比如服务端还没更新）：照常传
+        }
+      }
+      const fresh = batch.filter((job) => {
+        if (job.sha256 && (known[job.sha256] || seen.has(job.sha256))) {
+          st.skipped++;
+          st.same++;
+          return false;
+        }
+        if (job.sha256) seen.add(job.sha256);
+        return true;
+      });
+      if (fresh.length) enqueue(fresh, target, true);
+      else updateSummary();
+    }
+  } finally {
+    st.checking -= todo.length;
+    st.checked -= hashed;
+    if (stats === st && !active && !queue.length) finishBatch();
+    else updateSummary();
   }
 }
 

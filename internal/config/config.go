@@ -55,6 +55,11 @@ type Telegram struct {
 	BackupBotToken    string
 	BackupChannelID   int64
 	BackupSessionFile string
+
+	// 额外的 Bot（可选）：也是同一个频道的管理员，和主 Bot 轮流上传、下载，不容易被 Telegram 限速。
+	// TG_EXTRA_BOT_TOKENS 给存储频道，TG_BACKUP_EXTRA_BOT_TOKENS 给备份频道；逗号、空格或换行分隔。
+	ExtraBotTokens       []string
+	BackupExtraBotTokens []string
 }
 
 // BackupEnabled 报告是否配置了备份频道。
@@ -76,6 +81,9 @@ func Load() (*Config, error) {
 
 			BackupBotToken:    os.Getenv("TG_BACKUP_BOT_TOKEN"),
 			BackupSessionFile: env("TG_BACKUP_SESSION_FILE", "./data/tg-backup-session.json"),
+
+			ExtraBotTokens:       strings.Fields(strings.ReplaceAll(os.Getenv("TG_EXTRA_BOT_TOKENS"), ",", " ")),
+			BackupExtraBotTokens: strings.Fields(strings.ReplaceAll(os.Getenv("TG_BACKUP_EXTRA_BOT_TOKENS"), ",", " ")),
 		},
 	}
 

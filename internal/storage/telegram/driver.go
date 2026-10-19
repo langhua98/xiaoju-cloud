@@ -103,7 +103,7 @@ func (d *Driver) ReadRange(ctx context.Context, loc storage.Location, offset, le
 	if offset < 0 || length < 0 {
 		return nil, errors.New("telegram: invalid range")
 	}
-	return &rangeReader{ctx: ctx, d: d, msgID: loc.MessageID, pos: offset, end: offset + length}, nil
+	return newRangeReader(ctx, d.getChunk, loc.MessageID, offset, length), nil
 }
 
 func (d *Driver) Delete(ctx context.Context, locs []storage.Location) error {
@@ -119,12 +119,17 @@ func (d *Driver) Delete(ctx context.Context, locs []storage.Location) error {
 			return fmt.Errorf("delete messages: %w", err)
 		}
 	}
+	d.forget(locs)
+	return nil
+}
+
+// forget 丢掉这些消息的下载位置缓存（消息删掉了）。
+func (d *Driver) forget(locs []storage.Location) {
 	d.mu.Lock()
 	for _, l := range locs {
 		delete(d.cache, l.MessageID)
 	}
 	d.mu.Unlock()
-	return nil
 }
 
 const (
@@ -260,14 +265,40 @@ func (d *Driver) getChunk(ctx context.Context, msgID, alignedOffset int64) ([]by
 	}
 }
 
-// rangeReader 按 1MB 对齐块懒加载读取 [pos, end)。
+// rangeReader 按 1MB 对齐块读取 [pos, end)，同时下载后面的几块（预读），按顺序交给调用方。
+// 以前是一块下完再下一块，每块都要等一次 Telegram 的往返；看视频、下载大文件时速度卡在这上面。
+// 思路参考 Teldrive 1.x（github.com/tgdrive/teldrive，MIT 许可）的 internal/reader/tg_reader.go：
+// 它每次并发下载 4 块。这里改成滑动窗口，并且从 1 块开始、读得越多窗口越大：缩略图、视频探测这类
+// 只读一小段的请求不会白白多下好几 MB。
 type rangeReader struct {
-	ctx   context.Context
-	d     *Driver
-	msgID int64
-	pos   int64
-	end   int64
-	buf   []byte // 当前块中从 pos 开始尚未消费的数据
+	ctx      context.Context
+	cancel   context.CancelFunc
+	fetch    chunkFetcher
+	msgID    int64
+	pos      int64 // 下一个交给调用方的字节
+	end      int64
+	next     int64 // 下一个要开始下载的块（1MB 对齐）
+	got      int   // 已经收到的块数
+	inflight []chan fetchedChunk
+	buf      []byte // 当前块中从 pos 开始尚未消费的数据
+}
+
+// chunkFetcher 下载从 alignedOffset（1MB 对齐）开始的最多 1MB 数据。
+type chunkFetcher func(ctx context.Context, msgID, alignedOffset int64) ([]byte, error)
+
+type fetchedChunk struct {
+	off  int64
+	data []byte
+	err  error
+}
+
+// readAhead 是一个读取流最多同时下载的块数（Teldrive 默认也是 4）。
+const readAhead = 4
+
+func newRangeReader(ctx context.Context, fetch chunkFetcher, msgID, offset, length int64) *rangeReader {
+	ctx, cancel := context.WithCancel(ctx)
+	aligned, _ := alignChunk(offset)
+	return &rangeReader{ctx: ctx, cancel: cancel, fetch: fetch, msgID: msgID, pos: offset, end: offset + length, next: aligned}
 }
 
 func (r *rangeReader) Read(p []byte) (int, error) {
@@ -275,15 +306,27 @@ func (r *rangeReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	if len(r.buf) == 0 {
-		aligned, skip := alignChunk(r.pos)
-		data, err := r.d.getChunk(r.ctx, r.msgID, aligned)
-		if err != nil {
-			return 0, err
+		r.schedule()
+		var c fetchedChunk
+		select {
+		case c = <-r.inflight[0]:
+		case <-r.ctx.Done():
+			return 0, r.ctx.Err()
 		}
-		if int64(len(data)) <= skip {
+		r.inflight = r.inflight[1:]
+		if c.err != nil {
+			r.cancel()
+			return 0, c.err
+		}
+		aligned, skip := alignChunk(r.pos)
+		// 上一块比 1MB 短（文档提前结束）：后面预读的块对不上位置
+		if c.off != aligned || int64(len(c.data)) <= skip {
+			r.cancel()
 			return 0, io.ErrUnexpectedEOF
 		}
-		r.buf = data[skip:]
+		r.buf = c.data[skip:]
+		r.got++
+		r.schedule()
 	}
 	n := copy(p, r.buf[:min(int64(len(r.buf)), r.end-r.pos)])
 	r.buf = r.buf[n:]
@@ -291,7 +334,26 @@ func (r *rangeReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (r *rangeReader) Close() error { return nil }
+// schedule 补足正在下载的块：窗口 1、2、4……，最多 readAhead 块，不超过要读的范围。
+func (r *rangeReader) schedule() {
+	window := min(readAhead, 1<<min(r.got, 3))
+	for len(r.inflight) < window && r.next < r.end {
+		ch := make(chan fetchedChunk, 1)
+		off := r.next
+		go func() {
+			data, err := r.fetch(r.ctx, r.msgID, off)
+			ch <- fetchedChunk{off: off, data: data, err: err}
+		}()
+		r.inflight = append(r.inflight, ch)
+		r.next += chunkSize
+	}
+}
+
+// Close 停掉还在下载的块。
+func (r *rangeReader) Close() error {
+	r.cancel()
+	return nil
+}
 
 // alignChunk 返回包含 offset 的 1MB 对齐块起点，以及 offset 在块内的偏移。
 func alignChunk(offset int64) (aligned, skip int64) {

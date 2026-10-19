@@ -151,9 +151,9 @@ func TestUploadDownloadIntegration(t *testing.T) {
 		if resp.StatusCode != http.StatusNoContent || resp.Header.Get("Access-Control-Allow-Origin") != want {
 			t.Fatalf("preflight from %s: status %d, allow-origin %q", origin, resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin"))
 		}
-		// 网页上重命名、移动用 PATCH
-		if want != "" && !strings.Contains(resp.Header.Get("Access-Control-Allow-Methods"), "PATCH") {
-			t.Fatalf("preflight must allow PATCH: %q", resp.Header.Get("Access-Control-Allow-Methods"))
+		// 网页上重命名、移动用 PATCH，断点续传用 PUT
+		if m := resp.Header.Get("Access-Control-Allow-Methods"); want != "" && (!strings.Contains(m, "PATCH") || !strings.Contains(m, "PUT")) {
+			t.Fatalf("preflight must allow PATCH and PUT: %q", m)
 		}
 	}
 

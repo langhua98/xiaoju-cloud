@@ -663,9 +663,9 @@ body.selecting .fab { display: none; }
   animation: fade-in 0.25s ease;
 }
 .picking .spinner { display: inline-block; color: var(--accent); }
-.upload { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 6px 0; font-size: 14px; }
+.upload { display: grid; grid-template-columns: minmax(35%, 1fr) auto; gap: 2px 12px; padding: 6px 0; font-size: 14px; }
 .upload .uname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upload .ustatus { color: var(--muted); }
+.upload .ustatus { color: var(--muted); text-align: right; text-wrap: balance; }
 .upload .ustatus.error { color: var(--danger); }
 .upload progress { grid-column: 1 / -1; width: 100%; height: 4px; accent-color: var(--bar); }
 

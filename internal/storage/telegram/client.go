@@ -16,6 +16,7 @@ import (
 	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
+	"golang.org/x/time/rate"
 )
 
 type ClientConfig struct {
@@ -36,7 +37,7 @@ func Start(ctx context.Context, cfg ClientConfig, log *slog.Logger) (api *tg.Cli
 	}
 	opts := telegram.Options{
 		SessionStorage: &session.FileStorage{Path: cfg.SessionFile},
-		Middlewares:    []telegram.Middleware{floodWait(log, 3, time.Minute)},
+		Middlewares:    []telegram.Middleware{floodWait(log, 3, time.Minute), pace(paceEvery, paceBurst)},
 	}
 	if cfg.Transport == "websocket" {
 		opts.Resolver = dcs.Websocket(dcs.WebsocketOptions{})
@@ -104,4 +105,35 @@ func floodWait(log *slog.Logger, retries int, maxWait time.Duration) telegram.Mi
 			}
 		}
 	})
+}
+
+// 频道消息类请求的节奏：平均每 100ms 一个，最多连着 5 个（Teldrive 1.x 默认的 gotd ratelimit 设置）。
+const (
+	paceEvery = 100 * time.Millisecond
+	paceBurst = 5
+)
+
+// pace 主动控制请求节奏，不等 Telegram 回 FLOOD_WAIT 才停：发消息、取消息、删消息这类请求排匀了再发
+// （对账扫描几千个消息 ID、批量删除时最容易一下子发太密）。上传、下载文件分片的请求不限，它们靠并发提速，
+// Telegram 对它们的限制也宽得多。
+func pace(every time.Duration, burst int) telegram.Middleware {
+	lim := rate.NewLimiter(rate.Every(every), burst)
+	return telegram.MiddlewareFunc(func(next tg.Invoker) telegram.InvokeFunc {
+		return func(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
+			if !isFileTransfer(input) {
+				if err := lim.Wait(ctx); err != nil {
+					return err
+				}
+			}
+			return next.Invoke(ctx, input, output)
+		}
+	})
+}
+
+func isFileTransfer(input bin.Encoder) bool {
+	switch input.(type) {
+	case *tg.UploadGetFileRequest, *tg.UploadSaveFilePartRequest, *tg.UploadSaveBigFilePartRequest:
+		return true
+	}
+	return false
 }

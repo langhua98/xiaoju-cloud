@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -31,6 +32,9 @@ type Service struct {
 	tempDir   string
 	log       *slog.Logger
 	thumbs    *thumbnails // nil 时不生成缩略图
+
+	uploadsMu sync.Mutex
+	uploads   map[uuid.UUID]*resumable // 断点续传中的上传（见 resumable.go）
 }
 
 type Options struct {
@@ -56,6 +60,7 @@ func New(store *meta.Store, driver storage.Driver, opt Options) *Service {
 		partSize:  opt.PartSize,
 		tempDir:   opt.TempDir,
 		log:       opt.Log,
+		uploads:   map[uuid.UUID]*resumable{},
 	}
 	if opt.Thumbs != nil {
 		s.thumbs = newThumbnails(opt.Thumbs)
@@ -76,6 +81,17 @@ type UploadRequest struct {
 	// 临时目录需要能放下整个文件的密文。
 	Spool     bool
 	OnSpooled func()
+	// SkipSameContent 为 true 时，网盘里已经有内容完全相同的文件（见 meta.SameContent）就不再存，
+	// 返回 *SameContentError。要读完整个文件才知道摘要：Spool 时，或文件只有一个分块（照片都是）时，
+	// 在写存储端之前就能发现；分块多的大文件已经写上去的分块会删掉。
+	SkipSameContent bool
+}
+
+// SameContentError 表示网盘里已经有内容完全相同的文件 File，这次上传没有存。
+type SameContentError struct{ File *meta.File }
+
+func (e *SameContentError) Error() string {
+	return "a file with the same content is already in the drive: " + e.File.Name
 }
 
 // Upload 把 Body 按 partSize 切块：每块先加密写入临时文件（便于失败重试、长度已知），
@@ -137,6 +153,15 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 	fileHash := sha256.New()
 	body := io.TeeReader(req.Body, fileHash)
 	var total int64
+	same, err := s.sameContentCheck(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	checked := false
+	check := func() error {
+		checked = true
+		return same(total, fileHash.Sum(nil))
+	}
 	for partNo := 0; ; partNo++ {
 		sp, perr := s.sealPart(partNo, dek, body)
 		if perr != nil {
@@ -146,17 +171,29 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 			break // 输入已读完
 		}
 		total += sp.size
+		last := sp.size < s.partSize
 		if req.Spool {
 			sealed = append(sealed, sp) // 先全部读完，下面再写存储端
 		} else {
+			if last { // 整个文件读完了：先看网盘里有没有一样的，再写最后一块
+				if err := check(); err != nil {
+					sp.remove()
+					return nil, err
+				}
+			}
 			err := store(sp)
 			sp.remove()
 			if err != nil {
 				return nil, err
 			}
 		}
-		if sp.size < s.partSize {
+		if last {
 			break
+		}
+	}
+	if !checked {
+		if err := check(); err != nil {
+			return nil, err
 		}
 	}
 	if req.Spool {
@@ -175,6 +212,31 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		s.queueThumbnail(done)
 	}
 	return done, err
+}
+
+// sameContentCheck 返回检查“网盘里有没有内容一样的文件”的函数（读完整个文件后调用，传入大小和摘要）。
+// 没要求按内容去重时什么都不查；空文件不算。
+func (s *Service) sameContentCheck(ctx context.Context, req UploadRequest) (func(size int64, sum []byte) error, error) {
+	if !req.SkipSameContent {
+		return func(int64, []byte) error { return nil }, nil
+	}
+	private, err := s.store.InPrivateFolder(ctx, req.UserID, req.ParentID)
+	if err != nil {
+		return nil, err
+	}
+	return func(size int64, sum []byte) error {
+		if size == 0 {
+			return nil
+		}
+		found, err := s.store.SameContent(ctx, req.UserID, [][]byte{sum}, private, req.ParentID)
+		if err != nil {
+			return err
+		}
+		if f := found[hex.EncodeToString(sum)]; f != nil {
+			return &SameContentError{File: f}
+		}
+		return nil
+	}, nil
 }
 
 // sealedPart 是加密好、存在临时文件里等着写存储端的一个分块。
