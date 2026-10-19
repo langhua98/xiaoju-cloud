@@ -16,35 +16,47 @@
     <button id="update-btn" type="button" class="primary">刷新</button>
   </div>
   <header class="topbar">
-    <a class="brand" href="#/">小桔云盘</a>
+    <a class="brand" href="#/" aria-label="小桔云盘首页">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="17.5" r="11.5" fill="#f59e0b"/><path d="M16 6c1.6-2.6 5.4-3.2 7.2-1.4-2.8.2-5 .9-7.2 1.4z" fill="#22c55e"/><circle cx="12" cy="14" r="2.2" fill="#fff" opacity=".35"/></svg>
+      <span>小桔云盘</span>
+    </a>
     <div class="topbar-right">
-      <span id="backup-badge" class="backup-badge" hidden></span>
-      <button id="security-btn" class="ghost" type="button" hidden title="登录安全：Face ID / 指纹、格子口令">🔐 安全</button>
-      <button id="logout-btn" class="ghost" type="button" hidden>退出</button>
+      <button id="backup-dot" class="backup-dot" type="button" hidden aria-label="备份状态"><i></i><span class="label"></span></button>
+      <button id="menu-btn" class="avatar" type="button" hidden aria-label="菜单" aria-haspopup="menu" aria-expanded="false"></button>
     </div>
   </header>
+  <div id="menu" class="menu" role="menu" hidden>
+    <button type="button" role="menuitem" data-act="backup" data-icon="cloud">备份状态</button>
+    <button type="button" role="menuitem" data-act="trash" data-icon="trash">回收站</button>
+    <button type="button" role="menuitem" data-act="security" data-icon="shield">登录安全</button>
+    <button type="button" role="menuitem" data-act="shortcuts" data-icon="bolt">快捷指令批量备份</button>
+    <hr>
+    <button type="button" role="menuitem" data-act="logout" data-icon="logout" class="danger">退出登录</button>
+  </div>
 
   <main id="app" hidden>
     <div class="toolbar">
       <nav id="crumbs" class="crumbs" aria-label="当前位置"></nav>
-      <div id="view-toggle" class="view-toggle" role="group" aria-label="显示方式">
-        <button type="button" data-view="list" title="列表" aria-label="列表"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
-        <button type="button" data-view="grid" title="网格" aria-label="网格"><svg viewBox="0 0 20 20" fill="currentColor"><rect x="3" y="3" width="6" height="6" rx="1.2"/><rect x="11" y="3" width="6" height="6" rx="1.2"/><rect x="3" y="11" width="6" height="6" rx="1.2"/><rect x="11" y="11" width="6" height="6" rx="1.2"/></svg></button>
-      </div>
-      <div class="actions">
-        <button id="mkdir-btn" type="button">新建文件夹</button>
-        <label class="button">
-          上传文件
-          <input id="file-input" type="file" multiple hidden>
-        </label>
-        <label class="button primary">
-          同步相册
-          <input id="album-input" type="file" multiple accept="image/*,video/*" hidden>
-        </label>
+      <div class="tools">
+        <button id="select-btn" type="button" class="tool">选择</button>
+        <div id="view-toggle" class="view-toggle" role="group" aria-label="显示方式">
+          <button type="button" data-view="grid" title="网格" aria-label="网格"><svg viewBox="0 0 20 20" fill="currentColor"><rect x="3" y="3" width="6" height="6" rx="1.2"/><rect x="11" y="3" width="6" height="6" rx="1.2"/><rect x="3" y="11" width="6" height="6" rx="1.2"/><rect x="11" y="11" width="6" height="6" rx="1.2"/></svg></button>
+          <button type="button" data-view="list" title="列表" aria-label="列表"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+        </div>
+        <button id="folder-menu-btn" type="button" class="tool icon" hidden aria-label="文件夹操作" data-icon="more"></button>
       </div>
     </div>
 
-    <p id="stats" class="stats" hidden></p>
+    <header class="album-head">
+      <h1 id="album-title">全部文件</h1>
+      <p id="stats" class="stats" hidden></p>
+    </header>
+
+    <div id="private-bar" class="private-bar" hidden>
+      <span data-icon="lock"></span>
+      <span class="text">私密相册，照片已遮住</span>
+      <button id="unlock-btn" type="button" class="primary small">解锁查看</button>
+    </div>
 
     <p id="picking" class="picking" role="status" hidden>
       <span class="spinner" aria-hidden="true"></span><b>iPhone 正在准备选中的照片</b> <span id="picking-time"></span><br>
@@ -54,20 +66,53 @@
     <section id="uploads" class="uploads" hidden>
       <p id="upload-summary" class="usummary"></p>
       <div id="upload-rows"></div>
-      <button id="upload-more" type="button" class="primary" hidden>继续选下一批照片</button>
+      <div class="upload-actions">
+        <button id="upload-more" type="button" class="primary" hidden>继续选下一批照片</button>
+        <button id="upload-close" type="button" class="ghost" hidden>收起</button>
+      </div>
     </section>
 
     <div id="drop" class="listing">
-      <table id="list-table">
+      <section id="albums" class="albums" hidden></section>
+      <h2 id="others-title" class="section-title" hidden>其他文件</h2>
+      <table id="list-table" hidden>
         <thead>
-          <tr><th>名称</th><th class="size">大小</th><th class="date">时间</th><th class="ops"></th></tr>
+          <tr><th>名称</th><th class="size">大小</th><th class="date">时间</th></tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
       <div id="grid" class="grid" hidden></div>
-      <p id="empty" class="empty" hidden>这里还没有文件，点“上传文件”或把文件拖到这里。</p>
+      <p id="empty" class="empty" hidden>这里还没有文件，点右下角的 ＋ 上传。</p>
     </div>
   </main>
+
+  <div id="scrubber" class="scrubber" hidden aria-hidden="true"><i class="handle"></i><b class="bubble"></b></div>
+
+  <button id="fab" class="fab" type="button" hidden aria-label="上传或新建" data-icon="plus"></button>
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-panel" role="menu">
+      <label class="sheet-item" role="menuitem"><span data-icon="image"></span><span class="txt"><b>上传照片和视频</b><small id="sheet-media-hint">传过的自动跳过</small></span>
+        <input id="album-input" type="file" multiple accept="image/*,video/*" hidden></label>
+      <label class="sheet-item" role="menuitem"><span data-icon="upload"></span><span class="txt"><b>上传文件</b><small>放进当前文件夹</small></span>
+        <input id="file-input" type="file" multiple hidden></label>
+      <button type="button" class="sheet-item" role="menuitem" data-act="mkdir"><span data-icon="folder-plus"></span><span class="txt"><b>新建文件夹</b></span></button>
+      <button type="button" class="sheet-item" role="menuitem" data-act="shortcuts"><span data-icon="bolt"></span><span class="txt"><b>用快捷指令批量备份</b><small>几百上千张、每天自动备份</small></span></button>
+      <button type="button" class="sheet-cancel" data-act="cancel">取消</button>
+    </div>
+  </div>
+
+  <div id="selbar" class="selbar" hidden>
+    <div class="selbar-top">
+      <button id="sel-cancel" type="button" class="ghost">取消</button>
+      <b id="sel-count">选择项目</b>
+      <button id="sel-all" type="button" class="ghost">全选</button>
+    </div>
+    <div class="selbar-actions">
+      <button id="sel-download" type="button" data-icon="download">下载</button>
+      <button id="sel-move" type="button" data-icon="move">移动</button>
+      <button id="sel-delete" type="button" class="danger" data-icon="trash">删除</button>
+    </div>
+  </div>
 
   <dialog id="login">
     <div class="login-progress" aria-hidden="true"><i></i></div>
@@ -102,7 +147,7 @@
       <button id="face-btn" type="button" class="primary wide"><span class="spinner" aria-hidden="true"></span><span class="label">使用 Face ID / 指纹解锁</span></button>
       <details id="face-add" class="face-add">
         <summary>这台设备还没注册？</summary>
-        <p class="hint">在已经登录的设备上打开右上角「🔐 安全」，生成一个添加码，在这里输入后注册本机。</p>
+        <p class="hint">在已经登录的设备上点右上角头像 →「登录安全」，生成一个添加码，在这里输入后注册本机。</p>
         <div class="row">
           <input id="add-code" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="8 位添加码" aria-label="添加码">
           <button id="face-register-btn" type="button"><span class="spinner" aria-hidden="true"></span><span class="label">注册本机</span></button>
@@ -122,7 +167,7 @@
 
   <!-- 安全设置：管理 Face ID / 指纹设备和格子口令 -->
   <dialog id="security">
-    <h2>🔐 Face ID / 指纹</h2>
+    <h2>Face ID / 指纹</h2>
     <p id="sec-hint" class="hint"></p>
     <ul id="sec-list" class="sec-list"></ul>
     <p id="sec-code-box" class="sec-code" hidden></p>
@@ -132,7 +177,7 @@
     </div>
 
     <section id="grid-sec" class="grid-sec" hidden>
-      <h2>🔢 格子口令</h2>
+      <h2>格子口令</h2>
       <p id="grid-sec-hint" class="hint"></p>
       <div id="grid-sec-body"></div>
       <div id="grid-sec-actions" class="dialog-actions wrap">
@@ -141,14 +186,72 @@
       </div>
     </section>
 
-    <section id="shortcut-sec" class="grid-sec">
-      <h2>📲 快捷指令批量上传</h2>
-      <p class="hint">用 iPhone「快捷指令」把照片、视频传进网盘，传过的自动跳过、断了能接着传：「备份照片」一次传几百上千张（隐藏的照片、整个相册），「自动备份新照片」每天自动传新拍的，「分享到小桔云盘」在分享菜单里传几张。</p>
-      <div id="shortcut-box"></div>
-    </section>
-
     <div class="dialog-actions sec-footer">
       <button id="sec-close" type="button" class="ghost">关闭</button>
+    </div>
+  </dialog>
+
+  <!-- 快捷指令批量备份 -->
+  <dialog id="shortcuts">
+    <h2>快捷指令批量备份</h2>
+    <p class="hint">用 iPhone「快捷指令」把照片、视频传进网盘，传过的自动跳过、断了能接着传：「备份照片」一次传几百上千张（隐藏的照片、整个相册），「自动备份新照片」每天自动传新拍的，「分享到小桔云盘」在分享菜单里传几张。</p>
+    <div id="shortcut-box"></div>
+    <div class="dialog-actions sec-footer"><button type="button" class="ghost" data-close>关闭</button></div>
+  </dialog>
+
+  <!-- 备份状态：双备份（两个 Telegram 账号）+ 手机上的照片备份到哪了 -->
+  <dialog id="backup-dlg">
+    <h2>备份状态</h2>
+    <div id="backup-body" class="backup-body"></div>
+    <div class="dialog-actions sec-footer">
+      <button type="button" class="ghost" data-act="shortcuts">快捷指令</button>
+      <button type="button" class="ghost" data-close>关闭</button>
+    </div>
+  </dialog>
+
+  <!-- 回收站 -->
+  <dialog id="trash-dlg">
+    <h2>回收站</h2>
+    <p class="hint">删除的文件先放在这里，可以恢复；永久删除后两个 Telegram 频道里的数据也一起删掉，无法恢复。</p>
+    <ul id="trash-list" class="trash-list"></ul>
+    <div class="dialog-actions sec-footer">
+      <button id="trash-empty" type="button" class="danger">清空回收站</button>
+      <button type="button" class="ghost" data-close>关闭</button>
+    </div>
+  </dialog>
+
+  <!-- 移动到… -->
+  <dialog id="move-dlg">
+    <h2 id="move-title">移动到</h2>
+    <nav id="move-crumbs" class="crumbs"></nav>
+    <ul id="move-list" class="move-list"></ul>
+    <div class="dialog-actions">
+      <button type="button" class="ghost" data-close>取消</button>
+      <button id="move-here" type="button" class="primary">移到这里</button>
+    </div>
+  </dialog>
+
+  <!-- 文件夹操作（⋯） -->
+  <dialog id="folder-dlg" class="action-dlg">
+    <h2 id="folder-dlg-title"></h2>
+    <div class="action-list">
+      <button type="button" data-act="rename" data-icon="edit">重命名</button>
+      <button type="button" data-act="private" data-icon="lock"><span class="label">设为私密</span></button>
+      <button type="button" data-act="move" data-icon="move">移动到…</button>
+      <button type="button" data-act="delete" data-icon="trash" class="danger">删除文件夹</button>
+    </div>
+    <div class="dialog-actions"><button type="button" class="ghost" data-close>取消</button></div>
+  </dialog>
+
+  <!-- 解锁私密相册：刷脸 -->
+  <dialog id="unlock-dlg" class="unlock-dlg">
+    <div class="unlock-icon" data-icon="lock"></div>
+    <h2>解锁私密相册</h2>
+    <p class="hint">用这台设备的 Face ID / 指纹验证后显示照片。切到别的 App 或锁屏后会重新遮住。</p>
+    <p id="unlock-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="ghost" data-close>取消</button>
+      <button id="unlock-face" type="button" class="primary"><span class="spinner" aria-hidden="true"></span><span class="label">使用 Face ID / 指纹</span></button>
     </div>
   </dialog>
 
@@ -180,6 +283,6 @@
     <div id="preview-body" class="preview-body"></div>
   </dialog>
 
-  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="toast" class="toast" role="status" hidden><span class="msg"></span><button type="button" class="toast-act" hidden></button></div>
 </body>
 </html>

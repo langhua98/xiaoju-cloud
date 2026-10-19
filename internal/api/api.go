@@ -151,7 +151,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if allowed {
 				h := w.Header()
-				h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
+				h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")
 				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, Content-Type, Range")
 				h.Set("Access-Control-Max-Age", "86400")
 			}

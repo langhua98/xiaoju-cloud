@@ -19,8 +19,14 @@ const state = {
   loginSteps: [], // 令牌之后还要过的步骤，如 ["passkey"]
   recoveryAvailable: false, // 可以用恢复码代替刷脸
   folderId: null,
+  chain: [],   // 从根目录下第一级到当前文件夹的完整条目
   items: [],   // 当前目录的条目（含缩略图地址）
-  view: "list", // 当前目录的显示方式：list / grid
+  files: [],   // 其中的文件（不含文件夹）
+  view: "list", // 当前目录的文件怎么显示：list / grid
+  privateHere: false, // 当前文件夹（或上级）是私密的
+  unlocked: false,    // 私密相册已验证解锁（切到后台后重新遮住）
+  selecting: false,   // 多选中
+  selected: new Map(), // 选中的条目：id → 条目
 };
 try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
 
@@ -89,12 +95,19 @@ function errorText(status, msg, code, data = {}) {
   return msg || `请求失败（${status}）`;
 }
 
-function toast(msg) {
+function toast(msg, { action = "", onAction = null } = {}) {
   const el = $("#toast");
-  el.textContent = msg;
+  const host = [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+  if (el.parentElement !== host) host.append(el);
+  el.querySelector(".msg").textContent = msg;
+  const act = el.querySelector(".toast-act");
+  act.hidden = !action;
+  act.textContent = action;
+  act.onclick = action ? () => { el.hidden = true; onAction(); } : null;
   el.hidden = false;
+  playClass(el, "pop", 250);
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, 3500);
+  toast.timer = setTimeout(() => { el.hidden = true; }, action ? 6000 : 3500);
 }
 
 function fail(err) {
@@ -246,11 +259,15 @@ async function logout(message) {
   regOptions = null;
   closeGridGate();
   stopBackupPolling();
-  $("#logout-btn").hidden = true;
-  $("#security-btn").hidden = true;
-  $("#preview").close();
-  $("#viewer").close();
-  $("#security").close();
+  exitSelection();
+  closeSheet();
+  toggleMenu(false);
+  state.unlocked = false;
+  passkeyCount = null;
+  $("#menu-btn").hidden = true;
+  $("#fab").hidden = true;
+  $("#scrubber").hidden = true;
+  document.querySelectorAll("dialog[open]").forEach((d) => { if (d.id !== "login") d.close(); });
   // 主界面淡出后再弹出登录框
   const app = $("#app");
   if (!app.hidden) {
@@ -260,12 +277,13 @@ async function logout(message) {
     app.style.transition = app.style.opacity = "";
   }
   app.hidden = true;
+  state.items = [];
   $("#rows").replaceChildren();
   $("#grid").replaceChildren();
+  $("#albums").replaceChildren();
   openLogin(message);
 }
 
-$("#logout-btn").addEventListener("click", () => logout());
 // 未登录时不允许用 Esc 关掉登录框
 $("#login").addEventListener("cancel", (e) => { if (!state.session) e.preventDefault(); });
 
@@ -335,8 +353,8 @@ async function finishLogin(btn) {
 // 已登录：保存会话，显示主界面
 function enterApp() {
   tabSession("set", state.session);
-  $("#logout-btn").hidden = false;
-  $("#security-btn").hidden = false;
+  $("#menu-btn").hidden = false;
+  $("#fab").hidden = false;
   startBackupPolling();
   load();
 }
@@ -531,7 +549,7 @@ $("#face-recovery-btn").addEventListener("click", async () => {
   try {
     const res = await request("POST", "/api/auth/recovery/passkey", { code });
     setButtonBusy(btn, false, "验证中…", "使用恢复码");
-    toast("已用掉一个恢复码。登录后记得在「🔐 安全」里给本机重新开启刷脸");
+    toast("已用掉一个恢复码。登录后记得在右上角头像菜单的「登录安全」里给本机重新开启刷脸");
     await afterFace(res, btn);
   } catch (err) {
     setButtonBusy(btn, false, "验证中…", "使用恢复码");
@@ -816,7 +834,6 @@ $("#grid-gate").addEventListener("cancel", (e) => e.preventDefault()); // 不能
 
 // ---------- 安全设置：管理刷脸设备 ----------
 
-$("#security-btn").addEventListener("click", () => openSecurity());
 $("#sec-close").addEventListener("click", () => closeSecurity());
 $("#security").addEventListener("cancel", (e) => { e.preventDefault(); closeSecurity(); });
 
@@ -837,7 +854,7 @@ async function openSecurity(hint) {
     $("#grid-sec-actions").hidden = true;
   }
   if (!dlg.open) dlg.showModal();
-  await Promise.all([renderDevices(hint), gridCodesPending ? null : renderGridSec(), renderShortcutSec()]);
+  await Promise.all([renderDevices(hint), gridCodesPending ? null : renderGridSec()]);
 }
 
 async function renderDevices(hint) {
@@ -852,7 +869,7 @@ async function renderDevices(hint) {
   const items = res.items || [];
   if (!hint) {
     $("#sec-hint").textContent = !res.available ? "服务端没有开启刷脸功能（需要设置 XIAOJU_CORS_ORIGINS）。"
-      : items.length ? "登录需要「令牌 + 刷脸」。手机丢了？在这里删掉那台设备即可。"
+      : items.length ? "登录需要「令牌 + 刷脸」，私密相册也用刷脸解锁。手机丢了？在这里删掉那台设备即可。"
       : "还没有开启。开启后登录需要「令牌 + 刷脸」，别人拿到令牌也打不开你的网盘。";
   }
   list.replaceChildren(...items.map((d) => {
@@ -880,6 +897,7 @@ async function removeDevice(d, total) {
   try {
     await request("DELETE", `/api/auth/passkeys/${encodeURIComponent(d.id)}`);
     toast("已移除");
+    passkeyCount = null;
     renderDevices();
   } catch (err) { fail(err); }
 }
@@ -892,6 +910,7 @@ $("#sec-register").addEventListener("click", async () => {
     const res = await registerThisDevice();
     if (res.session) { state.session = res.session; tabSession("set", res.session); }
     toast("✓ 本机已开启刷脸登录");
+    passkeyCount = null;
     $("#sec-hint").textContent = "";
     renderDevices();
   } catch (err) {
@@ -1194,7 +1213,7 @@ function startBackupPolling() {
 function stopBackupPolling() {
   clearInterval(backupTimer);
   backupTimer = null;
-  $("#backup-badge").hidden = true;
+  $("#backup-dot").hidden = true;
   $("#stats").hidden = true;
 }
 
@@ -1206,9 +1225,8 @@ async function refreshBackup() {
     request("GET", "/api/backup/status").catch(() => null),
   ]);
   if (!state.session) return; // 请求期间已退出
-  const badge = $("#backup-badge");
-  if (backup) renderBackup(badge, backup, stats);
-  badge.hidden = !backup;
+  if (backup) renderBackupDot(backup, stats);
+  else $("#backup-dot").hidden = true;
   refreshStats(stats);
 }
 
@@ -1224,89 +1242,119 @@ async function refreshStats(drive) {
   statsEl.hidden = !st;
 }
 
-// 例：共 120 个文件 · 照片 80 张 · 视频 30 个 · 其他 10 个 · 12.3 GB
+// 例：共 509 个文件 · 361 张照片 · 148 个视频 · 12 GB（在文件夹里只算这个文件夹的）
 function renderStats(el, st) {
-  const part = (label, n, unit, bytes) => {
-    const span = document.createElement("span");
-    span.append(`${label} `, Object.assign(document.createElement("b"), { textContent: n }), ` ${unit}`);
+  const part = (n, unit, bytes) => {
+    const span = mk("span", {}, mk("b", { textContent: n }), ` ${unit}`);
     if (bytes) span.title = formatSize(bytes);
     return span;
   };
-  const total = part("共", st.files, "个文件");
-  total.className = "total";
-  const items = [total];
-  if (st.photos) items.push(part("🖼️ 照片", st.photos, "张", st.photo_bytes));
-  if (st.videos) items.push(part("🎬 视频", st.videos, "个", st.video_bytes));
-  if (st.others) items.push(part("📦 其他", st.others, "个"));
-  if (st.folders) items.push(part("📁", st.folders, "个文件夹"));
-  items.push(Object.assign(document.createElement("span"), { textContent: `已用 ${formatSize(st.bytes)}` }));
-  el.replaceChildren(...items);
+  const items = [part(st.files, "个文件")];
+  if (st.photos) items.push(part(st.photos, "张照片", st.photo_bytes));
+  if (st.videos) items.push(part(st.videos, "个视频", st.video_bytes));
+  if (st.others) items.push(part(st.others, "个其他文件"));
+  if (st.folders) items.push(part(st.folders, "个文件夹"));
+  items.push(mk("span", {}, mk("b", { textContent: formatSize(st.bytes) })));
+  el.replaceChildren(...items.flatMap((x, i) => (i ? [mk("i", { className: "dot", textContent: "·" }), x] : [x])));
 }
 
-// 手机上没有悬停提示，点一下显示详情
-$("#backup-badge").addEventListener("click", (e) => { if (e.currentTarget.title) toast(e.currentTarget.title); });
+// ---------- 图标 ----------
+// 线条图标（24×24，描边用当前文字颜色）。HTML 里写 data-icon="名字"，fillIcons() 把图标填进去。
 
-function renderBackup(el, st, stats) {
-  el.className = "backup-badge";
-  el.replaceChildren();
-  if (!st.enabled) {
-    el.classList.add("warn");
-    el.textContent = st.error ? "⚠️ 备份异常" : "⚠️ 未启用备份";
-    el.title = st.error
-      ? `备份频道连接失败，新文件暂时只存了一份：\n${st.error}`
-      : "服务端没有配置备份频道，文件只存了一份";
-    return;
-  }
-  // 有统计时按文件数说明，否则退回按分块
-  const count = stats
-    ? `已备份 ${stats.backed_up_files} / ${stats.files} 个文件`
-    : `已备份 ${st.backed_up} / ${st.parts} 个分块`;
-  const detail = `${count}（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）`;
-  if (st.backed_up >= st.parts) {
-    el.classList.add("done");
-    el.textContent = "✅ 已双备份";
-    el.title = `${detail}\n所有文件都在两个 Telegram 账号的频道里各存了一份`;
-    return;
-  }
-  // 按字节算进度；没完成时最多显示 99%
-  const pct = st.bytes > 0 ? Math.min(99, Math.floor((st.backed_up_bytes / st.bytes) * 100)) : 0;
-  const meter = document.createElement("span");
-  meter.className = "meter";
-  const fill = document.createElement("i");
-  fill.style.width = `${pct}%`;
-  meter.append(fill);
-  el.append(meter, `备份中 ${pct}%`);
-  el.title = `${detail}\n后台正在自动复制到备份频道，关掉页面也会继续`;
+const ICONS = {
+  folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+  "folder-plus": '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 11v6M9 14h6"/>',
+  move: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M8.5 14h7M13 11.5l2.5 2.5-2.5 2.5"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="9.5" r="1.8"/><path d="M21 15.5l-5-5L5.5 20"/>',
+  video: '<rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="M16.5 10l5-3v10l-5-3"/>',
+  audio: '<path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+  doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
+  archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  unlock: '<rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 7.6-1.7"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
+  trash: '<path d="M4 7h16M10 3.5h4M6 7l1 13h10l1-13M10 11v5.5M14 11v5.5"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  user: '<circle cx="12" cy="8.5" r="3.6"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  shield: '<path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
+  cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9.5z"/><path d="M9.5 13.5l2 2 3.5-3.5"/>',
+  bolt: '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
+  logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M16 17l5-5-5-5M21 12H9"/>',
+  more: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  restore: '<path d="M4 4v6h6"/><path d="M5 15a8 8 0 1 0 1.9-8.4L4 10"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+  back: '<path d="M15 6l-6 6 6 6"/>',
+  phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
+};
+
+function icon(name, cls = "ic") {
+  const t = document.createElement("template");
+  t.innerHTML = `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+  return t.content.firstChild;
+}
+
+function fillIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach((el) => {
+    if (!el.querySelector(":scope > svg.ic")) el.prepend(icon(el.dataset.icon));
+  });
+}
+
+function fileIcon(f) {
+  if (f.type === "folder") return "folder";
+  const m = f.mime || "";
+  if (m.startsWith("image/")) return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("audio/")) return "audio";
+  if (m === "application/pdf" || m.startsWith("text/")) return "doc";
+  if (/zip|rar|7z|tar|gzip/.test(m)) return "archive";
+  return "file";
 }
 
 // ---------- 目录浏览 ----------
+// 根目录：相册（文件夹）是带封面的卡片，散落的文件放在下面的“其他文件”里。
+// 进了文件夹：子文件夹也是卡片，照片、视频按拍摄日期分组排成网格（也可以切成列表）。
 
 function currentFolderFromHash() {
   const m = location.hash.match(/^#\/f\/([0-9a-f-]{36})$/i);
   return m ? m[1] : null;
 }
 
+// 从当前文件夹一路往上，得到 [根目录下的第一级, …, 当前文件夹]（每一级是完整的条目，带 private 等）
 async function crumbsFor(id) {
   const chain = [];
   for (let cur = id, guard = 0; cur && guard < 64; guard++) {
     const f = await request("GET", `/api/files/${cur}`);
-    chain.unshift({ id: cur, name: f.name });
+    chain.unshift(f);
     cur = f.parent_id;
   }
   return chain;
 }
 
+// 上级路径（当前这一级是大标题，不重复）：‹ 全部文件 › 照片
 function renderCrumbs(chain) {
   const nav = $("#crumbs");
   nav.replaceChildren();
-  const items = [{ id: null, name: "全部文件" }, ...chain];
+  nav.hidden = !chain.length;
+  if (!chain.length) return;
+  const items = [{ id: null, name: "全部文件" }, ...chain.slice(0, -1)];
+  const up = items[items.length - 1];
+  nav.append(mk("a", { className: "up", href: up.id ? `#/f/${up.id}` : "#/", ariaLabel: "返回上一级" }, icon("back")));
   items.forEach((c, i) => {
-    if (i > 0) nav.append(Object.assign(document.createElement("span"), { className: "sep", textContent: "/" }));
-    const a = document.createElement("a");
-    a.href = c.id ? `#/f/${c.id}` : "#/";
-    a.textContent = c.name;
-    nav.append(a);
+    if (i > 0) nav.append(mk("span", { className: "sep", textContent: "›" }));
+    nav.append(mk("a", { href: c.id ? `#/f/${c.id}` : "#/", textContent: c.name }));
   });
+}
+
+function renderHead() {
+  const cur = state.chain[state.chain.length - 1];
+  $("#album-title").textContent = cur ? cur.name : "全部文件";
+  document.title = cur ? `${cur.name} · 小桔云盘` : "小桔云盘";
+  $("#folder-menu-btn").hidden = !cur;
+  $("#sheet-media-hint").textContent = cur ? "放进这个文件夹，传过的自动跳过" : `放进「${ALBUM}」，传过的自动跳过`;
 }
 
 let loadSeq = 0;
@@ -1320,12 +1368,16 @@ async function load(prefetchedRoot = null) {
     app.hidden = false;
     playClass(app, "fade-in", 500);
   }
+  const prevFolder = state.folderId;
   state.folderId = currentFolderFromHash();
-  const rows = $("#rows");
+  if (state.folderId !== prevFolder) {
+    exitSelection();
+    scrollTo(0, 0);
+  }
   const drop = $("#drop");
   $("#empty").hidden = true;
   // 已有内容时先变淡（切换目录、刷新），没有内容时显示骨架占位
-  if (rows.querySelector("tr:not(.skeleton)") || $("#grid").childElementCount) drop.classList.add("stale");
+  if (state.items.length || $("#albums").childElementCount) drop.classList.add("stale");
   else if (!prefetchedRoot) showSkeleton();
   progress.start();
   try {
@@ -1336,12 +1388,15 @@ async function load(prefetchedRoot = null) {
         : request("GET", `/api/folders/${state.folderId || "root"}/children`),
     ]);
     if (seq !== loadSeq) return; // 期间又切换了目录，丢弃旧结果
+    state.chain = chain;
+    state.privateHere = chain.some((c) => c.private);
     renderCrumbs(chain);
+    renderHead();
     renderItems(list.items);
     refreshStats();
   } catch (err) {
     if (seq !== loadSeq) return;
-    rows.querySelectorAll(".skeleton").forEach((tr) => tr.remove());
+    $("#albums").querySelectorAll(".skeleton").forEach((el) => el.remove());
     if (err.status === 404 && state.folderId) { location.hash = "#/"; return; }
     fail(err);
   } finally {
@@ -1351,31 +1406,121 @@ async function load(prefetchedRoot = null) {
 }
 
 function showSkeleton() {
-  $("#list-table").hidden = false;
-  $("#grid").hidden = true;
-  const widths = [[46, 60, 70, 55], [62, 50, 70, 55], [38, 65, 70, 55], [54, 45, 70, 55]];
-  $("#rows").replaceChildren(...widths.map((w) => {
-    const tr = document.createElement("tr");
-    tr.className = "skeleton";
-    ["name", "size", "date", "ops"].forEach((cls, i) => {
-      const td = document.createElement("td");
-      td.className = cls;
-      const bar = document.createElement("span");
-      bar.style.width = `${w[i]}%`;
-      if (cls === "size" || cls === "ops") bar.style.marginLeft = "auto";
-      td.append(bar);
-      tr.append(td);
-    });
-    return tr;
+  const box = $("#albums");
+  box.hidden = false;
+  box.replaceChildren(...Array.from({ length: 4 }, () => mk("div", { className: "album skeleton" },
+    mk("span", { className: "cover" }), mk("span", { className: "aname" }), mk("span", { className: "acount" }))));
+}
+
+// 条目内容没变时沿用原来的元素（上传期间列表会反复刷新，缩略图不用重新加载、不闪）
+const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0, f.counts ? countsText(f.counts) : "", f.cover || "", f.private ? 1 : 0].join("|");
+
+function renderItems(items) {
+  state.items = items;
+  const folders = items.filter((f) => f.type === "folder");
+  const files = items.filter((f) => f.type !== "folder");
+  state.files = files;
+  const atRoot = !state.folderId;
+  renderAlbums(folders);
+  // 根目录的文件放在相册下面，用列表；文件夹里照片、视频多就用网格（可以切换）
+  state.view = atRoot ? "list" : chooseView(files);
+  const grid = state.view === "grid" && files.length > 0;
+  $("#view-toggle").hidden = atRoot || !files.length;
+  document.querySelectorAll("#view-toggle button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === state.view)));
+  const others = $("#others-title");
+  others.hidden = !(atRoot && files.length && folders.length);
+  others.textContent = `其他文件 · ${files.length}`;
+  $("#list-table").hidden = grid || !files.length;
+  $("#grid").hidden = !grid;
+  if (grid) {
+    $("#rows").replaceChildren();
+    renderGrid(files);
+  } else {
+    $("#grid").replaceChildren();
+    renderRows(files);
+  }
+  $("#select-btn").hidden = !items.length;
+  $("#empty").hidden = items.length > 0;
+  if (!items.length) playClass($("#empty"), "fade-in", 500);
+  applyLock();
+  updateScrubber();
+}
+
+const viewKey = () => `xiaoju.view.${state.folderId || "root"}`;
+
+// 没手动选过时：照片、视频占多数的文件夹（比如“相册”）用网格，其他用列表
+function chooseView(files) {
+  const saved = store.get(viewKey());
+  if (saved === "grid" || saved === "list") return saved;
+  const media = files.filter(isMedia).length;
+  return media >= 4 && media >= files.length * 0.6 ? "grid" : "list";
+}
+
+$("#view-toggle").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-view]");
+  if (!b || b.dataset.view === state.view) return;
+  store.set(viewKey(), b.dataset.view);
+  renderItems(state.items);
+});
+
+// 文件夹里（连同子文件夹）有几张照片、几个视频：“323 张照片 · 119 个视频”
+function countsText(c) {
+  const parts = [];
+  if (c.photos) parts.push(`${c.photos} 张照片`);
+  if (c.videos) parts.push(`${c.videos} 个视频`);
+  if (c.others) parts.push(`${c.others} 个文件`);
+  return parts.join(" · ") || "空文件夹";
+}
+
+// ---------- 相册卡片 ----------
+
+function renderAlbums(folders) {
+  const box = $("#albums");
+  box.hidden = !folders.length;
+  const old = new Map([...box.children].map((el) => [el.dataset.id, el]));
+  let n = 0;
+  box.replaceChildren(...folders.map((f) => {
+    const prev = old.get(f.id);
+    if (prev && prev.dataset.key === itemKey(f)) return prev;
+    const card = cardFor(f);
+    if (!prev) {
+      card.classList.add("appear");
+      card.style.setProperty("--i", Math.min(n++, 12));
+    }
+    return card;
   }));
 }
 
-function renderRows(items) {
+function cardFor(f) {
+  const card = mk("button", { type: "button", className: "album" + (f.private ? " private" : "") });
+  card.dataset.id = f.id;
+  card.dataset.key = itemKey(f);
+  const cover = mk("span", { className: "cover" });
+  const placeholder = icon("folder", "ic big");
+  if (f.cover) {
+    const img = thumbImg({ thumb: f.cover }, "thumb", () => img.replaceWith(placeholder));
+    cover.append(img);
+  } else {
+    cover.append(placeholder);
+  }
+  if (f.private) cover.append(mk("span", { className: "lock-badge" }, icon("lock")));
+  cover.append(mk("span", { className: "check" }, icon("check")));
+  card.append(cover,
+    mk("span", { className: "aname", textContent: f.name }),
+    mk("span", { className: "acount", textContent: f.counts ? countsText(f.counts) : "" }));
+  if (state.selected.has(f.id)) card.classList.add("is-selected");
+  bindItem(card, f, () => { location.hash = `#/f/${f.id}`; });
+  return card;
+}
+
+// ---------- 列表 ----------
+
+function renderRows(files) {
   const rows = $("#rows");
   // 只给新出现的条目做淡入，刷新时没变的行直接沿用
   const old = new Map([...rows.querySelectorAll("tr[data-id]")].map((tr) => [tr.dataset.id, tr]));
   let n = 0;
-  rows.replaceChildren(...items.map((f) => {
+  rows.replaceChildren(...files.map((f) => {
     const prev = old.get(f.id);
     if (prev && prev.dataset.key === itemKey(f)) {
       prev.classList.remove("appear"); // 重新插入时不要再播一遍淡入
@@ -1394,69 +1539,24 @@ function rowFor(f) {
   const tr = document.createElement("tr");
   tr.dataset.id = f.id;
   tr.dataset.key = itemKey(f);
-  const isFolder = f.type === "folder";
-
-  const name = document.createElement("td");
-  name.className = "name";
-  name.title = f.name;
-  let icon = Object.assign(document.createElement("span"), { className: "icon", textContent: iconFor(f) });
+  const name = mk("td", { className: "name", title: f.name });
+  const fallback = mk("span", { className: "ficon" }, icon(fileIcon(f)));
+  let lead = fallback;
   if (f.thumb) {
-    const emoji = icon;
-    icon = thumbImg(f, "row-thumb", () => icon.replaceWith(emoji));
+    const img = thumbImg(f, "row-thumb", () => img.replaceWith(fallback));
+    lead = img;
   }
-  const label = document.createElement(isFolder ? "a" : "span");
-  label.textContent = f.name;
-  if (isFolder) {
-    label.href = `#/f/${f.id}`;
-  } else {
-    label.addEventListener("click", () => openItem(f));
-  }
-  name.append(icon, label);
-  if (f.counts) name.append(Object.assign(document.createElement("div"), { className: "counts", textContent: countsText(f.counts) }));
-
-  const size = Object.assign(document.createElement("td"), { className: "size", textContent: isFolder ? "" : formatSize(f.size) });
   // 照片、视频显示拍摄时间（列表也按它排），其他显示修改时间
   const when = f.taken_at || f.updated_at;
-  const date = Object.assign(document.createElement("td"), {
-    className: "date", textContent: formatDate(when), title: (f.taken_at ? "拍摄于 " : "修改于 ") + formatDate(when),
-  });
-
-  const ops = document.createElement("td");
-  ops.className = "ops";
-  const btn = (text, fn, cls = "") => {
-    const b = Object.assign(document.createElement("button"), { type: "button", textContent: text, className: `link ${cls}` });
-    b.addEventListener("click", fn);
-    return b;
-  };
-  if (!isFolder) {
-    if (inGallery(f) || previewKind(f.mime)) ops.append(btn("预览", () => openItem(f), "wide"));
-    ops.append(btn("下载", () => download(f)));
-  }
-  ops.append(btn("删除", () => remove(f), "danger"));
-
-  tr.append(name, size, date, ops);
+  name.append(mk("div", { className: "cell" }, mk("span", { className: "check" }, icon("check")), lead,
+    mk("span", { className: "fname" }, mk("span", { textContent: f.name }),
+      mk("small", { textContent: `${formatSize(f.size)} · ${formatDate(when)}` }))));
+  const size = mk("td", { className: "size", textContent: formatSize(f.size) });
+  const date = mk("td", { className: "date", textContent: formatDate(when), title: (f.taken_at ? "拍摄于 " : "修改于 ") + formatDate(when) });
+  tr.append(name, size, date);
+  if (state.selected.has(f.id)) tr.classList.add("is-selected");
+  bindItem(tr, f, () => openItem(f));
   return tr;
-}
-
-// 文件夹里（连同子文件夹）有几张照片、几个视频：“照片 323 张 · 视频 119 个”，网格里短一些：“🖼 323 · 🎬 119”
-function countsText(c, short = false) {
-  const parts = [];
-  if (c.photos) parts.push(short ? `🖼 ${c.photos}` : `照片 ${c.photos} 张`);
-  if (c.videos) parts.push(short ? `🎬 ${c.videos}` : `视频 ${c.videos} 个`);
-  if (c.others) parts.push(short ? `📦 ${c.others}` : `其他 ${c.others} 个`);
-  return parts.join(" · ") || "空文件夹";
-}
-
-function iconFor(f) {
-  if (f.type === "folder") return "📁";
-  const m = f.mime || "";
-  if (m.startsWith("image/")) return "🖼️";
-  if (m.startsWith("video/")) return "🎬";
-  if (m.startsWith("audio/")) return "🎵";
-  if (m === "application/pdf") return "📕";
-  if (/zip|rar|7z|tar|gzip/.test(m)) return "🗜️";
-  if (m.startsWith("text/")) return "📄";
-  return "📦";
 }
 
 function formatSize(n) {
@@ -1474,16 +1574,25 @@ function formatDate(s) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// ---------- 操作 ----------
+// “刚刚”“5 分钟前”“今天 21:05”“昨天 21:05”“10月18日 21:05”“2025年10月18日”
+function relTime(s) {
+  const d = new Date(s);
+  const ms = Date.now() - d.getTime();
+  if (ms < 60_000) return "刚刚";
+  if (ms < 3600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
+  const pad = (x) => String(x).padStart(2, "0");
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const days = dayDiff(d, new Date());
+  if (days === 0) return `今天 ${hm}`;
+  if (days === 1) return `昨天 ${hm}`;
+  if (d.getFullYear() === new Date().getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+}
 
-$("#mkdir-btn").addEventListener("click", async () => {
-  const name = prompt("文件夹名称");
-  if (!name || !name.trim()) return;
-  try {
-    await request("POST", "/api/folders", { name: name.trim(), parent_id: state.folderId });
-    load();
-  } catch (err) { fail(err); }
-});
+// 两个时间相差几个自然日（按本地日期）
+const dayDiff = (a, b) => Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / 86400_000);
+
+// ---------- 操作 ----------
 
 // 开启了格子口令时，看照片、视频每随机几张服务端会要求先答一道格子题（grid_required）
 async function signedURL(f, inline) {
@@ -1501,11 +1610,17 @@ async function signedURL(f, inline) {
 
 async function download(f) {
   try {
-    const a = Object.assign(document.createElement("a"), { href: await signedURL(f, false), rel: "noopener" });
-    document.body.append(a);
-    a.click();
-    a.remove();
+    clickLink(await signedURL(f, false));
   } catch (err) { fail(err); }
+}
+
+// 弹窗打开时页面其他部分点不到，链接放在最上层的弹窗里
+function clickLink(href) {
+  const host = [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+  const a = Object.assign(document.createElement("a"), { href, rel: "noopener" });
+  host.append(a);
+  a.click();
+  a.remove();
 }
 
 // Safari（iPhone / Mac）能直接显示 HEIC 照片，其他浏览器不行
@@ -1553,93 +1668,78 @@ const isMedia = (f) => f.type === "file" && /^(image|video)\//.test(f.mime || ""
 const inGallery = (f) => isMedia(f) && (!!f.thumb || ["img", "video"].includes(previewKind(f.mime)));
 
 function openItem(f) {
+  // 私密相册还遮着：先验证
+  if (isLocked()) { unlockPrivate().then((ok) => { if (ok) openItem(f); }); return; }
   if (inGallery(f)) openViewer(f);
   else if (previewKind(f.mime)) preview(f);
   else download(f);
 }
 
-const viewKey = () => `xiaoju.view.${state.folderId || "root"}`;
+const WEEKDAY_SHORT = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const takenOf = (f) => new Date(f.taken_at || f.created_at);
+const dayKey = (d) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+const monthLabel = (d) => `${d.getFullYear()}年${d.getMonth() + 1}月`;
 
-// 没手动选过时：照片、视频占多数的目录（比如“相册”）用网格，其他用列表
-function chooseView(items) {
-  const saved = store.get(viewKey());
-  if (saved === "grid" || saved === "list") return saved;
-  const files = items.filter((f) => f.type === "file");
-  const media = files.filter(isMedia).length;
-  return media >= 4 && media >= files.length * 0.6 ? "grid" : "list";
+// 日期分组的标题：“今天”“昨天”“10月18日 周六”，不是今年的带上年份
+function dayLabel(d) {
+  const days = dayDiff(d, new Date());
+  if (days === 0) return "今天";
+  if (days === 1) return "昨天";
+  const md = `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKDAY_SHORT[d.getDay()]}`;
+  return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}年${md}`;
 }
 
-function renderItems(items) {
-  state.items = items;
-  state.view = chooseView(items);
-  const grid = state.view === "grid";
-  document.querySelectorAll("#view-toggle button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === state.view)));
-  $("#list-table").hidden = grid;
-  $("#grid").hidden = !grid;
-  if (grid) {
-    $("#rows").replaceChildren();
-    renderGrid(items);
-  } else {
-    $("#grid").replaceChildren();
-    renderRows(items);
-  }
-  $("#empty").hidden = items.length > 0;
-  if (!items.length) playClass($("#empty"), "fade-in", 500);
-}
-
-$("#view-toggle").addEventListener("click", (e) => {
-  const b = e.target.closest("button[data-view]");
-  if (!b || b.dataset.view === state.view) return;
-  store.set(viewKey(), b.dataset.view);
-  renderItems(state.items);
-});
-
-// 条目内容没变时沿用原来的元素（上传期间列表会反复刷新，缩略图不用重新加载、不闪）
-const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0, f.counts ? countsText(f.counts) : ""].join("|");
-
-function renderGrid(items) {
+// 照片墙：按拍摄日期分组（服务端已经按拍摄时间从新到旧排好），每组前面一个日期标题。
+// 照片稀疏（平均一天不到 4 张、跨了很多天，比如截图、导出的旧照片）时按月分组，免得满屏都是只有一张的日期
+function renderGrid(files) {
   const grid = $("#grid");
-  const old = new Map([...grid.children].map((el) => [el.dataset.id, el]));
+  const old = new Map([...grid.children].map((el) => [el.dataset.id || el.dataset.day, el]));
+  const days = new Set(files.map((f) => dayKey(takenOf(f)))).size;
+  const byMonth = days > 12 && files.length / days < 4;
+  const out = [];
+  let lastDay = "";
   let n = 0;
-  grid.replaceChildren(...items.map((f) => {
+  for (const f of files) {
+    const when = takenOf(f);
+    const day = byMonth ? `m${when.getFullYear()}-${when.getMonth() + 1}` : "d" + dayKey(when);
+    if (day !== lastDay) {
+      lastDay = day;
+      const label = byMonth ? monthLabel(when) : dayLabel(when);
+      let h = old.get(day);
+      if (!h || h.textContent !== label) h = mk("h3", { className: "day", textContent: label });
+      h.dataset.day = day;
+      h.dataset.month = monthLabel(when);
+      out.push(h);
+    }
     const prev = old.get(f.id);
     if (prev && prev.dataset.key === itemKey(f)) {
       prev.classList.remove("appear"); // 重新插入时不要再播一遍淡入
-      return prev;
+      out.push(prev);
+      continue;
     }
     const tile = tileFor(f);
     if (!prev) {
       tile.classList.add("appear");
       tile.style.setProperty("--i", Math.min(n++, 24));
     }
-    return tile;
-  }));
+    out.push(tile);
+  }
+  grid.replaceChildren(...out);
 }
 
 function tileFor(f) {
-  const isFolder = f.type === "folder";
-  const tile = document.createElement(isFolder ? "a" : "button");
-  tile.className = "tile";
+  const tile = mk("button", { type: "button", className: "tile" });
   tile.dataset.id = f.id;
   tile.dataset.key = itemKey(f);
   tile.title = f.name;
-  // 文件夹、普通文件、缩略图加载失败的：图标 + 名字
+  const check = mk("span", { className: "check" }, icon("check"));
+  // 普通文件、缩略图加载失败的：图标 + 名字
   const plain = () => {
     tile.classList.remove("media");
-    tile.replaceChildren(
-      Object.assign(document.createElement("span"), { className: "ticon", textContent: iconFor(f) }),
-      Object.assign(document.createElement("span"), { className: "tname", textContent: f.name }),
-    );
+    tile.replaceChildren(icon(fileIcon(f), "ic ticon"), mk("span", { className: "tname", textContent: f.name }), check);
   };
-  if (isFolder) {
-    tile.href = `#/f/${f.id}`;
-    tile.classList.add("folder");
-    plain();
-    if (f.counts) tile.append(Object.assign(document.createElement("span"), { className: "tcount", textContent: countsText(f.counts, true) }));
-    return tile;
-  }
-  tile.type = "button";
-  tile.addEventListener("click", () => openItem(f));
+  if (state.selected.has(f.id)) tile.classList.add("is-selected");
+  bindItem(tile, f, () => openItem(f));
   if (!f.thumb) {
     plain();
     return tile;
@@ -1648,6 +1748,7 @@ function tileFor(f) {
   tile.setAttribute("aria-label", f.name);
   tile.append(thumbImg(f, "thumb", plain));
   if (f.mime.startsWith("video/")) tile.append(videoBadge(f));
+  tile.append(check);
   return tile;
 }
 
@@ -1721,6 +1822,425 @@ const thumbQueue = (() => {
   };
 })();
 
+// ---------- 点按、长按、多选 ----------
+// 点一下打开；长按（或点“选择”）进入多选，之后点一下是选中 / 取消。底部是“下载 / 移动 / 删除”。
+
+const LONG_PRESS_MS = 450;
+
+function bindItem(el, f, open) {
+  let timer = 0;
+  let start = null;
+  let pressed = false; // 这次是长按，接下来的 click 不算
+  const cancel = () => { clearTimeout(timer); start = null; };
+  const longPress = () => {
+    pressed = true;
+    if (!state.selecting) enterSelection();
+    toggleSelect(f, true);
+    navigator.vibrate?.(10);
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    pressed = false;
+    start = { x: e.clientX, y: e.clientY };
+    clearTimeout(timer);
+    timer = setTimeout(longPress, LONG_PRESS_MS);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) cancel();
+  });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) el.addEventListener(ev, cancel);
+  // 长按不弹系统菜单；电脑上右键也是选中
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (!pressed) { cancel(); longPress(); }
+  });
+  el.addEventListener("click", (e) => {
+    if (pressed) { pressed = false; e.preventDefault(); return; }
+    if (state.selecting) { toggleSelect(f); return; }
+    open();
+  });
+}
+
+function enterSelection() {
+  state.selecting = true;
+  document.body.classList.add("selecting");
+  $("#selbar").hidden = false;
+  closeSheet();
+  updateSelbar();
+}
+
+function exitSelection() {
+  if (!state.selecting) return;
+  state.selecting = false;
+  state.selected.clear();
+  document.body.classList.remove("selecting");
+  $("#selbar").hidden = true;
+  document.querySelectorAll(".is-selected").forEach((el) => el.classList.remove("is-selected"));
+}
+
+function toggleSelect(f, on) {
+  const now = on ?? !state.selected.has(f.id);
+  if (now) state.selected.set(f.id, f);
+  else state.selected.delete(f.id);
+  document.querySelectorAll(`[data-id="${f.id}"]`).forEach((el) => el.classList.toggle("is-selected", now));
+  updateSelbar();
+}
+
+function updateSelbar() {
+  const picked = [...state.selected.values()];
+  const n = picked.length;
+  $("#sel-count").textContent = n ? `已选 ${n} 项` : "选择项目";
+  $("#sel-all").textContent = n && n === state.items.length ? "全不选" : "全选";
+  $("#sel-download").disabled = !picked.some((f) => f.type === "file");
+  $("#sel-move").disabled = !n;
+  $("#sel-delete").disabled = !n;
+}
+
+$("#select-btn").addEventListener("click", () => (state.selecting ? exitSelection() : enterSelection()));
+$("#sel-cancel").addEventListener("click", exitSelection);
+$("#sel-all").addEventListener("click", () => {
+  const all = state.selected.size !== state.items.length;
+  for (const f of state.items) toggleSelect(f, all);
+});
+$("#sel-download").addEventListener("click", async () => {
+  const files = [...state.selected.values()].filter((f) => f.type === "file");
+  if (files.length > 10 && !confirm(`一次下载 ${files.length} 个文件？浏览器可能会问是否允许下载多个文件。`)) return;
+  if (isLocked() && !(await unlockPrivate())) return;
+  for (const [i, f] of files.entries()) {
+    if (i) await sleepMs(700); // 连着触发太快，浏览器会丢掉后面的
+    await download(f);
+  }
+  exitSelection();
+});
+$("#sel-move").addEventListener("click", () => moveItems([...state.selected.values()]));
+$("#sel-delete").addEventListener("click", () => trashItems([...state.selected.values()]));
+
+const itemsLabel = (list) => (list.length === 1 ? `“${list[0].name}”` : `${list.length} 项`);
+
+// 移入回收站，提示里可以撤销；文件夹先确认一下（里面的照片会跟着一起进回收站）
+async function trashItems(list) {
+  if (!list.length) return [];
+  const folders = list.filter((f) => f.type === "folder");
+  if (folders.length) {
+    const inside = folders.reduce((n, f) => n + (f.counts ? f.counts.photos + f.counts.videos + f.counts.others : 0), 0);
+    const what = folders.length === 1 ? `文件夹“${folders[0].name}”` : `${folders.length} 个文件夹`;
+    if (!confirm(`把${what}移入回收站？` + (inside ? `里面的 ${inside} 个文件会跟着一起移入。` : "") + "之后可以在回收站里恢复。")) return [];
+  }
+  const done = [];
+  for (const f of list) {
+    try {
+      await request("DELETE", `/api/files/${f.id}`);
+      done.push(f);
+    } catch (err) {
+      if (err.status === 401) { fail(err); return done; }
+    }
+  }
+  exitSelection();
+  load();
+  refreshBackup();
+  if (!done.length) { toast("删除失败，请稍后再试"); return done; }
+  const failed = list.length - done.length;
+  toast(`已移入回收站：${itemsLabel(done)}` + (failed ? `（${failed} 项没删掉）` : ""), {
+    action: "撤销",
+    async onAction() {
+      let back = 0;
+      for (const f of done) {
+        try { await request("POST", `/api/files/${f.id}/restore`); back++; } catch { /* 原处已有同名的：留在回收站 */ }
+      }
+      toast(back === done.length ? "已恢复" : `已恢复 ${back} 项，其余的原处已有同名文件，留在回收站里`);
+      load();
+      refreshBackup();
+    },
+  });
+  return done;
+}
+
+// 移动：选目标文件夹，一项项移过去；目标里有同名的跳过
+async function moveItems(list) {
+  if (!list.length) return;
+  const target = await pickFolder(list);
+  if (target === undefined) return;
+  let moved = 0;
+  let clash = 0;
+  let other = 0;
+  for (const f of list) {
+    if ((f.parent_id || null) === target) continue;
+    try {
+      await request("PATCH", `/api/files/${f.id}`, { parent_id: target });
+      moved++;
+    } catch (err) {
+      if (err.status === 401) { fail(err); return; }
+      if (err.status === 409) clash++;
+      else other++;
+    }
+  }
+  exitSelection();
+  load();
+  let msg = `已移动 ${moved} 项`;
+  if (clash) msg += `，${clash} 项因为目标文件夹里有同名的没移动`;
+  if (other) msg += `，${other} 项移动失败`;
+  toast(msg);
+}
+
+// 选一个文件夹（null 是根目录）；取消返回 undefined。正在移动的文件夹本身不能选（不能移进自己里面）
+function pickFolder(moving) {
+  return new Promise((resolve) => {
+    const dlg = $("#move-dlg");
+    const excluded = new Set(moving.filter((f) => f.type === "folder").map((f) => f.id));
+    const path = []; // 进到哪一级了：[{id, name}]
+    let finished = false;
+    const finish = (v) => {
+      if (finished) return;
+      finished = true;
+      closeDialog(dlg);
+      resolve(v);
+    };
+    const cur = () => (path.length ? path[path.length - 1].id : null);
+    async function show() {
+      const list = $("#move-list");
+      list.replaceChildren(mk("li", { className: "hint", textContent: "正在读取…" }));
+      const crumbs = $("#move-crumbs");
+      crumbs.replaceChildren();
+      [{ id: null, name: "全部文件" }, ...path].forEach((c, i, all) => {
+        if (i) crumbs.append(mk("span", { className: "sep", textContent: "›" }));
+        const a = mk("a", { href: "#", textContent: c.name });
+        a.addEventListener("click", (e) => { e.preventDefault(); path.length = i; show(); });
+        if (i === all.length - 1) a.setAttribute("aria-current", "page");
+        crumbs.append(a);
+      });
+      $("#move-here").disabled = cur() === (state.folderId || null) && moving.every((f) => (f.parent_id || null) === cur());
+      let res;
+      try {
+        res = await request("GET", `/api/folders/${cur() || "root"}/children`);
+      } catch (err) {
+        list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
+        return;
+      }
+      const folders = res.items.filter((f) => f.type === "folder" && !excluded.has(f.id));
+      list.replaceChildren(...(folders.length ? folders.map((f) => {
+        const b = mk("button", { type: "button" }, icon(f.private ? "lock" : "folder"), mk("span", { textContent: f.name }), icon("chevron", "ic go"));
+        b.addEventListener("click", () => { path.push({ id: f.id, name: f.name }); show(); });
+        return mk("li", {}, b);
+      }) : [mk("li", { className: "hint", textContent: "这里没有子文件夹" })]));
+    }
+    $("#move-title").textContent = `把 ${itemsLabel(moving)} 移动到`;
+    $("#move-here").onclick = () => finish(cur());
+    dlg.onclose = () => finish(undefined);
+    dlg.querySelector("[data-close]").onclick = () => finish(undefined);
+    if (!dlg.open) dlg.showModal();
+    show();
+  });
+}
+
+// ---------- 当前文件夹的操作（⋯） ----------
+
+$("#folder-menu-btn").addEventListener("click", () => {
+  const f = state.chain[state.chain.length - 1];
+  if (!f) return;
+  const dlg = $("#folder-dlg");
+  $("#folder-dlg-title").textContent = f.name;
+  const priv = dlg.querySelector('[data-act="private"]');
+  priv.querySelector(".label").textContent = f.private ? "取消私密" : "设为私密";
+  priv.querySelector("svg")?.replaceWith(icon(f.private ? "unlock" : "lock"));
+  dlg.showModal();
+});
+
+$("#folder-dlg").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const f = state.chain[state.chain.length - 1];
+  await closeDialog($("#folder-dlg"));
+  if (!f) return;
+  const act = b.dataset.act;
+  try {
+    if (act === "rename") {
+      const name = prompt("新名字", f.name);
+      if (!name || !name.trim() || name.trim() === f.name) return;
+      await request("PATCH", `/api/files/${f.id}`, { name: name.trim() });
+      toast("已重命名");
+      load();
+    } else if (act === "private") {
+      // 取消私密要先验证（不然拿着已登录手机的人点一下就能看了）
+      if (f.private && !(await unlockPrivate())) return;
+      await request("PATCH", `/api/files/${f.id}`, { private: !f.private });
+      toast(f.private ? "已取消私密" : "已设为私密：照片默认遮住，验证后才显示");
+      load();
+    } else if (act === "move") {
+      await moveItems([f]);
+    } else if (act === "delete") {
+      const done = await trashItems([f]);
+      if (done.length) location.hash = f.parent_id ? `#/f/${f.parent_id}` : "#/";
+    }
+  } catch (err) { fail(err); }
+});
+
+// ---------- 私密相册 ----------
+// 私密文件夹（或它的上级是私密的）里的缩略图、根目录上私密相册的封面默认遮住。验证后显示，
+// 切到别的 App、锁屏后重新遮住。只是防旁人瞄到：原图本来就要刷脸登录、答格子题才能看。
+
+const isLocked = () => state.privateHere && !state.unlocked;
+let passkeyCount = null; // 注册了几台刷脸设备：有就用刷脸解锁，没有就用格子口令（都没开时点一下就显示）
+
+function applyLock() {
+  const drop = $("#drop");
+  drop.classList.toggle("locked", isLocked());
+  drop.classList.toggle("unlocked", state.unlocked);
+  const bar = $("#private-bar");
+  bar.hidden = !state.privateHere;
+  bar.classList.toggle("open", state.unlocked);
+  bar.querySelector(".text").textContent = state.unlocked ? "已解锁，切到别的 App 或锁屏后会重新遮住" : "私密相册，照片已遮住";
+  $("#unlock-btn").textContent = state.unlocked ? "现在遮住" : "解锁查看";
+  $("#unlock-btn").className = state.unlocked ? "small" : "primary small";
+  bar.querySelector("svg")?.replaceWith(icon(state.unlocked ? "unlock" : "lock"));
+}
+
+function relock() {
+  if (!state.unlocked) return;
+  state.unlocked = false;
+  applyLock();
+  if (state.privateHere && vwDialog.open) vwDialog.close();
+}
+
+$("#unlock-btn").addEventListener("click", () => (state.unlocked ? relock() : unlockPrivate()));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") relock(); });
+window.addEventListener("pagehide", relock);
+
+async function unlockPrivate() {
+  if (state.unlocked) return true;
+  if (passkeyCount === null) {
+    try { passkeyCount = ((await request("GET", "/api/auth/passkeys")).items || []).length; } catch { passkeyCount = 0; }
+  }
+  let ok;
+  if (passkeyCount > 0 && webauthnSupported()) {
+    ok = await unlockWithFace();
+  } else {
+    if (!gridStatus) {
+      try { gridStatus = await request("GET", "/api/auth/grid"); } catch { /* 没开 */ }
+    }
+    ok = gridStatus?.enabled ? await gridGate() : true;
+  }
+  if (ok) {
+    state.unlocked = true;
+    applyLock();
+  }
+  return ok;
+}
+
+// 刷脸解锁：和登录一样调起系统的 Face ID / 指纹
+function unlockWithFace() {
+  return new Promise((resolve) => {
+    const dlg = $("#unlock-dlg");
+    const btn = $("#unlock-face");
+    const errEl = $("#unlock-error");
+    let opts = null;
+    let finished = false;
+    const begin = () => request("POST", "/api/auth/passkey/login/begin").then((r) => { opts = { ...r, at: Date.now() }; });
+    const finish = (ok) => {
+      if (finished) return;
+      finished = true;
+      closeDialog(dlg);
+      resolve(ok);
+    };
+    errEl.hidden = true;
+    setButtonBusy(btn, false, "正在验证…", "使用 Face ID / 指纹");
+    begin().catch(() => { /* 点击时再请求 */ });
+    btn.onclick = async () => {
+      errEl.hidden = true;
+      setButtonBusy(btn, true, "正在验证…", "使用 Face ID / 指纹");
+      try {
+        if (!opts || Date.now() - opts.at > 120_000) await begin();
+        const o = opts;
+        opts = null;
+        const cred = await navigator.credentials.get({ publicKey: decodeRequestOptions(o.options.publicKey) });
+        await request("POST", `/api/auth/passkey/login/finish?ceremony=${encodeURIComponent(o.ceremony)}`, encodeCredential(cred));
+        setButtonBusy(btn, false, "正在验证…", "使用 Face ID / 指纹");
+        finish(true);
+      } catch (err) {
+        setButtonBusy(btn, false, "正在验证…", "使用 Face ID / 指纹");
+        errEl.textContent = webauthnError(err);
+        errEl.hidden = false;
+        begin().catch(() => { /* 点击时再请求 */ });
+      }
+    };
+    dlg.onclose = () => finish(false);
+    dlg.querySelector("[data-close]").onclick = () => finish(false);
+    dlg.showModal();
+  });
+}
+
+// ---------- 时间滑条 ----------
+// 照片多时右边出现一个滑块：滚动时显示，按住上下拖可以快速跳到某个月，旁边气泡显示是哪年哪月。
+
+const scrub = { el: $("#scrubber"), heads: [], hideTimer: 0, drag: null };
+const scrubHandle = scrub.el.querySelector(".handle");
+const scrubBubble = scrub.el.querySelector(".bubble");
+const SCRUB_MIN_ITEMS = 60;
+
+function updateScrubber() {
+  const grid = $("#grid");
+  const on = !grid.hidden && state.files.length >= SCRUB_MIN_ITEMS;
+  scrub.el.hidden = !on;
+  if (on) measureHeads();
+}
+
+function measureHeads() {
+  scrub.heads = [...$("#grid").querySelectorAll(".day")].map((h) => ({ y: h.getBoundingClientRect().top + scrollY, label: h.dataset.month }));
+}
+
+const maxScroll = () => Math.max(1, document.documentElement.scrollHeight - innerHeight);
+const scrubTrack = () => scrub.el.clientHeight - scrubHandle.offsetHeight;
+
+function monthAt(y) {
+  let label = scrub.heads[0]?.label || "";
+  for (const h of scrub.heads) {
+    if (h.y > y + innerHeight * 0.3) break;
+    label = h.label;
+  }
+  return label;
+}
+
+function placeHandle() {
+  const top = Math.min(1, scrollY / maxScroll()) * scrubTrack();
+  scrubHandle.style.transform = `translateY(${top}px)`;
+  scrubBubble.style.transform = `translateY(${top}px)`;
+  scrubBubble.textContent = monthAt(scrollY);
+}
+
+function showScrubber() {
+  scrub.el.classList.add("active");
+  clearTimeout(scrub.hideTimer);
+  scrub.hideTimer = setTimeout(() => { if (!scrub.drag) scrub.el.classList.remove("active"); }, 1500);
+}
+
+window.addEventListener("scroll", () => {
+  if (scrub.el.hidden) return;
+  placeHandle();
+  if (scrollY > 240 || scrub.drag) showScrubber();
+  else if (!scrub.drag) scrub.el.classList.remove("active");
+}, { passive: true });
+window.addEventListener("resize", () => { if (!scrub.el.hidden) measureHeads(); });
+
+scrubHandle.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  measureHeads();
+  scrub.drag = { y0: e.clientY, top0: Math.min(1, scrollY / maxScroll()) * scrubTrack() };
+  scrub.el.classList.add("dragging", "active");
+  try { scrubHandle.setPointerCapture(e.pointerId); } catch { /* 指针已经抬起 */ }
+});
+scrubHandle.addEventListener("pointermove", (e) => {
+  if (!scrub.drag) return;
+  const top = Math.min(scrubTrack(), Math.max(0, scrub.drag.top0 + e.clientY - scrub.drag.y0));
+  scrollTo(0, (top / Math.max(1, scrubTrack())) * maxScroll());
+});
+const scrubEnd = () => {
+  if (!scrub.drag) return;
+  scrub.drag = null;
+  scrub.el.classList.remove("dragging");
+  showScrubber();
+};
+scrubHandle.addEventListener("pointerup", scrubEnd);
+scrubHandle.addEventListener("pointercancel", scrubEnd);
+
 // ---------- 大图查看 ----------
 // 当前目录的照片、视频排成一串：左右滑动（电脑上 ← → 或两侧箭头）切换；照片双指或双击放大，放大后拖动查看；
 // 往下拖关闭；单击隐藏 / 显示顶栏；手机的返回手势也是关闭。只有停在某一张上才请求原图
@@ -1732,7 +2252,7 @@ const vwStage = $("#vw-stage");
 const vwTrack = $("#vw-track");
 
 function openViewer(f) {
-  vw.items = state.items.filter(inGallery);
+  vw.items = state.files.filter(inGallery);
   vw.index = Math.max(0, vw.items.findIndex((x) => x.id === f.id));
   vw.animating = false;
   vwDialog.classList.remove("ui-hidden");
@@ -2086,29 +2606,264 @@ $("#vw-download").addEventListener("click", async () => {
 });
 $("#vw-delete").addEventListener("click", async () => {
   const f = curItem();
-  if (!f || !(await remove(f))) return;
+  if (!f || !(await trashItems([f])).length) return;
   vw.items.splice(vw.index, 1);
   if (!vw.items.length) { closeViewer(); return; }
   vw.index = Math.min(vw.index, vw.items.length - 1);
   renderViewer();
 });
 
-async function remove(f) {
-  const isFolder = f.type === "folder";
-  let permanent = false;
-  if (isFolder) {
-    if (!confirm(`把文件夹“${f.name}”移入回收站？`)) return false;
-  } else {
-    if (!confirm(`删除“${f.name}”？`)) return false;
-    permanent = confirm("是否永久删除？\n\n确定：立即永久删除（同时删除 Telegram 中的数据，无法恢复）\n取消：仅移入回收站");
-  }
+// ---------- 顶栏菜单、＋、弹窗 ----------
+
+fillIcons();
+$("#menu-btn").append(icon("user"));
+
+const menu = $("#menu");
+function toggleMenu(open = menu.hidden) {
+  menu.hidden = !open;
+  $("#menu-btn").setAttribute("aria-expanded", String(open));
+  if (open) playClass(menu, "pop", 200);
+}
+$("#menu-btn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
+// 菜单开着时点别处：只关菜单，不触发底下的东西
+document.addEventListener("click", (e) => {
+  if (menu.hidden || menu.contains(e.target) || $("#menu-btn").contains(e.target)) return;
+  e.stopPropagation();
+  e.preventDefault();
+  toggleMenu(false);
+}, true);
+
+const ACTIONS = {
+  backup: () => openBackup(),
+  trash: () => openTrash(),
+  security: () => openSecurity(),
+  shortcuts: () => openShortcuts(),
+  logout: () => logout(),
+};
+menu.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  toggleMenu(false);
+  ACTIONS[b.dataset.act]?.();
+});
+$("#backup-dot").addEventListener("click", () => openBackup());
+
+// 弹窗里的“关闭”“取消”，以及跳到别的弹窗的按钮
+document.addEventListener("click", (e) => {
+  const close = e.target.closest("dialog [data-close]");
+  if (close && !close.onclick) { closeDialog(close.closest("dialog")); return; }
+  const jump = e.target.closest("dialog button[data-act='shortcuts']");
+  if (jump) closeDialog(jump.closest("dialog")).then(() => openShortcuts());
+});
+
+// 右下角的 ＋：上传照片和视频、上传文件、新建文件夹、快捷指令
+const sheet = $("#sheet");
+function openSheet() {
+  sheet.hidden = false;
+  playClass(sheet, "open", 300);
+}
+function closeSheet() {
+  if (sheet.hidden) return;
+  playClass(sheet, "closing", 200).then(() => { sheet.hidden = true; });
+}
+$("#fab").addEventListener("click", openSheet);
+sheet.addEventListener("click", (e) => {
+  if (e.target === sheet) { closeSheet(); return; }
+  const b = e.target.closest("[data-act]");
+  if (b?.dataset.act === "cancel") closeSheet();
+  if (b?.dataset.act === "mkdir") { closeSheet(); makeFolder(); }
+  if (b?.dataset.act === "shortcuts") { closeSheet(); openShortcuts(); }
+});
+// 选文件时收起（选择器是系统弹出的）
+for (const sel of ["#file-input", "#album-input"]) {
+  $(sel).addEventListener("click", () => setTimeout(closeSheet, 300));
+  $(sel).addEventListener("change", closeSheet);
+}
+
+async function makeFolder() {
+  const name = prompt("文件夹名称");
+  if (!name || !name.trim()) return;
   try {
-    await request("DELETE", `/api/files/${f.id}${permanent ? "?permanent=1" : ""}`);
-    toast(permanent ? "已永久删除" : "已移入回收站");
+    await request("POST", "/api/folders", { name: name.trim(), parent_id: state.folderId });
     load();
-    refreshBackup();
-    return true;
-  } catch (err) { fail(err); return false; }
+  } catch (err) { fail(err); }
+}
+
+function openShortcuts() {
+  const dlg = $("#shortcuts");
+  if (!dlg.open) dlg.showModal();
+  renderShortcutSec();
+}
+
+// ---------- 回收站 ----------
+
+async function openTrash() {
+  const dlg = $("#trash-dlg");
+  if (!dlg.open) dlg.showModal();
+  await renderTrash();
+}
+
+async function renderTrash() {
+  const list = $("#trash-list");
+  list.replaceChildren(mk("li", { className: "hint", textContent: "正在读取…" }));
+  let items;
+  try {
+    items = (await request("GET", "/api/trash")).items || [];
+  } catch (err) {
+    list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
+    return;
+  }
+  $("#trash-empty").disabled = !items.length;
+  if (!items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "回收站是空的" })); return; }
+  list.replaceChildren(...items.map((f) => {
+    const restore = mk("button", { type: "button", className: "small" }, icon("restore"), "恢复");
+    const purge = mk("button", { type: "button", className: "small danger" }, "永久删除");
+    restore.addEventListener("click", async () => {
+      try {
+        const back = await request("POST", `/api/files/${f.id}/restore`);
+        toast(back.parent_id === f.parent_id ? `已恢复“${f.name}”` : `已恢复“${f.name}”到根目录（原来的文件夹也删了）`);
+        renderTrash();
+        load();
+        refreshBackup();
+      } catch (err) {
+        toast(err.status === 409 ? `原来的位置已经有“${f.name}”了，先把那个改个名再恢复` : err.message);
+      }
+    });
+    purge.addEventListener("click", async () => {
+      if (!confirm(`永久删除“${f.name}”？${f.type === "folder" ? "里面的文件也会一起删掉。" : ""}两个 Telegram 频道里的数据都会删除，无法恢复。`)) return;
+      setButtonBusy(purge, true);
+      try {
+        await request("DELETE", `/api/files/${f.id}?permanent=1`);
+        toast("已永久删除");
+        renderTrash();
+        refreshBackup();
+      } catch (err) { setButtonBusy(purge, false); fail(err); }
+    });
+    const meta = `删除于 ${relTime(f.trashed_at)}` + (f.type === "file" ? ` · ${formatSize(f.size)}` : "");
+    return mk("li", {}, icon(fileIcon(f), "ic lead"),
+      mk("div", { className: "info" }, mk("b", { textContent: f.name }), mk("small", { textContent: meta })),
+      mk("div", { className: "acts" }, restore, purge));
+  }));
+}
+
+$("#trash-empty").addEventListener("click", async () => {
+  const btn = $("#trash-empty");
+  let items;
+  try { items = (await request("GET", "/api/trash")).items || []; } catch (err) { fail(err); return; }
+  if (!items.length || !confirm(`永久删除回收站里的 ${items.length} 项？两个 Telegram 频道里的数据都会删除，无法恢复。`)) return;
+  btn.disabled = true;
+  let done = 0;
+  for (const f of items) {
+    btn.textContent = `正在删除 ${done + 1} / ${items.length}…`;
+    try { await request("DELETE", `/api/files/${f.id}?permanent=1`); done++; } catch (err) {
+      if (err.status === 401) { fail(err); return; }
+    }
+  }
+  btn.textContent = "清空回收站";
+  toast(done === items.length ? "回收站已清空" : `删掉了 ${done} 项，${items.length - done} 项没删掉，稍后再试`);
+  renderTrash();
+  refreshBackup();
+});
+
+// ---------- 备份状态 ----------
+// 顶栏的小圆点：绿色已双备份、橙色备份中、红色异常。点开看详情：两个 Telegram 账号的双备份，
+// 以及手机上的照片备份到哪了（快捷指令每次运行会把清单报给服务端）。
+
+let lastBackup = null; // 最近一次取到的 { st, stats }
+
+function renderBackupDot(st, stats) {
+  lastBackup = { st, stats };
+  const el = $("#backup-dot");
+  const label = el.querySelector(".label");
+  el.className = "backup-dot";
+  if (!st.enabled) {
+    el.classList.add("bad");
+    label.textContent = st.error ? "备份异常" : "未启用备份";
+  } else if (st.backed_up >= st.parts) {
+    el.classList.add("ok");
+    label.textContent = "已双备份";
+  } else {
+    el.classList.add("busy");
+    label.textContent = `备份中 ${backupPct(st)}%`;
+  }
+  el.hidden = false;
+}
+
+// 按字节算进度；没完成时最多显示 99%
+const backupPct = (st) => (st.bytes > 0 ? Math.min(99, Math.floor((st.backed_up_bytes / st.bytes) * 100)) : 0);
+
+function meterEl(pct) {
+  const fill = mk("i");
+  fill.style.width = `${pct}%`;
+  return mk("span", { className: "meter" }, fill);
+}
+
+async function openBackup() {
+  const dlg = $("#backup-dlg");
+  const body = $("#backup-body");
+  if (!dlg.open) {
+    body.replaceChildren(mk("p", { className: "hint", textContent: "正在读取…" }));
+    dlg.showModal();
+  }
+  const [st, stats, phone] = await Promise.all(["/api/backup/status", "/api/stats", "/api/backup/phone"]
+    .map((p) => request("GET", p).catch(() => null)));
+  if (st) renderBackupDot(st, stats);
+  body.replaceChildren(telegramCard(st, stats), ...(phone?.albums || []).map(albumCard));
+  if (!phone) body.append(mk("p", { className: "hint", textContent: "服务端还不支持手机备份记录（等服务端更新后再看）。" }));
+}
+
+function telegramCard(st, stats) {
+  const card = mk("section", { className: "bk-card" });
+  const head = mk("div", { className: "bk-head" }, icon("cloud"), mk("b", { textContent: "双备份" }));
+  card.append(head);
+  if (!st) { card.append(mk("p", { className: "hint", textContent: "读取不到备份状态。" })); return card; }
+  if (!st.enabled) {
+    head.append(mk("span", { className: "pill bad", textContent: st.error ? "异常" : "未启用" }));
+    card.append(mk("p", { textContent: st.error ? `备份频道连接失败，新文件暂时只存了一份：${st.error}` : "服务端没有配置备份频道，文件只存了一份。" }));
+    return card;
+  }
+  const files = stats ? `${stats.backed_up_files} / ${stats.files} 个文件` : `${st.backed_up} / ${st.parts} 个分块`;
+  if (st.backed_up >= st.parts) {
+    head.append(mk("span", { className: "pill ok", textContent: "已完成" }));
+    card.append(mk("p", { textContent: `所有文件都在两个 Telegram 账号的频道里各存了一份（${files}，${formatSize(st.bytes)}）。一个账号出问题，另一个还在。` }));
+  } else {
+    const pct = backupPct(st);
+    head.append(mk("span", { className: "pill busy", textContent: `${pct}%` }));
+    card.append(meterEl(pct), mk("p", { textContent: `正在把新文件复制到备份账号：${files}（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）。后台自动进行，关掉页面也会继续。` }));
+  }
+  return card;
+}
+
+// 一个相册（“相册”“隐藏相册”）：网盘里有几个、最近什么时候传的，快捷指令最近一次清单
+function albumCard(a) {
+  const card = mk("section", { className: "bk-card" });
+  card.append(mk("div", { className: "bk-head" }, icon(a.folder === "隐藏相册" ? "lock" : "image"), mk("b", { textContent: a.folder }),
+    mk("span", { className: "bk-count", textContent: `${a.files} 个文件` })));
+  card.append(mk("p", { className: "hint", textContent: a.last_upload_at ? `最近一次上传：${relTime(a.last_upload_at)}` : "还没有上传过" }));
+  const byDate = a.checks.find((c) => c.by_date);
+  const byFolder = a.checks.find((c) => !c.by_date);
+  if (byDate) {
+    const left = Math.max(0, byDate.todo - byDate.uploaded_since);
+    const row = mk("div", { className: "bk-check" }, icon("bolt"), mk("div", {},
+      mk("b", { textContent: `自动备份新照片 · ${relTime(byDate.checked_at)}` }),
+      mk("small", { textContent: `看了手机上最新的 ${byDate.files} 张：` + (byDate.todo
+        ? (left ? `${byDate.uploaded} 张已在网盘，要传 ${byDate.todo} 张，还剩约 ${left} 张` : `新传了 ${byDate.todo} 张，都备份好了 ✓`)
+        : "都已经在网盘里 ✓") })));
+    card.append(row);
+  }
+  if (byFolder) {
+    const done = Math.min(byFolder.files, byFolder.uploaded + byFolder.uploaded_since);
+    const pct = byFolder.files ? Math.floor((done / byFolder.files) * 100) : 100;
+    const finished = done >= byFolder.files;
+    card.append(mk("div", { className: "bk-check" }, icon("folder"), mk("div", {},
+      mk("b", { textContent: `备份照片 · ${relTime(byFolder.checked_at)}` }),
+      mk("small", { textContent: finished
+        ? `「文件」里那个文件夹的 ${byFolder.files} 个都传好了 ✓`
+        : `「文件」里那个文件夹有 ${byFolder.files} 个，已传 ${done} 个（${pct}%）。没传完的再运行一次「备份照片」接着传` }),
+      finished ? "" : meterEl(pct))));
+  }
+  if (!a.checks.length) card.append(mk("p", { className: "hint", textContent: "还没有用快捷指令传过。" }));
+  return card;
 }
 
 // ---------- 上传 ----------
@@ -2163,6 +2918,7 @@ function enqueue(items, parent = state.folderId, sync = false) {
   stats.sync ||= sync;
   for (const { file, name } of items) queue.push({ file, name: name || file.name, parent, sync });
   $("#upload-more").hidden = true;
+  $("#upload-close").hidden = true;
   keepAwake(true);
   pump();
 }
@@ -2193,7 +2949,7 @@ function updateSummary() {
     parts.push(eta < 60_000 ? "预计不到 1 分钟" : `预计还要 ${formatDuration(eta)}`);
   }
   if (left) parts.push(wakeLock ? "屏幕会保持常亮，请别切走" : "请保持这个页面在前台、不要锁屏");
-  $("#upload-summary").textContent = (s.sync ? "同步相册：" : "上传：") + parts.join(" · ");
+  $("#upload-summary").textContent = (s.sync ? "上传照片：" : "上传：") + parts.join(" · ");
   $("#uploads").hidden = false;
 }
 
@@ -2201,19 +2957,20 @@ function finishBatch() {
   const s = stats;
   stats = null;
   if (!s) return;
-  let msg = `${s.sync ? "同步" : "上传"}完成：上传 ${s.uploaded} 个`;
+  let msg = `上传完成：新传 ${s.uploaded} 个`;
   if (s.skipped) msg += `，跳过 ${s.skipped} 个（已存在）`;
   if (s.failed) msg += `，失败 ${s.failed} 个（见上方列表）`;
   toast(msg);
   $("#upload-summary").textContent = msg;
   keepAwake(false);
   refreshBackup();
-  // 同步相册：一次选太多 iPhone 准备得很慢，分批选更顺；已传过的会自动跳过
-  if (s.sync) { $("#upload-more").hidden = false; return; }
+  // 上传照片：一次选太多 iPhone 准备得很慢，分批选更顺；已传过的会自动跳过
+  if (s.sync) { $("#upload-more").hidden = false; $("#upload-close").hidden = false; return; }
   if (!s.failed) setTimeout(() => { if (!stats) $("#uploads").hidden = true; }, 4000);
 }
 
 $("#upload-more").addEventListener("click", () => $("#album-input").click());
+$("#upload-close").addEventListener("click", () => { if (!active && !queue.length) $("#uploads").hidden = true; });
 
 let reloadTimer;
 function scheduleReload() {
@@ -2385,22 +3142,26 @@ $("#file-input").addEventListener("change", (e) => {
   enqueue(files.map((file) => ({ file })));
 });
 
-// ---------- 同步相册 ----------
+// ---------- 上传照片和视频 ----------
 
 // 去掉自动加的序号：“IMG_1 (2).jpg” → “IMG_1.jpg”
 const baseName = (n) => n.replace(/ \(\d+\)(?=\.[^.]*$|$)/, "");
 const withSuffix = (n, i) => n.replace(/(\.[^.]*)?$/, (ext) => ` (${i})${ext}`);
 
-// 把选中的照片 / 视频传到根目录的“相册”文件夹。已传过的（文件名 + 大小相同）自动跳过，
+// 把选中的照片 / 视频传进当前文件夹（在根目录时传进“相册”文件夹）。已传过的（文件名 + 大小相同）自动跳过，
 // 所以每次多选一些也不会重复上传；同名但内容不同的照片自动改名为“名字 (2)”。
-async function syncAlbum(files) {
+async function uploadMedia(files) {
   if (!files.length) return;
-  toast(`${pickedNote(files)}，正在检查哪些已经同步过…`);
+  toast(`${pickedNote(files)}，正在检查哪些已经传过…`);
   try {
-    const root = await request("GET", "/api/folders/root/children");
-    let album = root.items.find((f) => f.type === "folder" && f.name === ALBUM);
-    album ??= await request("POST", "/api/folders", { name: ALBUM, parent_id: null });
-    const { items } = await request("GET", `/api/folders/${album.id}/children`);
+    let target = state.folderId;
+    if (!target) {
+      const root = await request("GET", "/api/folders/root/children");
+      const album = root.items.find((f) => f.type === "folder" && f.name === ALBUM)
+        ?? await request("POST", "/api/folders", { name: ALBUM, parent_id: null });
+      target = album.id;
+    }
+    const { items } = await request("GET", `/api/folders/${target}/children`);
     const synced = new Set(items.filter((f) => f.type === "file").map((f) => `${baseName(f.name)}\0${f.size}`));
     const taken = new Set(items.map((f) => f.name));
 
@@ -2416,11 +3177,11 @@ async function syncAlbum(files) {
       todo.push({ file, name });
     }
     if (!todo.length) {
-      toast(`没有新的照片：选中的 ${skipped} 个都已经同步过了`);
+      toast(`没有新的：选中的 ${skipped} 个都已经传过了`);
       return;
     }
-    if (state.folderId !== album.id) location.hash = `#/f/${album.id}`;
-    enqueue(todo, album.id, true);
+    if (state.folderId !== target) location.hash = `#/f/${target}`;
+    enqueue(todo, target, true);
     stats.skipped += skipped;
     updateSummary();
   } catch (err) {
@@ -2432,7 +3193,7 @@ $("#album-input").addEventListener("change", (e) => {
   showPicking(false);
   const files = [...e.target.files];
   e.target.value = "";
-  syncAlbum(files);
+  uploadMedia(files);
 });
 
 const drop = $("#drop");
@@ -2465,7 +3226,7 @@ async function checkWebVersion() {
   } catch { return; } // 离线等情况：下次再查
   if (!latest || latest === WEB_VERSION) return;
   // 没在上传、没在答题或看照片时直接换新版（会话存在当前标签页，刷新不用重新登录），否则只提示
-  const busy = active || queue.length || gridGatePending || $("#preview").open || $("#viewer").open || $("#security").open;
+  const busy = active || queue.length || gridGatePending || state.selecting || document.querySelector("dialog[open]");
   if (!busy) reloadTo(latest);
   else showUpdateBar(latest);
 }
