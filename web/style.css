@@ -143,6 +143,7 @@ th.ops, td.ops { width: 190px; text-align: right; }
 td.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.name a, td.name span { color: var(--text); text-decoration: none; cursor: pointer; }
 td.name a:hover { text-decoration: underline; }
+td.name .counts { margin: 3px 0 0 calc(1.25rem + 8px); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .icon { margin-right: 8px; }
 .row-thumb {
   width: 28px;
@@ -260,6 +261,7 @@ dialog.preview { width: min(960px, calc(100vw - 32px)); padding: 12px; }
 .tile .ticon { font-size: 34px; line-height: 1; }
 .tile .tname { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .tile.folder .tname { color: var(--text); font-weight: 500; }
+.tile .tcount { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 /* 缩略图没到之前流光占位 */
 .tile.media {
   padding: 0;

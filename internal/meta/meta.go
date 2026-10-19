@@ -223,6 +223,49 @@ const (
 	isVideoSQL = `(mime LIKE 'video/%' OR name ~* '\.(mp4|mov|m4v|avi|mkv|webm|3gp|wmv|flv|mts)$')`
 )
 
+// FolderCounts 是一个文件夹里（连同子文件夹）的照片、视频、其他文件各有几个。
+type FolderCounts struct {
+	Photos int64 `json:"photos"`
+	Videos int64 `json:"videos"`
+	Others int64 `json:"others"`
+}
+
+// CountInFolders 统计每个文件夹里（递归）的照片、视频和其他文件数，跳过回收站里的条目及其子项。
+// 照片、视频的判断和 DriveStats 一样。没有文件的文件夹不在结果里。
+func (s *Store) CountInFolders(ctx context.Context, userID uuid.UUID, folderIDs []uuid.UUID) (map[uuid.UUID]FolderCounts, error) {
+	out := map[uuid.UUID]FolderCounts{}
+	if len(folderIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		WITH RECURSIVE tree AS (
+			SELECT c.parent_id AS root, c.id, c.type, c.mime, c.name FROM files c
+			WHERE c.user_id = $1 AND c.parent_id = ANY($2) AND c.status = 'active' AND c.trashed_at IS NULL
+			UNION ALL
+			SELECT t.root, c.id, c.type, c.mime, c.name FROM files c
+			JOIN tree t ON c.parent_id = t.id
+			WHERE c.status = 'active' AND c.trashed_at IS NULL
+		), kinds AS (
+			SELECT root, `+isPhotoSQL+` AS photo, NOT `+isPhotoSQL+` AND `+isVideoSQL+` AS video
+			FROM tree WHERE type = 'file'
+		)
+		SELECT root, count(*) FILTER (WHERE photo), count(*) FILTER (WHERE video), count(*) FILTER (WHERE NOT photo AND NOT video)
+		FROM kinds GROUP BY root`, userID, folderIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var c FolderCounts
+		if err := rows.Scan(&id, &c.Photos, &c.Videos, &c.Others); err != nil {
+			return nil, err
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
+}
+
 // DriveStats 统计用户网盘里的文件数量和大小。从根目录递归，跳过回收站里的条目及其子项。
 func (s *Store) DriveStats(ctx context.Context, userID uuid.UUID) (DriveStats, error) {
 	var st DriveStats

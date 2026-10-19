@@ -1401,6 +1401,7 @@ function rowFor(f) {
     label.addEventListener("click", () => openItem(f));
   }
   name.append(icon, label);
+  if (f.counts) name.append(Object.assign(document.createElement("div"), { className: "counts", textContent: countsText(f.counts) }));
 
   const size = Object.assign(document.createElement("td"), { className: "size", textContent: isFolder ? "" : formatSize(f.size) });
   // 照片、视频显示拍摄时间（列表也按它排），其他显示修改时间
@@ -1424,6 +1425,15 @@ function rowFor(f) {
 
   tr.append(name, size, date, ops);
   return tr;
+}
+
+// 文件夹里（连同子文件夹）有几张照片、几个视频：“照片 323 张 · 视频 119 个”，网格里短一些：“🖼 323 · 🎬 119”
+function countsText(c, short = false) {
+  const parts = [];
+  if (c.photos) parts.push(short ? `🖼 ${c.photos}` : `照片 ${c.photos} 张`);
+  if (c.videos) parts.push(short ? `🎬 ${c.videos}` : `视频 ${c.videos} 个`);
+  if (c.others) parts.push(short ? `📦 ${c.others}` : `其他 ${c.others} 个`);
+  return parts.join(" · ") || "空文件夹";
 }
 
 function iconFor(f) {
@@ -1574,7 +1584,7 @@ $("#view-toggle").addEventListener("click", (e) => {
 });
 
 // 条目内容没变时沿用原来的元素（上传期间列表会反复刷新，缩略图不用重新加载、不闪）
-const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0].join("|");
+const itemKey = (f) => [f.name, f.size, f.thumb || "", f.duration || 0, f.counts ? countsText(f.counts) : ""].join("|");
 
 function renderGrid(items) {
   const grid = $("#grid");
@@ -1614,6 +1624,7 @@ function tileFor(f) {
     tile.href = `#/f/${f.id}`;
     tile.classList.add("folder");
     plain();
+    if (f.counts) tile.append(Object.assign(document.createElement("span"), { className: "tcount", textContent: countsText(f.counts, true) }));
     return tile;
   }
   tile.type = "button";

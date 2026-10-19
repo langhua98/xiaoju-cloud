@@ -24,11 +24,13 @@ import (
 // thumbLinkBucket：缩略图链接的过期时间按 6 小时取整，同一时段里列目录得到的地址不变，浏览器缓存才用得上。
 const thumbLinkBucket = 6 * time.Hour
 
-// listItem 是列目录返回的条目：文件信息加上缩略图地址和视频时长（秒）。
+// listItem 是列目录返回的条目：文件信息加上缩略图地址和视频时长（秒）；文件夹带上里面（连同子文件夹）
+// 有几张照片、几个视频、几个其他文件。
 type listItem struct {
 	*meta.File
-	Thumb    string  `json:"thumb,omitempty"`
-	Duration float64 `json:"duration,omitempty"`
+	Thumb    string             `json:"thumb,omitempty"`
+	Duration float64            `json:"duration,omitempty"`
+	Counts   *meta.FolderCounts `json:"counts,omitempty"`
 }
 
 func (s *Server) withThumbs(ctx context.Context, files []*meta.File) ([]listItem, error) {

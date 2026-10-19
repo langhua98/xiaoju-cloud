@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -201,7 +202,32 @@ func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if err := s.withCounts(r.Context(), out); err != nil {
+		s.fail(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+// withCounts 给列出的文件夹附上里面有几张照片、几个视频（网页在文件夹名字下面显示）。
+func (s *Server) withCounts(ctx context.Context, items []listItem) error {
+	var ids []uuid.UUID
+	for _, it := range items {
+		if it.Type == meta.TypeFolder {
+			ids = append(ids, it.ID)
+		}
+	}
+	counts, err := s.svc.Store().CountInFolders(ctx, s.userID, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if items[i].Type == meta.TypeFolder {
+			c := counts[items[i].ID]
+			items[i].Counts = &c
+		}
+	}
+	return nil
 }
 
 // POST /api/files?name=xxx[&parent_id=uuid]，请求体是文件原始内容（流式，不走 multipart）。

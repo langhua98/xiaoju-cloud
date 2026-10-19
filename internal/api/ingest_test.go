@@ -364,6 +364,24 @@ func TestIngest(t *testing.T) {
 			t.Errorf("%s: %d %v, want todo %q", c.why, code, out, c.todo)
 		}
 	}
+
+	// 列目录时文件夹带上里面有几张照片、几个视频（连同子文件夹）
+	if code, out := call("POST", "/api/folders", `{"name":"子文件夹","parent_id":"`+albumID+`"}`, tokenH...); code != 201 {
+		t.Fatalf("create subfolder: %d %v", code, out)
+	} else if code, _ := call("POST", "/api/files?name=a.txt&parent_id="+out["id"].(string), "hello", tokenH...); code != 201 {
+		t.Fatalf("upload into subfolder: %d", code)
+	}
+	_, root = call("GET", "/api/folders/root/children", "", tokenH...)
+	counts := map[string]string{}
+	for _, it := range root["items"].([]any) {
+		m := it.(map[string]any)
+		c := m["counts"].(map[string]any)
+		counts[m["name"].(string)] = fmt.Sprintf("%v/%v/%v", c["photos"], c["videos"], c["others"])
+	}
+	// 相册：IMG_0001.jpg、IMG_0001 (2).jpg，VID_0001.mov，子文件夹里的 a.txt；隐藏相册：两张照片，IMG_0500.MOV、clip_.mov
+	if counts[AlbumFolder] != "2/1/1" || counts[HiddenAlbumFolder] != "2/2/0" {
+		t.Fatalf("folder counts: %v", counts)
+	}
 }
 
 // slowDriver 模拟写 Telegram 很慢（大视频）
