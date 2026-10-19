@@ -97,6 +97,9 @@ func (s *Server) Handler() http.Handler {
 	files("GET /api/files/{id}/content", s.download)
 	files("POST /api/files/{id}/link", s.createLink)
 	files("DELETE /api/files/{id}", s.deleteFile)
+	files("PATCH /api/files/{id}", s.patchFile)
+	files("POST /api/files/{id}/restore", s.restoreFile)
+	files("GET /api/trash", s.listTrash)
 	files("GET /api/auth/passkeys", s.listPasskeys)
 	files("DELETE /api/auth/passkeys/{id}", s.deletePasskey)
 	files("POST /api/auth/passkeys/add-code", s.newAddCode)
@@ -109,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 
 	ops("GET /api/backup/status", s.backupStatus)
 	ops("GET /api/stats", s.stats)
+	ops("GET /api/backup/phone", s.phoneBackup)
 	// 对账：GET 只出报告；POST 执行修复和残块清理
 	ops("GET /api/maintenance/reconcile", s.reconcile(false))
 	ops("POST /api/maintenance/reconcile", s.reconcile(true))
@@ -209,7 +213,7 @@ func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-// withCounts 给列出的文件夹附上里面有几张照片、几个视频（网页在文件夹名字下面显示）。
+// withCounts 给列出的文件夹附上里面有几张照片、几个视频，和封面（最新一张的缩略图，网页做相册卡片）。
 func (s *Server) withCounts(ctx context.Context, items []listItem) error {
 	var ids []uuid.UUID
 	for _, it := range items {
@@ -222,9 +226,13 @@ func (s *Server) withCounts(ctx context.Context, items []listItem) error {
 		return err
 	}
 	for i := range items {
-		if items[i].Type == meta.TypeFolder {
-			c := counts[items[i].ID]
-			items[i].Counts = &c
+		if items[i].Type != meta.TypeFolder {
+			continue
+		}
+		c := counts[items[i].ID]
+		items[i].Counts = &c
+		if c.Cover != nil && s.svc.CanThumbnail(&meta.File{ID: *c.Cover, Type: meta.TypeFile, Mime: c.CoverMime}) {
+			items[i].Cover = s.thumbURL(*c.Cover)
 		}
 	}
 	return nil
@@ -449,7 +457,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, meta.ErrConflict):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, service.ErrFolderPurge):
+	case errors.Is(err, service.ErrFolderPurge), errors.Is(err, meta.ErrNotFolder), errors.Is(err, meta.ErrMoveIntoSelf):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		s.log.Error("request failed", "err", err)

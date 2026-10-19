@@ -235,6 +235,33 @@ func TestThumbnails(t *testing.T) {
 		t.Fatal("broken image still advertised a thumbnail")
 	}
 
+	// 根目录里这个文件夹的封面：最新的、有缩略图的照片或视频（broken.jpg 更新，但做不了缩略图）
+	resp = do("GET", "/api/folders/root/children", "", tok...)
+	var root struct {
+		Items []struct {
+			ID     string `json:"id"`
+			Cover  string `json:"cover"`
+			Counts struct{ Photos, Videos, Others int }
+		}
+	}
+	json.NewDecoder(resp.Body).Decode(&root)
+	resp.Body.Close()
+	var cover string
+	for _, it := range root.Items {
+		if it.ID == dir.ID.String() {
+			cover = it.Cover
+			if it.Counts.Photos != 3 || it.Counts.Videos != 1 || it.Counts.Others != 1 {
+				t.Errorf("folder counts: %+v", it.Counts)
+			}
+		}
+	}
+	if !strings.HasPrefix(cover, "/thumb/"+photoID+"?exp=") {
+		t.Fatalf("folder cover: %q, want the thumbnail of %s", cover, photoID)
+	}
+	if code, _, _ := getThumb(cover); code != 200 {
+		t.Fatalf("cover link: %d", code)
+	}
+
 	// 永久删除时缩略图一起删掉
 	if err := svc.Purge(ctx, userID, uuid.MustParse(photoID)); err != nil {
 		t.Fatal(err)

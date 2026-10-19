@@ -449,7 +449,11 @@ func (s *Server) albumFolder(r *http.Request, name string) (*meta.File, error) {
 	if errors.Is(err, meta.ErrNotFound) {
 		f, err = store.CreateFolder(r.Context(), s.userID, nil, name)
 		if errors.Is(err, meta.ErrConflict) { // 同时有别的请求建好了
-			f, err = store.FindFolder(r.Context(), s.userID, nil, name)
+			return store.FindFolder(r.Context(), s.userID, nil, name)
+		}
+		if err == nil && name == HiddenAlbumFolder { // 隐藏相册默认私密（网页上遮住，验证后才显示）
+			private := true
+			f, err = store.UpdateFile(r.Context(), s.userID, f.ID, meta.FileUpdate{Private: &private})
 		}
 	}
 	return f, err

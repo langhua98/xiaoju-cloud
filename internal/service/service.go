@@ -311,17 +311,49 @@ func (s *Service) Open(ctx context.Context, userID, id uuid.UUID) (*meta.File, *
 	return f, r, nil
 }
 
-var ErrFolderPurge = errors.New("permanent delete of folders is not supported yet; move to trash instead")
+var ErrFolderPurge = errors.New("move the folder to the trash before deleting it permanently")
 
-// Purge 永久删除文件：先删存储端分块，再删数据库记录。
+// Purge 永久删除文件：先删存储端分块，再删数据库记录。文件夹要先移入回收站，再连同里面所有文件一起删。
 func (s *Service) Purge(ctx context.Context, userID, id uuid.UUID) error {
 	f, err := s.store.Get(ctx, userID, id)
 	if err != nil {
 		return err
 	}
 	if f.Type != meta.TypeFile {
-		return ErrFolderPurge
+		if f.TrashedAt == nil {
+			return ErrFolderPurge
+		}
+		return s.purgeFolder(ctx, userID, f)
 	}
+	return s.purgeFile(ctx, f)
+}
+
+// purgeFolder 一个个删掉文件夹里（任意层）的文件，最后删文件夹本身（子文件夹的记录跟着删）。
+// 中途出错就停下，已删的不会恢复，再删一次接着删剩下的。
+func (s *Service) purgeFolder(ctx context.Context, userID uuid.UUID, folder *meta.File) error {
+	ids, err := s.store.FilesUnder(ctx, userID, folder.ID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		f, err := s.store.Get(ctx, userID, id)
+		if errors.Is(err, meta.ErrNotFound) { // 还在上传中的：只删记录
+			if err := s.store.DeleteRow(ctx, id); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := s.purgeFile(ctx, f); err != nil {
+			return err
+		}
+	}
+	return s.store.DeleteRow(ctx, folder.ID)
+}
+
+func (s *Service) purgeFile(ctx context.Context, f *meta.File) error {
 	parts, err := s.store.ListParts(ctx, f.ID)
 	if err != nil {
 		return err

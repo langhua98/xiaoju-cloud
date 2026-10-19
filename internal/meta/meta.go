@@ -38,6 +38,7 @@ type File struct {
 	Status     string     `json:"-"`
 	TrashedAt  *time.Time `json:"trashed_at,omitempty"`
 	TakenAt    *time.Time `json:"taken_at,omitempty"` // 拍摄时间（照片、视频里读出来的；没有时为 nil）
+	Private    bool       `json:"private,omitempty"`  // 私密文件夹：网页上默认遮住，验证后才显示（里面的子文件夹也算）
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
@@ -65,12 +66,12 @@ type Store struct {
 
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
-const fileColumns = `id, user_id, parent_id, name, type, size, mime, sha256, dek_wrapped, status, trashed_at, taken_at, created_at, updated_at`
+const fileColumns = `id, user_id, parent_id, name, type, size, mime, sha256, dek_wrapped, status, trashed_at, taken_at, private, created_at, updated_at`
 
 func scanFile(row pgx.Row) (*File, error) {
 	var f File
 	err := row.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.Type, &f.Size, &f.Mime,
-		&f.SHA256, &f.DEKWrapped, &f.Status, &f.TrashedAt, &f.TakenAt, &f.CreatedAt, &f.UpdatedAt)
+		&f.SHA256, &f.DEKWrapped, &f.Status, &f.TrashedAt, &f.TakenAt, &f.Private, &f.CreatedAt, &f.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -223,14 +224,17 @@ const (
 	isVideoSQL = `(mime LIKE 'video/%' OR name ~* '\.(mp4|mov|m4v|avi|mkv|webm|3gp|wmv|flv|mts)$')`
 )
 
-// FolderCounts 是一个文件夹里（连同子文件夹）的照片、视频、其他文件各有几个。
+// FolderCounts 是一个文件夹里（连同子文件夹）的照片、视频、其他文件各有几个；Cover 是里面最新的一张照片或视频
+// （按拍摄时间，没有时按上传时间；已经有缩略图的优先），网页拿它的缩略图做相册封面。
 type FolderCounts struct {
-	Photos int64 `json:"photos"`
-	Videos int64 `json:"videos"`
-	Others int64 `json:"others"`
+	Photos    int64      `json:"photos"`
+	Videos    int64      `json:"videos"`
+	Others    int64      `json:"others"`
+	Cover     *uuid.UUID `json:"-"`
+	CoverMime string     `json:"-"`
 }
 
-// CountInFolders 统计每个文件夹里（递归）的照片、视频和其他文件数，跳过回收站里的条目及其子项。
+// CountInFolders 统计每个文件夹里（递归）的照片、视频和其他文件数，并挑出封面，跳过回收站里的条目及其子项。
 // 照片、视频的判断和 DriveStats 一样。没有文件的文件夹不在结果里。
 func (s *Store) CountInFolders(ctx context.Context, userID uuid.UUID, folderIDs []uuid.UUID) (map[uuid.UUID]FolderCounts, error) {
 	out := map[uuid.UUID]FolderCounts{}
@@ -239,18 +243,26 @@ func (s *Store) CountInFolders(ctx context.Context, userID uuid.UUID, folderIDs 
 	}
 	rows, err := s.db.Query(ctx, `
 		WITH RECURSIVE tree AS (
-			SELECT c.parent_id AS root, c.id, c.type, c.mime, c.name FROM files c
+			SELECT c.parent_id AS root, c.id, c.type, c.mime, c.name, COALESCE(c.taken_at, c.created_at) AS at FROM files c
 			WHERE c.user_id = $1 AND c.parent_id = ANY($2) AND c.status = 'active' AND c.trashed_at IS NULL
 			UNION ALL
-			SELECT t.root, c.id, c.type, c.mime, c.name FROM files c
+			SELECT t.root, c.id, c.type, c.mime, c.name, COALESCE(c.taken_at, c.created_at) FROM files c
 			JOIN tree t ON c.parent_id = t.id
 			WHERE c.status = 'active' AND c.trashed_at IS NULL
 		), kinds AS (
-			SELECT root, `+isPhotoSQL+` AS photo, NOT `+isPhotoSQL+` AND `+isVideoSQL+` AS video
+			SELECT root, id, mime, at, `+isPhotoSQL+` AS photo, NOT `+isPhotoSQL+` AND `+isVideoSQL+` AS video
 			FROM tree WHERE type = 'file'
+		), counts AS (
+			SELECT root, count(*) FILTER (WHERE photo) AS photos, count(*) FILTER (WHERE video) AS videos,
+			       count(*) FILTER (WHERE NOT photo AND NOT video) AS others
+			FROM kinds GROUP BY root
+		), covers AS (
+			SELECT DISTINCT ON (root) root, id, mime FROM kinds
+			WHERE mime LIKE 'image/%' OR mime LIKE 'video/%'
+			ORDER BY root, EXISTS (SELECT 1 FROM thumbnails th WHERE th.file_id = kinds.id) DESC, at DESC, id
 		)
-		SELECT root, count(*) FILTER (WHERE photo), count(*) FILTER (WHERE video), count(*) FILTER (WHERE NOT photo AND NOT video)
-		FROM kinds GROUP BY root`, userID, folderIDs)
+		SELECT c.root, c.photos, c.videos, c.others, v.id, COALESCE(v.mime, '')
+		FROM counts c LEFT JOIN covers v ON v.root = c.root`, userID, folderIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +270,7 @@ func (s *Store) CountInFolders(ctx context.Context, userID uuid.UUID, folderIDs 
 	for rows.Next() {
 		var id uuid.UUID
 		var c FolderCounts
-		if err := rows.Scan(&id, &c.Photos, &c.Videos, &c.Others); err != nil {
+		if err := rows.Scan(&id, &c.Photos, &c.Videos, &c.Others, &c.Cover, &c.CoverMime); err != nil {
 			return nil, err
 		}
 		out[id] = c

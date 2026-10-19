@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS ingest_checks;
+ALTER TABLE files DROP COLUMN IF EXISTS private;

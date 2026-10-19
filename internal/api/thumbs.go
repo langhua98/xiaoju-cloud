@@ -31,6 +31,7 @@ type listItem struct {
 	Thumb    string             `json:"thumb,omitempty"`
 	Duration float64            `json:"duration,omitempty"`
 	Counts   *meta.FolderCounts `json:"counts,omitempty"`
+	Cover    string             `json:"cover,omitempty"` // 文件夹封面的缩略图地址
 }
 
 func (s *Server) withThumbs(ctx context.Context, files []*meta.File) ([]listItem, error) {
@@ -46,18 +47,23 @@ func (s *Server) withThumbs(ctx context.Context, files []*meta.File) ([]listItem
 	if err != nil {
 		return nil, err
 	}
-	b := int64(thumbLinkBucket / time.Second)
-	exp := (time.Now().Unix()/b + 2) * b // 6–12 小时后过期
 	for i := range items {
 		f := items[i].File
 		d, ready := durations[f.ID]
 		if f.Type != meta.TypeFile || !(ready || s.svc.CanThumbnail(f)) {
 			continue
 		}
-		items[i].Thumb = fmt.Sprintf("/thumb/%s?exp=%d&sig=%s", f.ID, exp, s.thumbSig(f.ID, exp))
+		items[i].Thumb = s.thumbURL(f.ID)
 		items[i].Duration = d.Seconds()
 	}
 	return items, nil
+}
+
+// thumbURL 是缩略图的签名地址，6–12 小时后过期（同一时段里地址不变，浏览器缓存才用得上）。
+func (s *Server) thumbURL(id uuid.UUID) string {
+	b := int64(thumbLinkBucket / time.Second)
+	exp := (time.Now().Unix()/b + 2) * b
+	return fmt.Sprintf("/thumb/%s?exp=%d&sig=%s", id, exp, s.thumbSig(id, exp))
 }
 
 // thumbSig 用管理员令牌签名（和下载链接用不同的前缀，两种签名不能互换）。

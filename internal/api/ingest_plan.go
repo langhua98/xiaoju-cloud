@@ -170,6 +170,11 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	uploaded := len(names) - len(todo)
+	// 记下这次清单，网页的“备份状态”据此显示手机上的照片备份到哪一步了；记不下来不影响上传
+	check := meta.IngestCheck{Folder: folder, ByDate: dates != nil || req.Dates != "", Files: len(names), Uploaded: uploaded, Todo: len(todo)}
+	if err := s.svc.Store().RecordIngestCheck(r.Context(), s.userID, check); err != nil {
+		s.log.Warn("ingest plan: could not record the check", "err", err)
+	}
 	s.log.Info("ingest plan", "folder", folder, "files", len(names), "uploaded", uploaded, "todo", len(todo),
 		"by_date", dates != nil, "date_agreed", dateAgreed, "date_mismatch", len(dateMismatch),
 		"unparsed_sizes", unparsedSizes, "unparsed_dates", unparsedDates, "first_todo", strings.Join(firstTodo, ", "), "client", clientIP(r))
