@@ -775,6 +775,56 @@ dialog.viewer.closing { animation: fade-out 0.2s ease forwards; }
 }
 .vw-media .vw-video { width: 100%; height: 100%; object-fit: contain; }
 .vw-media .vw-video.loading { opacity: 0; }
+
+/* 视频：自己画的播放键和控件（不用系统控件，左右滑才不会被视频接管） */
+.vw-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  margin: -38px 0 0 -38px;
+  padding: 0 0 0 6px;
+  border: 1px solid rgb(255 255 255 / 0.25);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.45);
+  color: #fff;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 40px rgb(0 0 0 / 0.45);
+  transition: transform 0.15s ease, opacity 0.2s ease;
+}
+.vw-play:hover { background: rgb(0 0 0 / 0.55); }
+.vw-play:active { transform: scale(0.92); }
+.vw-play svg { width: 34px; height: 34px; }
+.vw-controls {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 16px;
+  background: rgb(0 0 0 / 0.45);
+  color: #fff;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  transition: opacity 0.2s ease;
+  opacity: var(--vw-fade);
+}
+.vw-controls .vw-cbtn { display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #fff; }
+.vw-controls .vw-cbtn:hover { background: rgb(255 255 255 / 0.12); }
+.vw-controls .vw-cbtn svg { width: 22px; height: 22px; }
+.vw-time { flex: none; font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: rgb(255 255 255 / 0.85); font-variant-numeric: tabular-nums; }
+.vw-seek { flex: 1; min-width: 0; height: 28px; margin: 0; padding: 0; border: 0; background: transparent; accent-color: var(--accent); touch-action: none; }
+dialog.viewer.ui-hidden .vw-controls, dialog.viewer.zoomed .vw-controls { opacity: 0; pointer-events: none; }
 .vw-spin {
   position: absolute;
   top: 50%;
@@ -845,8 +895,8 @@ dialog.viewer .vw-nav {
 .vw-nav.next { right: 12px; }
 .vw-nav svg { width: 22px; height: 22px; }
 dialog.viewer .vw-nav:disabled { opacity: 0; pointer-events: none; }
-/* 手机上靠滑动切换；视频占满屏幕不好滑，留着箭头 */
-@media (hover: none) { dialog.viewer:not(.is-video) .vw-nav { display: none; } }
+/* 手机上靠滑动切换（视频也是），不显示箭头 */
+@media (hover: none) { dialog.viewer .vw-nav { display: none; } }
 dialog.viewer.ui-hidden .vw-bar, dialog.viewer.ui-hidden .vw-nav,
 dialog.viewer.zoomed .vw-nav { opacity: 0; pointer-events: none; }
 

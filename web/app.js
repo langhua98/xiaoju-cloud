@@ -2351,17 +2351,8 @@ async function showFull(slide, media, f) {
   if (!still()) return;
   const src = `${url}&inline=1`;
   if (kind === "video") {
-    const v = document.createElement("video");
-    Object.assign(v, { controls: true, playsInline: true, autoplay: true, preload: "metadata" });
-    v.className = "vw-video loading";
-    v.addEventListener("loadedmetadata", () => {
-      spin.remove();
-      v.classList.remove("loading");
-      media.querySelector(".vw-small")?.remove();
-    }, { once: true });
-    v.addEventListener("error", () => { spin.remove(); slide.append(vwNote("视频加载失败，可以下载后查看")); }, { once: true });
-    v.src = src;
-    media.append(v);
+    spin.remove();
+    showVideo(slide, media, f, src);
     return;
   }
   const img = Object.assign(new Image(), { className: "vw-full", alt: f.name, draggable: false });
@@ -2375,6 +2366,117 @@ async function showFull(slide, media, f) {
   spin.remove();
   if (!ok) { slide.append(vwNote("原图加载失败，可以下载后查看")); return; }
   media.replaceChildren(img);
+}
+
+// 视频：不用浏览器自带的控件——iPhone 上它会接管视频上的所有手势（左右滑不动），没点播放前也什么都不显示。
+// 自己画：中间一个播放键（垫着缩略图），底部播放 / 暂停、进度条、时间、静音、全屏。
+// iPhone 不允许没点过就带声音自动播放：先试着播放，不行就等点播放键（点的那一下是允许的）。
+const VW_ICON = {
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>',
+  sound: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  muted: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  full: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+};
+
+const playClock = (sec) => {
+  if (!Number.isFinite(sec) || sec < 0) return "0:00";
+  const s = Math.floor(sec);
+  const pad = (x) => String(x).padStart(2, "0");
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`;
+};
+
+// MediaError 的编号 → 说明（MEDIA_ERR_NETWORK 2、DECODE 3、SRC_NOT_SUPPORTED 4）
+function videoErrorText(v) {
+  const code = v.error?.code;
+  if (code === 2) return "视频加载中断了（网络不稳），往回滑一下再回来试试，或者下载后查看";
+  if (code === 3 || code === 4) return `这个视频的编码这台设备放不了（错误 ${code}），可以点右上角下载后用相册打开`;
+  return "视频加载失败，可以点右上角下载后查看";
+}
+
+function showVideo(slide, media, f, src) {
+  const v = document.createElement("video");
+  v.className = "vw-video loading";
+  v.playsInline = true;
+  v.setAttribute("playsinline", "");
+  v.setAttribute("webkit-playsinline", "");
+  v.preload = "metadata";
+  const html = (markup) => { const t = document.createElement("template"); t.innerHTML = markup; return t.content.firstChild; };
+  const big = mk("button", { type: "button", className: "vw-play", ariaLabel: "播放" }, html(VW_ICON.play));
+  const toggle = mk("button", { type: "button", className: "vw-cbtn", ariaLabel: "播放" }, html(VW_ICON.play));
+  const cur = mk("span", { className: "vw-time", textContent: "0:00" });
+  const seek = mk("input", { type: "range", className: "vw-seek", min: 0, max: 1000, step: 1, value: 0, ariaLabel: "播放进度" });
+  const total = mk("span", { className: "vw-time", textContent: f.duration ? playClock(f.duration) : "--:--" });
+  const mute = mk("button", { type: "button", className: "vw-cbtn", ariaLabel: "静音" }, html(VW_ICON.sound));
+  const full = mk("button", { type: "button", className: "vw-cbtn", ariaLabel: "全屏" }, html(VW_ICON.full));
+  const controls = mk("div", { className: "vw-controls" }, toggle, cur, seek, total, mute, full);
+  const spin = mk("div", { className: "vw-spin", hidden: true });
+  let seeking = false;
+  let failed = false;
+
+  const setIcon = (btn, name, label) => { btn.replaceChildren(html(VW_ICON[name])); btn.ariaLabel = label; };
+  const paint = () => {
+    const playing = !v.paused && !v.ended;
+    slide.classList.toggle("playing", playing);
+    big.hidden = playing || failed;
+    setIcon(toggle, playing ? "pause" : "play", playing ? "暂停" : "播放");
+  };
+  const fail = () => {
+    if (failed) return;
+    failed = true;
+    spin.hidden = true;
+    big.hidden = true;
+    controls.hidden = true;
+    slide.append(vwNote(videoErrorText(v)));
+  };
+  const start = () => {
+    if (failed) return;
+    if (v.ended) v.currentTime = 0;
+    const p = v.play();
+    if (p) p.catch((err) => { if (err.name !== "NotAllowedError" && err.name !== "AbortError") fail(); paint(); });
+  };
+
+  v.addEventListener("loadedmetadata", () => { total.textContent = playClock(v.duration); });
+  v.addEventListener("playing", () => {
+    spin.hidden = true;
+    v.classList.remove("loading");
+    media.querySelector(".vw-small")?.remove();
+    paint();
+  });
+  v.addEventListener("waiting", () => { if (!v.paused) spin.hidden = false; });
+  v.addEventListener("canplay", () => { spin.hidden = true; });
+  v.addEventListener("play", () => { if (v.readyState < 3) spin.hidden = false; paint(); });
+  v.addEventListener("pause", paint);
+  v.addEventListener("ended", paint);
+  v.addEventListener("timeupdate", () => {
+    cur.textContent = playClock(v.currentTime);
+    if (!seeking && v.duration) seek.value = String(Math.round((v.currentTime / v.duration) * 1000));
+  });
+  v.addEventListener("error", fail);
+  big.addEventListener("click", start);
+  toggle.addEventListener("click", () => (v.paused || v.ended ? start() : v.pause()));
+  mute.addEventListener("click", () => {
+    v.muted = !v.muted;
+    setIcon(mute, v.muted ? "muted" : "sound", v.muted ? "取消静音" : "静音");
+  });
+  full.addEventListener("click", () => {
+    if (v.webkitEnterFullscreen) v.webkitEnterFullscreen(); // iPhone：交给系统播放器全屏
+    else v.requestFullscreen?.();
+  });
+  seek.addEventListener("input", () => {
+    seeking = true;
+    if (v.duration) {
+      v.currentTime = (Number(seek.value) / 1000) * v.duration;
+      cur.textContent = playClock(v.currentTime);
+    }
+  });
+  seek.addEventListener("change", () => { seeking = false; });
+
+  v.src = src;
+  media.append(v);
+  slide.append(spin, big, controls);
+  paint();
+  start(); // 电脑上多半能直接播；iPhone 上会被拒绝，停在播放键
 }
 
 // 切到上一张（-1）/ 下一张（1）
@@ -2461,9 +2563,8 @@ let tapTimer = 0;
 
 vwStage.addEventListener("pointerdown", (e) => {
   if ((e.pointerType === "mouse" && e.button !== 0) || vw.animating) return;
-  // 视频底部是系统的播放控件（拖进度条），那里的手势交给视频
-  const video = e.target.closest("video");
-  if (video && e.clientY > video.getBoundingClientRect().bottom - 64) return;
+  // 视频的播放键、进度条这些控件上的手势交给控件
+  if (e.target.closest(".vw-controls, .vw-play")) return;
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ptrs.size === 1) {
     gesture = { type: "pending", x0: e.clientX, y0: e.clientY, t0: performance.now(), zoom0: { ...vw.zoom } };
@@ -2569,7 +2670,6 @@ function tap(e) {
     return;
   }
   lastTap = { t: now, x: e.clientX, y: e.clientY };
-  if (e.target.closest("video")) return; // 点视频是系统控件的事
   clearTimeout(tapTimer);
   tapTimer = setTimeout(() => {
     lastTap = null;
