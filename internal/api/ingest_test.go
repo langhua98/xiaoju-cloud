@@ -382,6 +382,20 @@ func TestIngest(t *testing.T) {
 	if counts[AlbumFolder] != "2/1/1" || counts[HiddenAlbumFolder] != "2/2/0" {
 		t.Fatalf("folder counts: %v", counts)
 	}
+	// 进了文件夹，统计栏只算这个文件夹里的（连同子文件夹）
+	if code, st := call("GET", "/api/stats?folder="+albumID, "", tokenH...); code != 200 ||
+		st["files"] != 4.0 || st["photos"] != 2.0 || st["videos"] != 1.0 || st["others"] != 1.0 || st["folders"] != 1.0 {
+		t.Fatalf("album stats: %d %v", code, st)
+	}
+	if code, st := call("GET", "/api/stats", "", tokenH...); code != 200 || st["files"] != 8.0 || st["folders"] != 3.0 {
+		t.Fatalf("drive stats: %d %v", code, st)
+	}
+	if code, _ := call("GET", "/api/stats?folder="+uuid.NewString(), "", tokenH...); code != 404 {
+		t.Errorf("stats of an unknown folder: %d", code)
+	}
+	if code, _ := call("GET", "/api/stats?folder=x", "", tokenH...); code != 400 {
+		t.Errorf("stats with a bad folder id: %d", code)
+	}
 }
 
 // slowDriver 模拟写 Telegram 很慢（大视频）

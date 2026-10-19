@@ -268,11 +268,20 @@ func (s *Store) CountInFolders(ctx context.Context, userID uuid.UUID, folderIDs 
 
 // DriveStats 统计用户网盘里的文件数量和大小。从根目录递归，跳过回收站里的条目及其子项。
 func (s *Store) DriveStats(ctx context.Context, userID uuid.UUID) (DriveStats, error) {
+	return s.FolderStats(ctx, userID, nil)
+}
+
+// FolderStats 统计一个文件夹里（连同子文件夹，不算它自己）的文件数量和大小；folderID 为 nil 时统计整个网盘。
+// 文件夹不存在或在回收站里时返回 ErrNotFound。
+func (s *Store) FolderStats(ctx context.Context, userID uuid.UUID, folderID *uuid.UUID) (DriveStats, error) {
 	var st DriveStats
+	if err := s.checkParent(ctx, userID, folderID); err != nil {
+		return st, err
+	}
 	err := s.db.QueryRow(ctx, `
 		WITH RECURSIVE live AS (
 			SELECT id, type, mime, name, size FROM files
-			WHERE user_id = $1 AND parent_id IS NULL AND status = 'active' AND trashed_at IS NULL
+			WHERE user_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND status = 'active' AND trashed_at IS NULL
 			UNION ALL
 			SELECT c.id, c.type, c.mime, c.name, c.size FROM files c
 			JOIN live p ON c.parent_id = p.id
@@ -291,7 +300,7 @@ func (s *Store) DriveStats(ctx context.Context, userID uuid.UUID) (DriveStats, e
 		       COALESCE(sum(size) FILTER (WHERE video), 0),
 		       count(*) FILTER (WHERE type = 'file' AND NOT EXISTS (
 		           SELECT 1 FROM file_parts p WHERE p.file_id = kinds.id AND p.backup_message_id IS NULL))
-		FROM kinds`, userID).
+		FROM kinds`, userID, folderID).
 		Scan(&st.Folders, &st.Files, &st.Photos, &st.Videos, &st.Bytes, &st.PhotoBytes, &st.VideoBytes, &st.BackedUpFiles)
 	st.Others = st.Files - st.Photos - st.Videos
 	return st, err

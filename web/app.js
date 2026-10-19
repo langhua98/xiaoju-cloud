@@ -1198,7 +1198,7 @@ function stopBackupPolling() {
   $("#stats").hidden = true;
 }
 
-// 同时刷新网盘统计和备份进度（备份提示里的文件数来自统计）
+// 同时刷新网盘统计和备份进度（备份提示里的文件数来自整个网盘的统计）
 async function refreshBackup() {
   if (!state.session) return;
   const [stats, backup] = await Promise.all([
@@ -1206,12 +1206,22 @@ async function refreshBackup() {
     request("GET", "/api/backup/status").catch(() => null),
   ]);
   if (!state.session) return; // 请求期间已退出
-  const statsEl = $("#stats");
-  if (stats) renderStats(statsEl, stats);
-  statsEl.hidden = !stats;
   const badge = $("#backup-badge");
   if (backup) renderBackup(badge, backup, stats);
   badge.hidden = !backup;
+  refreshStats(stats);
+}
+
+// 统计栏：在根目录显示整个网盘的，进了文件夹只算这个文件夹里的（连同子文件夹）。
+// drive：刚取到的整个网盘的统计（在根目录时直接用，不用再请求）
+async function refreshStats(drive) {
+  const folder = state.folderId;
+  let st = folder ? null : drive;
+  if (!st) st = await request("GET", folder ? `/api/stats?folder=${folder}` : "/api/stats").catch(() => null);
+  if (!state.session || folder !== state.folderId) return; // 请求期间退出或换了目录
+  const statsEl = $("#stats");
+  if (st) renderStats(statsEl, st);
+  statsEl.hidden = !st;
 }
 
 // 例：共 120 个文件 · 照片 80 张 · 视频 30 个 · 其他 10 个 · 12.3 GB
@@ -1328,6 +1338,7 @@ async function load(prefetchedRoot = null) {
     if (seq !== loadSeq) return; // 期间又切换了目录，丢弃旧结果
     renderCrumbs(chain);
     renderItems(list.items);
+    refreshStats();
   } catch (err) {
     if (seq !== loadSeq) return;
     rows.querySelectorAll(".skeleton").forEach((tr) => tr.remove());

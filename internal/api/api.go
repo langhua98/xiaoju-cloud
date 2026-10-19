@@ -412,9 +412,19 @@ func (s *Server) backupStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-// GET /api/stats 返回整个网盘的统计：文件数（照片、视频、其他）、总大小、已完整备份的文件数。
+// GET /api/stats[?folder=uuid] 返回整个网盘（或一个文件夹里，连同子文件夹）的统计：文件数（照片、视频、其他）、
+// 总大小、已完整备份的文件数。
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
-	st, err := s.svc.Store().DriveStats(r.Context(), s.userID)
+	var folder *uuid.UUID
+	if id := r.URL.Query().Get("folder"); id != "" {
+		u, err := uuid.Parse(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid folder id")
+			return
+		}
+		folder = &u
+	}
+	st, err := s.svc.Store().FolderStats(r.Context(), s.userID, folder)
 	if err != nil {
 		s.fail(w, err)
 		return
