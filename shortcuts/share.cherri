@@ -1,0 +1,106 @@
+// “分享到小桔云盘”快捷指令（Cherri 语言，https://github.com/electrikmilk/cherri）。
+// 由 shortcuts/build.py 编译、签名，发布网页时一起放到 GitHub Pages（xiaoju-share.shortcut）。
+//
+// 出现在分享菜单里：在照片 App（或「文件」、微信等）里选几张照片、视频 → 分享 → 分享到小桔云盘，
+// 选放进网盘的「相册」还是「隐藏相册」，一张张传上去（只进不出，不需要密钥）。不是从分享菜单打开时，自己选照片。
+// 适合传几张、几十张；几百上千张用「备份照片到小桔云盘」（分享菜单里一次给太多，iOS 会卡住或停掉快捷指令）。
+// 传过的不会重复：服务端按名字 + 大小认出来，回答 skipped。
+#include 'actions/photos'
+#include 'actions/images'
+#include 'actions/scripting'
+#include 'actions/media'
+#define name 分享到小桔云盘
+#define color orange
+#define glyph uploadArrow
+#define from sharesheet
+#define inputs image, media, file
+
+// 「获取 URL 的内容」：POST，请求体是文件本身
+action 'downloadurl' uploadFile(
+    text url: 'WFURL',
+    variable file: 'WFRequestVariable',
+    dictionary! headers: 'WFHTTPHeaders'
+) {
+    "WFHTTPMethod": "POST",
+    "WFHTTPBodyType": "File",
+    "ShowHeaders": true
+}
+
+// 「获取文件的详细信息」（不用 Cherri 自带的 getFileDetail，见 backup.cherri）
+action 'properties.files' fileDetail(variable file: 'WFInput', text detail: 'WFContentItemPropertyName')
+
+// 上传地址：构建时由 build.py 换成网盘地址
+@uploadURL = "__INGEST_URL__"
+
+@items = ShortcutInput
+@total = count(items)
+if total.number == 0 {
+    // 不是从分享菜单打开的：自己选（一次几十张以内，选太多会卡住）
+    @items = selectPhotos(true)
+    @total = count(items)
+}
+
+// 放进网盘哪个文件夹（不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置）
+@targets = list("🖼 网盘的「相册」", "🙈 网盘的「隐藏相册」")
+@target = chooseFromList(targets, "这 {total} 个放进网盘哪里？")
+@targetText = "{target}"
+@albumKey = ""
+@folderName = "相册"
+if targetText == "🙈 网盘的「隐藏相册」" {
+    @albumKey = "hidden"
+    @folderName = "隐藏相册"
+}
+
+@uploaded = 0
+@skipped = 0
+@done = 0
+for item in items {
+    @done += 1
+    @mediaType = getImageDetail(item, "Media Type")
+    @kind = "{mediaType}"
+    @isVideo = 0
+    if kind == "Video" {
+        @isVideo = 1
+    }
+    if kind == "视频" {
+        @isVideo = 1
+    }
+    if kind == "影片" {
+        @isVideo = 1
+    }
+    @file = item
+    @fullName = ""
+    if isVideo == 1 {
+        // 相册里的视频先用「编码视频」（Passthrough：原尺寸、不重新压缩）导出成文件再传，见 newphotos.cherri；
+        // 名字没有扩展名，服务端按文件内容补上
+        @videoName = getImageDetail(item, "Name")
+        @fullName = "{videoName}"
+        @file = encodeVideo(item)
+        @size = fileDetail(file, "File Size")
+        showNotification("{done}/{total} · {fullName}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+    } else {
+        @name = fileDetail(item, "Name")
+        @ext = fileDetail(item, "File Extension")
+        @extText = "{ext}"
+        @fullName = "{name}.{extText}"
+        if extText == "" {
+            @fullName = "{name}"
+        }
+    }
+    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{fullName}", "X-Xiaoju-Album": "{albumKey}"})
+    // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped）
+    @respDict = getDictionary(resp)
+    @resultValue = getValue(respDict, "result")
+    @result = "{resultValue}"
+    if result == "uploaded" {
+        @uploaded += 1
+    } else {
+        if result == "skipped" {
+            @skipped += 1
+        } else {
+            alert("{fullName} 没传上去：{resp}\n\n这次新上传 {uploaded} 个。检查网络后再分享一次，传过的会自动跳过。", "上传失败")
+            stop()
+        }
+    }
+}
+alert("✅ 新上传 {uploaded} 个\n☑️ 以前传过 {skipped} 个\n📁 都在网盘的「{folderName}」", "上传完成")

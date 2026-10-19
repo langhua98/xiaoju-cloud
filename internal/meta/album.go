@@ -2,6 +2,7 @@ package meta
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -50,16 +51,17 @@ func (s *Store) RenameFile(ctx context.Context, userID, id uuid.UUID, name strin
 	return nil
 }
 
-// NameSize 是一个文件的名字和大小。
+// NameSize 是一个文件的名字、大小和拍摄时间（生成缩略图时从文件里读出来，不知道时为 nil）。
 type NameSize struct {
-	Name string
-	Size int64
+	Name    string
+	Size    int64
+	TakenAt *time.Time
 }
 
-// ListNameSizes 列出目录下所有（未删除的）文件的名字和大小。
+// ListNameSizes 列出目录下所有（未删除的）文件的名字、大小和拍摄时间。
 func (s *Store) ListNameSizes(ctx context.Context, userID, parentID uuid.UUID) ([]NameSize, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT name, size FROM files
+		SELECT name, size, taken_at FROM files
 		WHERE user_id = $1 AND parent_id = $2 AND type = 'file' AND status = 'active' AND trashed_at IS NULL`, userID, parentID)
 	if err != nil {
 		return nil, err
@@ -68,7 +70,7 @@ func (s *Store) ListNameSizes(ctx context.Context, userID, parentID uuid.UUID) (
 	var out []NameSize
 	for rows.Next() {
 		var f NameSize
-		if err := rows.Scan(&f.Name, &f.Size); err != nil {
+		if err := rows.Scan(&f.Name, &f.Size, &f.TakenAt); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

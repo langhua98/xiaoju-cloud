@@ -37,6 +37,7 @@ type Server struct {
 	grid        *auth.Grid
 	sessions    *auth.Sessions
 	views       *auth.Views // 每个会话看了几张照片、视频（格子口令抽查用）
+	loc         *time.Location
 }
 
 type Options struct {
@@ -52,6 +53,8 @@ type Options struct {
 	Grid *auth.Grid
 	// Sessions 为 nil 时用令牌新建（作废名单只在内存里）。
 	Sessions *auth.Sessions
+	// Location 是用户所在的时区：快捷指令发来的拍摄日期（手机显示的当地时间）按它来比。nil 时用 UTC。
+	Location *time.Location
 }
 
 func New(svc *service.Service, opt Options) *Server {
@@ -59,9 +62,13 @@ func New(svc *service.Service, opt Options) *Server {
 	if sessions == nil {
 		sessions = auth.NewSessions(opt.Token)
 	}
+	loc := opt.Location
+	if loc == nil {
+		loc = time.UTC
+	}
 	return &Server{
 		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
-		passkeys: opt.Passkeys, grid: opt.Grid, sessions: sessions, views: auth.NewViews(),
+		passkeys: opt.Passkeys, grid: opt.Grid, sessions: sessions, views: auth.NewViews(), loc: loc,
 	}
 }
 

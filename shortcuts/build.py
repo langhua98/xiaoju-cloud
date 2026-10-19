@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""编译并签名快捷指令：“备份照片到小桔云盘”（backup，选个起点分批续传）或“同步相册到小桔云盘”（sync，整个相册分批续传）。
+"""编译并签名快捷指令：“备份照片到小桔云盘”（backup，上传「文件」里的一个文件夹）、“自动备份新照片”（newphotos，
+直接从相册传最新的照片）或“分享到小桔云盘”（share，分享菜单里传几张）。
 
-    python3 shortcuts/build.py [--shortcut backup|sync] --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
+    python3 shortcuts/build.py [--shortcut backup|newphotos|share] --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
 
 1. 用 Cherri 编译 <shortcut>.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
 2. 修正导入问题指向的操作（如果有；Cherri 1.3.2 会把多个问题都指向第 0 个操作）；
-   把占位的「获取最新的照片」换成带日期（和“已隐藏”）条件的「查找照片」（Cherri 不支持过滤条件）；
+   把占位的「获取最新的照片」换成「查找照片」（Cherri 没有这个操作）；
 3. 检查“如果 / 重复”的开始和结束一一对应（Cherri 1.3.2 编译 else if 会把“结束”放错位置）；
 4. iOS 15 起快捷指令文件必须签名才能导入：交给 RoutineHub 的 HubSign 服务签名（Cherri 在非 macOS 上也用它）。
    文件里只有上传地址（本来就公开在 web/config.js 里），没有任何密钥。
@@ -24,7 +25,7 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-SHORTCUTS = {"backup": "备份照片到小桔云盘", "sync": "同步相册到小桔云盘"}
+SHORTCUTS = {"backup": "备份照片到小桔云盘", "newphotos": "自动备份新照片", "share": "分享到小桔云盘"}
 HUBSIGN = "https://hubsign.routinehub.services/sign"
 
 
@@ -60,68 +61,27 @@ def fix_questions(wf):
         q["ActionIndex"] = i
 
 
-# 每个快捷指令里「获取最新的照片」占位按顺序换成什么："keep" 保留「获取最新的照片」（没有任何条件），
-# 否则是一个 dict，换成「查找照片」（按创建日期最旧的排最前，张数不变），条件：
-#   date:   日期条件的写法（见 date_template），没有这个键就不加日期条件
-#   var:    日期条件用的变量名；op：比较方式（0 早于、2 晚于、3 不早于，与“如果”的 小于 / 大于 / 大于等于 同一套编号）
-#   hidden: True / False 加“已隐藏 是 真 / 假”，hidden_style 是它的写法（见 hidden_template）
+# 每个快捷指令里「获取最新的照片」占位按顺序换成「查找照片」（张数不变），按创建日期排序，order 是
+# "Latest First"（最新的排最前）或 "Oldest First"。
 #
-# 注意：这些条件写法在 iPhone 上实测都不生效（2026-10，backup 的「🔧 诊断」：6 种日期写法都一张也查不到，
-# 4 种“已隐藏”写法都被忽略），新版 iOS 的确切写法查不到资料。backup 已经改成上传「文件」里的文件夹，不再用条件；
-# sync 还在用 values-text 写法（所以现在也查不到照片），等找到正确写法再改。
-_DATE = {"var": "sinceText", "op": 2, "date": "values-text"}
+# 不加任何过滤条件：日期、“已隐藏”条件在 iPhone 上实测都不生效（2026-10：6 种日期写法都一张也查不到，
+# 4 种“已隐藏”写法都被忽略），新版 iOS 的确切写法查不到资料；不加条件、只排序和限制张数是好的。
+# 所以没法查“某天之后”的照片，也挑不出隐藏的照片：隐藏相册要先在照片 App 里存到「文件」，用 backup 传。
 PLACEHOLDERS = {
-    "sync": [dict(_DATE)],
     "backup": [],
+    "newphotos": [{"order": "Latest First"}],
+    "share": [],
 }
 
 
-def _token(var, attachment):
-    if attachment:  # 直接引用变量（变量本身是日期）
-        return {"WFSerializationType": "WFTextTokenAttachment", "Value": {"Type": "Variable", "VariableName": var}}
-    return {"WFSerializationType": "WFTextTokenString",  # 文字里嵌一个变量
-            "Value": {"string": "\ufffc", "attachmentsByRange": {"{0, 1}": {"Type": "Variable", "VariableName": var}}}}
-
-
-def date_template(style, var, op):
-    t = {"Bounded": True, "Removable": True, "Property": "Creation Date", "Operator": op}
-    if style == "values-text":
-        t["Values"] = {"Unit": 4, "Date": _token(var, False)}
-    elif style == "values-var":
-        t["Values"] = {"Unit": 4, "Date": _token(var, True)}
-    elif style == "top-var":
-        t.update({"Unit": 4, "Date": _token(var, True)})
-    elif style == "override":
-        t.update({"Unit": 4, "Values": {"Unit": 4}, "VariableOverrides": {"dateValue": _token(var, True)}})
-    else:
-        sys.exit(f"unknown date style {style!r}")
-    return t
-
-
-def hidden_template(style, value):
-    # 是 / 否 类的条件：Operator 4 是“是”
-    if style == "top":
-        return {"Property": "Is Hidden", "Operator": 4, "Bool": value, "Removable": True, "Unit": 4, "VariableOverrides": {}}
-    if style == "values":
-        return {"Property": "Is Hidden", "Operator": 4, "Removable": True, "Values": {"Bool": value, "Unit": 4}}
-    sys.exit(f"unknown hidden style {style!r}")
-
-
 def find_photos(wf, specs):
-    """把占位的「获取最新的照片」按 specs 依次换成「查找照片」（见 PLACEHOLDERS）。Cherri 没有带过滤条件的
-    「查找照片」，只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。"""
+    """把占位的「获取最新的照片」按 specs 依次换成「查找照片」（见 PLACEHOLDERS）。Cherri 没有「查找照片」，
+    只好编译后替换（保留 UUID，后面引用它输出的操作不用改）。「获取最新的照片」不含视频，「查找照片」都有。"""
     hits = [a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.getlastphoto"]
     if len(hits) != len(specs):
         sys.exit(f"expected {len(specs)} getLatestPhotos placeholders, found {len(hits)}")
     for action, spec in zip(hits, specs):
-        if spec == "keep":
-            continue
         old = action["WFWorkflowActionParameters"]
-        templates = []
-        if "date" in spec:
-            templates.append(date_template(spec["date"], spec["var"], spec["op"]))
-        if "hidden" in spec:
-            templates.append(hidden_template(spec["hidden_style"], spec["hidden"]))
         action["WFWorkflowActionIdentifier"] = "is.workflow.actions.filter.photos"
         action["WFWorkflowActionParameters"] = {
             "UUID": old["UUID"],
@@ -129,13 +89,13 @@ def find_photos(wf, specs):
             "WFContentItemFilter": {
                 "WFSerializationType": "WFContentPredicateTableTemplate",
                 "Value": {
-                    "WFActionParameterFilterPrefix": 1,  # 1：所有条件都满足
+                    "WFActionParameterFilterPrefix": 1,  # 1：所有条件都满足（没有条件）
                     "WFContentPredicateBoundedDate": False,
-                    "WFActionParameterFilterTemplates": templates,
+                    "WFActionParameterFilterTemplates": [],
                 },
             },
             "WFContentItemSortProperty": "Creation Date",
-            "WFContentItemSortOrder": "Oldest First",
+            "WFContentItemSortOrder": spec["order"],
             "WFContentItemLimitEnabled": True,
             "WFContentItemLimitNumber": old["WFGetLatestPhotoCount"],
         }

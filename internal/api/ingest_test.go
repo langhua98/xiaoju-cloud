@@ -326,6 +326,44 @@ func TestIngest(t *testing.T) {
 	if code, _ := plan(`{"album":"hidden","names":"a\nb","sizes":"1 KB"}`); code != 400 {
 		t.Errorf("names and sizes of different lengths must be rejected: %d", code)
 	}
+
+	// 从相册直接读：没有大小，名字一样还要拍摄日期前后差一天以内（网盘里的拍摄时间是生成缩略图时读出来的）
+	// “相册”里有两个 IMG_0001：IMG_0001.jpg 和换过手机后编号重复的 IMG_0001 (2).jpg
+	for name, taken := range map[string]string{"IMG_0001.jpg": "2026-10-18 07:04:00+00", "IMG_0001 (2).jpg": "2024-05-01 12:00:00+00"} {
+		if _, err := pool.Exec(ctx, `UPDATE files SET taken_at = $3 WHERE user_id = $1 AND name = $2
+			AND parent_id = (SELECT id FROM files WHERE user_id = $1 AND name = $4 AND parent_id IS NULL)`,
+			userID, name, taken, AlbumFolder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	datePlan := func(album string, names, dates []string) (int, map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"album": album, "names": strings.Join(names, "\n"), "dates": strings.Join(dates, "\n")})
+		return plan(string(body))
+	}
+	rep := func(s string, n int) []string { return strings.Split(strings.Repeat(s+"\n", n-1)+s, "\n") }
+	for _, c := range []struct {
+		why          string
+		album        string
+		names, dates []string
+		todo         string
+	}{
+		{"same day, a day apart, the other IMG_0001, another year, a new name", "",
+			[]string{"IMG_0001", "IMG_0001", "IMG_0001", "IMG_0001", "IMG_7777", "IMG_0001.HEIC"},
+			[]string{"2026年10月18日 15:04", "Oct 19, 2026 at 1:00 AM", "2024年5月2日 08:00", "2019年3月1日 10:00", "2026年10月18日 15:05", "2026/10/18 15:04"}, "4\n5"},
+		{"no dates: name only", "", []string{"IMG_0001", "IMG_7777"}, nil, "2"},
+		{"dates do not line up: name only", "", []string{"IMG_0001", "IMG_7777"}, []string{"2019年3月1日"}, "2"},
+		{"unreadable date: name only", "", []string{"IMG_0001"}, []string{"昨天"}, ""},
+		{"stored file without a capture time: name only", "hidden", []string{"IMG_0500"}, []string{"2019年3月1日"}, ""},
+		{"no date ever agrees: the dates must be misread", "", rep("IMG_0001", 5), rep("2019年3月1日", 5), ""},
+		{"some dates agree: the others really are other photos", "",
+			rep("IMG_0001", 6), append(rep("2019年3月1日", 5), "2026年10月18日"), "1\n2\n3\n4\n5"},
+	} {
+		code, out := datePlan(c.album, c.names, c.dates)
+		if code != 200 || out["todo"] != c.todo || out["files"] != float64(len(c.names)) {
+			t.Errorf("%s: %d %v, want todo %q", c.why, code, out, c.todo)
+		}
+	}
 }
 
 // slowDriver 模拟写 Telegram 很慢（大视频）

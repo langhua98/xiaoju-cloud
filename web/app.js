@@ -1121,7 +1121,8 @@ function reverifyFace(body) {
 // 上传接口只进不出（不需要密钥，只能往“相册”里添加），快捷指令装上就能用。
 
 const SHORTCUT_FILE = "xiaoju-backup.shortcut"; // 备份照片：上传「文件」里的一个文件夹
-const SYNC_SHORTCUT_FILE = "xiaoju-sync.shortcut"; // 同步相册：整个相册分批续传
+const NEW_PHOTOS_SHORTCUT_FILE = "xiaoju-newphotos.shortcut"; // 自动备份新照片：直接从相册传最新的
+const SHARE_SHORTCUT_FILE = "xiaoju-share.shortcut"; // 分享到小桔云盘：分享菜单里传几张
 
 // 网页旁边有没有签好名的快捷指令（GitHub Pages 发布时生成）
 async function shortcutAvailable(file) {
@@ -1143,20 +1144,25 @@ async function renderShortcutSec() {
   const box = $("#shortcut-box");
   const url = `${state.api}/api/ingest`;
   const code = (t) => mk("code", { textContent: t });
-  const sync = mk("div", { className: "key-install", hidden: true },
-    mk("a", { className: "button", href: SYNC_SHORTCUT_FILE, textContent: "安装「同步相册」" }),
-    mk("p", { className: "hint", textContent: "⚠️ 正在修：新版 iOS 上它查不到照片，先用上面的「备份照片」。"
-      + "不用选照片：从最早的照片开始，按拍摄时间一批批往后传，一次最多 500 张。"
-      + "进度记在 iCloud 云盘「快捷指令」文件夹的 xiaoju-sync.json 里，中途停了再运行一次就接着传；"
-      + "每次传完告诉你新上传几张、以前传过几张、已经备份到哪天拍的照片。传的时候别锁屏，第一次运行要允许访问照片和连接网盘。" }));
   const install = mk("div", { className: "key-install", hidden: true },
     mk("a", { className: "button primary", href: SHORTCUT_FILE, textContent: "安装「备份照片」" }),
-    mk("p", { className: "hint", textContent: "几百上千张都行：① 照片 App 打开要传的相簿（比如“已隐藏”）→ 选择 → 全选 → 分享 → "
+    mk("p", { className: "hint", textContent: "几百上千张都行（隐藏的照片、整个相册）：① 照片 App 打开要传的相簿（比如“已隐藏”）→ 选择 → 全选 → 分享 → "
       + "存储到“文件”，存进「我的 iPhone」里的一个新文件夹；② 运行「备份照片到小桔云盘」，选放进网盘的「隐藏相册」还是「相册」，"
-      + "再选刚才那个文件夹。传的时候有通知报进度；传过的（名字、大小都一样）在手机上就认出来直接跳过，中途停了再运行一次很快就接着传。"
-      + "都传好后可以删掉那个文件夹（原照片还在相册里）。" }),
-    mk("p", { className: "hint", textContent: "安装：点按钮后 Safari 问是否下载就选「下载」，再在下载列表里点开，在快捷指令 App 里点「添加快捷指令」。"
-      + "第一次运行会问能否连接网盘，选「始终允许」。" }));
+      + "再选刚才那个文件夹。传的时候有通知报进度；传过的（名字、大小都一样）一开始就认出来直接跳过，中途停了再运行一次很快就接着传。"
+      + "都传好后可以删掉那个文件夹（原照片还在相册里）。" }));
+  const newPhotos = mk("div", { className: "key-install", hidden: true },
+    mk("a", { className: "button", href: NEW_PHOTOS_SHORTCUT_FILE, textContent: "安装「自动备份新照片」" }),
+    mk("p", { className: "hint", textContent: "不用选、不用先存到“文件”：直接从相册看最新的 300 张照片、视频，把还没传过的传进网盘的「相册」"
+      + "（同名的照片还比拍摄日期，换过手机编号重复的也不会漏）。全程不弹窗，只发通知。隐藏的照片读不到，用上面的「备份照片」。" }),
+    mk("p", { className: "hint", textContent: "每天自动备份：先手动运行一次（允许访问照片选「完全访问」，连接网盘、共享照片选「始终允许」，"
+      + "第一次会把最新的 300 张里没传过的都传上去）；再在快捷指令 App 的「自动化」→「＋」→ 选「充电器」（接上电源时）"
+      + "或「特定时间」（比如每天凌晨 3 点），选「立即运行」、关掉「运行时通知」，动作选「自动备份新照片」。" }));
+  const share = mk("div", { className: "key-install", hidden: true },
+    mk("a", { className: "button", href: SHARE_SHORTCUT_FILE, textContent: "安装「分享到小桔云盘」" }),
+    mk("p", { className: "hint", textContent: "传几张、几十张：在照片 App 里选好 → 分享 → 「分享到小桔云盘」（第一次在分享菜单最下面「编辑操作」里加上），"
+      + "选放进「相册」还是「隐藏相册」。传过的会自动跳过。几百张以上用「备份照片」，分享菜单一次给太多 iOS 会卡住。" }));
+  const howto = mk("p", { className: "hint", hidden: true, textContent: "安装：点按钮后 Safari 问是否下载就选「下载」，再在下载列表里点开，"
+    + "在快捷指令 App 里点「添加快捷指令」。第一次运行会问能否连接网盘、共享照片，选「始终允许」；问的时候别锁屏、别切走。" });
   const manual = mk("details", { className: "key-manual" },
     mk("summary", { textContent: "自己动手搭建快捷指令" }),
     mk("div", { className: "key-field" }, mk("span", { textContent: "地址" }), mk("code", { textContent: url }), copyButton(url)),
@@ -1165,12 +1171,13 @@ async function renderShortcutSec() {
       mk("li", {}, "添加「重复每一项」，在里面添加「获取 URL 的内容」：URL 粘贴上面的地址；方法 ", code("POST"),
         "；头部加一项 ", code("X-File-Name"), "，值选变量「重复项目」后改成「名称」；请求体选「文件」= 「重复项目」。"),
       mk("li", {}, "运行。中途出错就再运行一次，传过的会自动跳过。")));
-  box.replaceChildren(install, sync, manual,
-    mk("p", { className: "hint", textContent: "想每天自动备份：在快捷指令「自动化」里新建“特定时间”或“接入充电器”，运行「同步相册到小桔云盘」。" }));
-  const [okSync, ok] = await Promise.all([shortcutAvailable(SYNC_SHORTCUT_FILE), shortcutAvailable(SHORTCUT_FILE)]);
-  sync.hidden = !okSync;
+  box.replaceChildren(install, newPhotos, share, howto, manual);
+  const [ok, okNew, okShare] = await Promise.all([SHORTCUT_FILE, NEW_PHOTOS_SHORTCUT_FILE, SHARE_SHORTCUT_FILE].map(shortcutAvailable));
   install.hidden = !ok;
-  if (!ok && !okSync) manual.open = true;
+  newPhotos.hidden = !okNew;
+  share.hidden = !okShare;
+  howto.hidden = !(ok || okNew || okShare);
+  if (howto.hidden) manual.open = true;
 }
 
 // ---------- 备份进度 ----------

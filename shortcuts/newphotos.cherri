@@ -1,0 +1,147 @@
+// “自动备份新照片”快捷指令（Cherri 语言，https://github.com/electrikmilk/cherri）。
+// 由 shortcuts/build.py 编译、签名，发布网页时一起放到 GitHub Pages（xiaoju-newphotos.shortcut）。
+//
+// 不用选照片、不用先存到「文件」：直接从相册取最新的 300 张（照片、视频都有；不含“已隐藏”的，iOS 不让快捷指令读），
+// 名字和创建日期一次发给服务端（POST /api/ingest/plan），服务端回答哪几张还没传过，只传这几张，放进网盘的「相册」。
+// 适合放进快捷指令的「自动化」（每天定时、接上充电器时）自动运行：全程不弹窗、不用点，只发不响铃的通知。
+//
+// 同名的照片靠创建日期区分（换过手机后编号从 IMG_0001 重新开始）：服务端拿它和文件里读出的拍摄时间比，
+// 差一天以内才算传过。不比大小：相册里的视频要先用「编码视频」（Passthrough：原尺寸、不重新压缩）导出成文件
+// 才能传（直接传某些视频会报“produced no file”），导出后的大小和相册里显示的不一样。
+// 上传时服务端还会按名字 + 精确的字节数再查一次，真传过的不会重复写入。
+//
+// 第一次要手动运行一次：允许访问照片（选「完全访问」）、允许连接网盘和共享照片（选「始终允许」）。
+// 锁屏时弹不出这些询问，自动化会失败。
+#include 'actions/photos'
+#include 'actions/images'
+#include 'actions/scripting'
+#include 'actions/media'
+#include 'actions/text'
+#define name 自动备份新照片
+#define color orange
+#define glyph syncArrows
+
+// 「获取 URL 的内容」：POST，请求体是文件本身
+action 'downloadurl' uploadFile(
+    text url: 'WFURL',
+    variable file: 'WFRequestVariable',
+    dictionary! headers: 'WFHTTPHeaders'
+) {
+    "WFHTTPMethod": "POST",
+    "WFHTTPBodyType": "File",
+    "ShowHeaders": true
+}
+
+// 「获取 URL 的内容」：POST JSON（把最新照片的清单发给服务端）
+action 'downloadurl' askPlan(
+    text url: 'WFURL',
+    dictionary! body: 'WFJSONValues'
+) {
+    "WFHTTPMethod": "POST",
+    "WFHTTPBodyType": "JSON"
+}
+
+// 「获取文件的详细信息」（不用 Cherri 自带的 getFileDetail，见 backup.cherri）
+action 'properties.files' fileDetail(variable file: 'WFInput', text detail: 'WFContentItemPropertyName')
+
+// 「从列表中获取项目」：第几个（Cherri 自带的 getListItem 只收数字，循环里的“第几个”是文字）
+action 'getitemfromlist' itemAt(variable list: 'WFInput', variable index: 'WFItemIndex') {
+    "WFItemSpecifier": "Item At Index"
+}
+
+// 上传地址：构建时由 build.py 换成网盘地址
+@uploadURL = "__INGEST_URL__"
+@planURL = "{uploadURL}/plan"
+@title = "小桔云盘 · 自动备份"
+
+// build.py 把这一步换成「查找照片」：不加条件（条件在 iPhone 上不生效），按创建日期最新的排最前，最多 300 张
+@photos = getLatestPhotos(300)
+@total = count(photos)
+if total.number == 0 {
+    showNotification("一张照片也没读到：到 设置 → 隐私与安全性 → 照片 → 快捷指令，选「完全访问」", title, false)
+    stop()
+}
+
+// 清单：名字（不带扩展名）、创建日期各一列（一行一张，顺序和照片一样），一次发给服务端
+@names = getImageDetail(photos, "Name")
+@dates = getImageDetail(photos, "Creation Date")
+@namesText = joinText(names, "\n")
+@datesText = joinText(dates, "\n")
+@plan = askPlan(planURL, {"album": "", "names": "{namesText}", "dates": "{datesText}"})
+// 回答 {"todo": "3\n7", "count": 2, "uploaded": 298, "files": 300}：todo 是还没传过的是第几张（从 1 开始），
+// files 是服务端收到几个名字
+@planDict = getDictionary(plan)
+@todoValue = getValue(planDict, "todo")
+@todoText = "{todoValue}"
+@countValue = getValue(planDict, "count")
+@todoCount = "{countValue}"
+@filesValue = getValue(planDict, "files")
+@filesCount = "{filesValue}"
+@totalText = "{total}"
+if todoCount == "" {
+    showNotification("问网盘哪些传过了，没得到回答（没网，或者网盘正在重启），这次没传。下次运行会接着传", title, false)
+    stop()
+}
+// 有的照片没取到名字，列表就少了几行：按第几张去传会传错照片，不传
+if filesCount != totalText {
+    showNotification("最近 {total} 张里只读到 {filesCount} 个名字，这次没传。请截图发给维护网盘的人", title, false)
+    stop()
+}
+if todoCount == "0" {
+    showNotification("最近 {total} 张照片、视频都已经在网盘的「相册」里了", title, false)
+    stop()
+}
+showNotification("最近 {total} 张里有 {todoCount} 张还没备份，开始传进网盘的「相册」", title, false)
+
+@todo = splitText(todoText, "\n")
+@uploaded = 0
+@skipped = 0
+@done = 0
+@sinceNote = 0
+for position in todo {
+    @done += 1
+    @photo = itemAt(photos, position)
+    @name = getImageDetail(photo, "Name")
+    @mediaType = getImageDetail(photo, "Media Type")
+    @kind = "{mediaType}"
+    // 不用 else if：Cherri 1.3.2 编译 else if 时“结束”放错位置，后面的操作会被关进别的分支里
+    @isVideo = 0
+    if kind == "Video" {
+        @isVideo = 1
+    }
+    if kind == "视频" {
+        @isVideo = 1
+    }
+    if kind == "影片" {
+        @isVideo = 1
+    }
+    @file = photo
+    if isVideo == 1 {
+        @file = encodeVideo(photo)
+        @size = fileDetail(file, "File Size")
+        showNotification("{done}/{todoCount} · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+        @sinceNote = 0
+    }
+    // 名字没有扩展名，服务端按文件内容补上
+    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{name}"})
+    // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped）
+    @respDict = getDictionary(resp)
+    @resultValue = getValue(respDict, "result")
+    @result = "{resultValue}"
+    if result == "uploaded" {
+        @uploaded += 1
+    } else {
+        if result == "skipped" {
+            @skipped += 1
+        } else {
+            showNotification("{name} 没传上去：{resp}\n这次新上传 {uploaded} 张，下次运行会接着传", "小桔云盘 · 上传失败", false)
+            stop()
+        }
+    }
+    @sinceNote += 1
+    if sinceNote == 10 {
+        showNotification("{done}/{todoCount} · 新传 {uploaded} 张", "小桔云盘 · 上传中", false)
+        @sinceNote = 0
+    }
+}
+showNotification("✅ 新上传 {uploaded} 张（另有 {skipped} 张发过去才认出传过），都在网盘的「相册」里", "小桔云盘 · 备份完成", false)

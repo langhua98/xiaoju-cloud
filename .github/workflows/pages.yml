@@ -42,14 +42,14 @@ jobs:
         run: go install github.com/electrikmilk/cherri@v1.3.2
       - name: Build iPhone shortcuts
         # 签名靠第三方服务（HubSign），失败时网页照常发布，只是安全设置里不显示对应的“安装”按钮（仍可手动搭建）。
-        # 两个快捷指令各自出错互不影响
+        # 几个快捷指令各自出错互不影响
         continue-on-error: true
         env:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
         run: |
           status=0
           live="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
-          for s in backup sync; do
+          for s in backup newphotos share; do
             python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "web/xiaoju-$s.shortcut" \
               ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"} && continue
             status=1

@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSizeMatchesAny(t *testing.T) {
 	for _, c := range []struct {
@@ -60,6 +63,41 @@ func TestSplitLines(t *testing.T) {
 		for i := range got {
 			if got[i] != want[i] {
 				t.Errorf("%q: %q, want %q", in, got, want)
+			}
+		}
+	}
+}
+
+func TestPhotoDays(t *testing.T) {
+	day := func(y, m, d int) int64 { return time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC).Unix() / 86400 }
+	for text, want := range map[string][]int64{
+		"2026年10月18日 下午3:04":       {day(2026, 10, 18)},
+		"2026年10月18日 15:04":        {day(2026, 10, 18)},
+		"2026/10/18 15:04":         {day(2026, 10, 18)},
+		"2026-10-18T15:04:05Z":     {day(2026, 10, 18)},
+		"2026. 10. 18. 오후 3:04":    {day(2026, 10, 18)},
+		"Oct 18, 2026 at 3:04 PM":  {day(2026, 10, 18)},
+		"October 18th 2026":        {day(2026, 10, 18)},
+		"18 Oct 2026 at 15:04":     {day(2026, 10, 18)},
+		"18.10.2026, 15:04":        {day(2026, 10, 18)},
+		"10/18/2026, 3:04\u202fPM": {day(2026, 10, 18)},
+		"10/11/2026":               {day(2026, 10, 11), day(2026, 11, 10)}, // 分不清月、日
+		"5/5/2026":                 {day(2026, 5, 5)},
+		"2026年2月30日":               nil,
+		"10/18/26":                 nil, // 两位数的年
+		"18 oct. 2026":             {day(2026, 10, 18)},
+		"18 octobre 2026":          {day(2026, 10, 18)},
+		"18 de octubre de 2026":    nil,
+		"":                         nil,
+	} {
+		got := photoDays(text)
+		if len(got) != len(want) {
+			t.Errorf("%q: %v, want %v", text, got, want)
+			continue
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("%q: %v, want %v", text, got, want)
 			}
 		}
 	}
