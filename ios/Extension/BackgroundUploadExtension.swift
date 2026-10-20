@@ -22,22 +22,43 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     required init() {}
 
     func process() -> PHBackgroundResourceUploadProcessingResult {
+        let result: PHBackgroundResourceUploadProcessingResult
+        var note = ""
         do {
             try retryFailedJobs()
             try acknowledgeFinishedJobs()
             try collectNewAssets()
+            note = "pending=\(defaults.stringArray(forKey: Self.pendingKey)?.count ?? 0)"
             let more = try createJobs()
-            return more ? .processing : .completed
+            result = more ? .processing : .completed
         } catch PHPhotosError.limitExceeded {
-            return .processing // 任务数到上限：等已建的传完再来
+            note = "limitExceeded"
+            result = .processing // 任务数到上限：等已建的传完再来
         } catch PHPhotosError.persistentChangeTokenExpired {
             log.error("change token expired, starting over from now")
             defaults.removeObject(forKey: Self.tokenKey)
-            return .processing
+            note = "tokenExpired"
+            result = .processing
         } catch {
             log.error("processJobs failed: \(error.localizedDescription, privacy: .public)")
-            return .failure
+            note = "error: \(error)"
+            result = .failure
         }
+        heartbeat("\(note) result=\(String(describing: result))")
+        return result
+    }
+
+    // 测试版用：每次被系统叫醒都问服务端一声 /api/ingest/exists，服务端日志里能看到扩展有没有在跑、跑到哪一步。
+    private func heartbeat(_ text: String) {
+        guard let base = Bundle.main.object(forInfoDictionaryKey: "BackgroundUploadURLBase") as? String,
+              let url = URL(string: base + "/api/ingest/exists")
+        else { return }
+        var req = URLRequest(url: url, timeoutInterval: 5)
+        req.setValue(encodedName("xiaoju-backup-heartbeat " + text), forHTTPHeaderField: "X-File-Name")
+        req.setValue("0", forHTTPHeaderField: "X-File-Size")
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 5)
     }
 
     func notifyTermination() {
