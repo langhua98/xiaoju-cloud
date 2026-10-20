@@ -10,6 +10,9 @@
 // 才能传（直接传某些视频会报“produced no file”），导出后的大小和相册里显示的不一样。
 // 上传时服务端还会按名字 + 精确的字节数再查一次，真传过的不会重复写入。
 //
+// 视频只在连着 Wi-Fi 时传（和 iCloud 照片默认一样）：用流量传大视频又慢又容易断，断了只能从头再传
+// （4GB 的视频在路上断过一次，重传收了 34 分钟）。没连 Wi-Fi 时视频先跳过，下次连着 Wi-Fi 运行时再传。
+//
 // 第一次要手动运行一次：允许访问照片（选「完全访问」）、允许连接网盘和共享照片（选「始终允许」）。
 // 锁屏时弹不出这些询问，自动化会失败。
 #include 'actions/photos'
@@ -18,6 +21,7 @@
 #include 'actions/web'
 #include 'actions/media'
 #include 'actions/text'
+#include 'actions/network'
 #define name 自动备份新照片
 #define color orange
 #define glyph syncArrows
@@ -94,9 +98,18 @@ if todoCount == "0" {
 }
 showNotification("最近 {total} 张里有 {todoCount} 张还没备份，开始传进网盘的「相册」", title, false)
 
+// 没连 Wi-Fi 时取到的网络名是空的
+@wifiName = getWifiDetail("Network Name")
+@wifiText = "{wifiName}"
+@onWifi = 1
+if wifiText == "" {
+    @onWifi = 0
+}
+
 @todo = splitText(todoText, "\n")
 @uploaded = 0
 @skipped = 0
+@deferred = 0
 @done = 0
 @sinceNote = 0
 for position in todo {
@@ -116,52 +129,66 @@ for position in todo {
     if kind == "影片" {
         @isVideo = 1
     }
-    @file = photo
+    // 用流量时视频留到下次连着 Wi-Fi 再传
+    @upload = 1
     if isVideo == 1 {
-        @file = encodeVideo(photo)
-        @size = fileDetail(file, "File Size")
-        showNotification("{done}/{todoCount} · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
-        @sinceNote = 0
+        if onWifi == 0 {
+            @upload = 0
+            @deferred += 1
+        }
     }
-    // 名字没有扩展名，服务端按文件内容补上
-    // 文件名先做 URL 编码：iOS 的请求头放不了中文，以前遇到第一个中文字就把后面全丢了
-    // （“video_啦啦啦….mov”到服务端只剩“video_.mov”）。服务端会解码
-    @encodedName = urlEncode(name)
-    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}"})
-    // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped）
-    @respDict = getDictionary(resp)
-    @resultValue = getValue(respDict, "result")
-    @result = "{resultValue}"
-    // 没传上去（多半是服务端在更新，要一两分钟；或者网络断了一下）：1 分钟、2 分钟后各再试一次。
-    // 传过的服务端会跳过，重试不会重复上传
-    @pause = 60
-    repeat attempt for 2 {
-        if result != "uploaded" {
-            if result != "skipped" {
-                showNotification("{name} 没传上去，{pause} 秒后再试（服务端可能在更新）", "小桔云盘 · 等一下", false)
-                wait(pause)
-                @resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}"})
-                @respDict = getDictionary(resp)
-                @resultValue = getValue(respDict, "result")
-                @result = "{resultValue}"
-                @pause = 120
+    @file = photo
+    if upload == 1 {
+        if isVideo == 1 {
+            @file = encodeVideo(photo)
+            @size = fileDetail(file, "File Size")
+            showNotification("{done}/{todoCount} · {name}（{size}）上传中，视频大要等一会儿", "小桔云盘 · 上传视频", false)
+            @sinceNote = 0
+        }
+        // 名字没有扩展名，服务端按文件内容补上
+        // 文件名先做 URL 编码：iOS 的请求头放不了中文，以前遇到第一个中文字就把后面全丢了
+        // （“video_啦啦啦….mov”到服务端只剩“video_.mov”）。服务端会解码
+        @encodedName = urlEncode(name)
+        @resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}"})
+        // 返回 JSON（大文件前面会有保持连接用的空格）：先转成词典再取 result（uploaded / skipped）
+        @respDict = getDictionary(resp)
+        @resultValue = getValue(respDict, "result")
+        @result = "{resultValue}"
+        // 没传上去（多半是服务端在更新，要一两分钟；或者网络断了一下）：1 分钟、2 分钟后各再试一次。
+        // 传过的服务端会跳过，重试不会重复上传
+        @pause = 60
+        repeat attempt for 2 {
+            if result != "uploaded" {
+                if result != "skipped" {
+                    showNotification("{name} 没传上去，{pause} 秒后再试（服务端可能在更新）", "小桔云盘 · 等一下", false)
+                    wait(pause)
+                    @resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}"})
+                    @respDict = getDictionary(resp)
+                    @resultValue = getValue(respDict, "result")
+                    @result = "{resultValue}"
+                    @pause = 120
+                }
             }
         }
-    }
-    if result == "uploaded" {
-        @uploaded += 1
-    } else {
-        if result == "skipped" {
-            @skipped += 1
+        if result == "uploaded" {
+            @uploaded += 1
         } else {
-            showNotification("{name} 没传上去：{resp}\n这次新上传 {uploaded} 张，下次运行会接着传", "小桔云盘 · 上传失败", false)
-            stop()
+            if result == "skipped" {
+                @skipped += 1
+            } else {
+                showNotification("{name} 没传上去：{resp}\n这次新上传 {uploaded} 张，下次运行会接着传", "小桔云盘 · 上传失败", false)
+                stop()
+            }
         }
+        @sinceNote += 1
     }
-    @sinceNote += 1
     if sinceNote == 10 {
         showNotification("{done}/{todoCount} · 新传 {uploaded} 张", "小桔云盘 · 上传中", false)
         @sinceNote = 0
     }
 }
-showNotification("✅ 新上传 {uploaded} 张（另有 {skipped} 张发过去才认出传过），都在网盘的「相册」里", "小桔云盘 · 备份完成", false)
+@doneText = "✅ 新上传 {uploaded} 张（另有 {skipped} 张发过去才认出传过），都在网盘的「相册」里"
+if deferred > 0 {
+    @doneText = "{doneText}\n现在没连 Wi-Fi：{deferred} 个视频留到下次连着 Wi-Fi 时再传"
+}
+showNotification(doneText, "小桔云盘 · 备份完成", false)
