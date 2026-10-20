@@ -20,7 +20,12 @@ env:
 
 jobs:
   build:
-    runs-on: macos-26
+    # macos-26 有时排很久都排不上，两种机器一起跑，谁先编好用谁的
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Pick the newest Xcode
@@ -45,7 +50,7 @@ jobs:
           zip -qry ../XiaojuBackup.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: XiaojuBackup-ipa
+          name: XiaojuBackup-ipa-${{ matrix.os }}
           path: XiaojuBackup.ipa
       - name: Publish to the ios-test release
         env:
@@ -79,7 +84,7 @@ jobs:
   testflight:
     needs: [build, keys]
     if: needs.keys.outputs.ready == 'true'
-    runs-on: macos-26
+    runs-on: ${{ matrix.os }}
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
