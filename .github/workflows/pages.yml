@@ -49,7 +49,7 @@ jobs:
         run: |
           status=0
           live="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
-          for s in backup newphotos share; do
+          for s in backup newphotos share charge; do
             python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "web/xiaoju-$s.shortcut" \
               ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"} && continue
             status=1
