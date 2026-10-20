@@ -1,4 +1,3 @@
-import CoreLocation
 import Photos
 import SwiftUI
 import SafariServices
@@ -69,7 +68,7 @@ struct ContentView: View {
     @State private var enabled = PHPhotoLibrary.shared().uploadJobExtensionEnabled
     @State private var message = ""
     @State private var busy = false
-    @ObservedObject private var keepAlive = KeepAliveBackup.shared
+    @ObservedObject private var auto = AutoBackup.shared
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
 
@@ -86,19 +85,20 @@ struct ContentView: View {
                     }
                 }
                 Section {
-                    Toggle("保活备份", isOn: Binding(get: { keepAlive.enabled }, set: { keepAlive.setEnabled($0) }))
-                        .disabled(auth != .authorized)
-                    if keepAlive.enabled && keepAlive.locationAuth != .authorizedAlways {
-                        Text("定位权限请选「始终」：设置 → 小桔备份 → 位置 → 始终。不然锁屏后会停。")
-                            .font(.footnote).foregroundStyle(.orange)
+                    Toggle("充电时自动备份", isOn: $auto.enabled)
+                    if auto.running {
+                        Button("停止", role: .destructive) { auto.stop() }
+                    } else {
+                        Button("现在备份") { auto.start(reason: "手动") }
+                            .disabled(auth != .authorized)
                     }
-                    if !keepAlive.status.isEmpty {
-                        Text(keepAlive.status).font(.footnote).foregroundStyle(.secondary)
+                    if !auto.status.isEmpty {
+                        Text(auto.status).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                 } header: {
-                    Text("后台静默备份（推荐）")
+                    Text("自动备份")
                 } footer: {
-                    Text("App 借后台定位一直在后台待着，一拍新照片就传进云盘的「相册」，锁屏也照传（打开时补传最近 24 小时的）。会多耗一点电；不要在多任务里把 App 划掉。")
+                    Text("备份全部照片（放进云盘「相册」）、「相册」页勾选的相册和隐藏相册、通讯录、日历、提醒事项，只传新的。打开开关后，系统会在充电、连着网的时候（一般是夜里）自动跑。想每次一插电就跑：快捷指令 → 自动化 → 新建 → 充电器 → 已连接 → 立即运行 → 添加操作「备份到小桔云盘」。第一次请先点「现在备份」，允许通讯录、日历、提醒事项的权限。")
                 }
                 Section {
                     Toggle("后台自动备份", isOn: Binding(get: { enabled }, set: { setEnabled($0) }))
