@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/langhua98/xiaoju-cloud/internal/auth"
+	"github.com/langhua98/xiaoju-cloud/internal/dav"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 )
@@ -43,6 +44,9 @@ type Server struct {
 	// 不需要认证的接口按 IP 限速（见 ratelimit.go）
 	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit *ipLimiter
 
+	davPassword string     // 空表示不开 WebDAV
+	davFails    *ipLimiter // WebDAV 密码错了按 IP 计数，错多了先停一会儿
+
 	act     activity // 正在进行的上传（部署前问一下，见 activity.go）
 	started time.Time
 }
@@ -62,6 +66,8 @@ type Options struct {
 	Sessions *auth.Sessions
 	// Location 是用户所在的时区：快捷指令发来的拍摄日期（手机显示的当地时间）按它来比。nil 时用 UTC。
 	Location *time.Location
+	// WebDAVPassword 不为空时在 /dav 提供 WebDAV（用户名随意，密码是这个），见 internal/dav。
+	WebDAVPassword string
 }
 
 func New(svc *service.Service, opt Options) *Server {
@@ -79,6 +85,7 @@ func New(svc *service.Service, opt Options) *Server {
 		// 快捷指令跳过传过的最快每秒两三个；问“传过没有”的接口一次运行只调一两次
 		ingestLimit: newIPLimiter(120, 60), ingestAskLimit: newIPLimiter(60, 30),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
+		davPassword: opt.WebDAVPassword, davFails: newIPLimiter(10, 10),
 		started: time.Now(),
 	}
 }
@@ -157,6 +164,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
 	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
 	mux.HandleFunc("GET /pv/{id}", s.signedPreview)
+	if s.davPassword != "" {
+		h := s.webdav(dav.New(s.svc, s.userID, s.log))
+		mux.Handle(dav.Prefix, h)
+		mux.Handle(dav.Prefix+"/", h)
+	}
 	return mux
 }
 

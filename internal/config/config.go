@@ -37,6 +37,8 @@ type Config struct {
 	// Location 是格子口令判断“出题时是星期几”用的时区（XIAOJU_TIMEZONE，默认 Asia/Shanghai）。
 	// 照片的 EXIF 没写时区时，拍摄时间也按这个时区算。
 	Location *time.Location
+	// WebDAVPassword 不为空时开启 /dav 的 WebDAV（XIAOJU_WEBDAV_PASSWORD）。
+	WebDAVPassword string
 
 	LocalDir string
 
@@ -67,12 +69,13 @@ func (t Telegram) BackupEnabled() bool { return t.BackupBotToken != "" || t.Back
 
 func Load() (*Config, error) {
 	c := &Config{
-		HTTPAddr:    env("XIAOJU_HTTP_ADDR", ":8080"),
-		DatabaseURL: os.Getenv("XIAOJU_DATABASE_URL"),
-		AdminToken:  os.Getenv("XIAOJU_ADMIN_TOKEN"),
-		Storage:     env("XIAOJU_STORAGE", "telegram"),
-		TempDir:     env("XIAOJU_TMP_DIR", os.TempDir()),
-		LocalDir:    env("XIAOJU_LOCAL_DIR", "./data/blobs"),
+		HTTPAddr:       env("XIAOJU_HTTP_ADDR", ":8080"),
+		DatabaseURL:    os.Getenv("XIAOJU_DATABASE_URL"),
+		AdminToken:     os.Getenv("XIAOJU_ADMIN_TOKEN"),
+		WebDAVPassword: strings.TrimSpace(os.Getenv("XIAOJU_WEBDAV_PASSWORD")),
+		Storage:        env("XIAOJU_STORAGE", "telegram"),
+		TempDir:        env("XIAOJU_TMP_DIR", os.TempDir()),
+		LocalDir:       env("XIAOJU_LOCAL_DIR", "./data/blobs"),
 		Telegram: Telegram{
 			AppHash:     os.Getenv("TG_APP_HASH"),
 			BotToken:    os.Getenv("TG_BOT_TOKEN"),
@@ -154,6 +157,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.MasterKey) != 32 {
 		return errors.New("XIAOJU_MASTER_KEY must be 64 hex chars (32 bytes), e.g. `openssl rand -hex 32`")
+	}
+	if c.WebDAVPassword != "" && len(c.WebDAVPassword) < 12 {
+		return errors.New("XIAOJU_WEBDAV_PASSWORD must be at least 12 characters, e.g. `openssl rand -hex 16`")
 	}
 	if c.PartSize <= 0 {
 		return errors.New("XIAOJU_PART_SIZE must be positive")

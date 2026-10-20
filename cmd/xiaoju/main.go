@@ -179,7 +179,9 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	handler := api.New(svc, api.Options{
 		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
 		Passkeys: passkeys, Grid: grid, Sessions: sessions, Location: cfg.Location,
+		WebDAVPassword: cfg.WebDAVPassword,
 	}).Handler()
+	log.Info("webdav", "enabled", cfg.WebDAVPassword != "")
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,

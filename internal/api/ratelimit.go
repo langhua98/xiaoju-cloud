@@ -50,6 +50,14 @@ func (l *ipLimiter) allow(key string) bool {
 	return b.lim.Allow()
 }
 
+// blocked 报告这个地址现在是不是已经用完了次数（不消耗次数）。
+func (l *ipLimiter) blocked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.m[key]
+	return b != nil && b.lim.Tokens() < 1
+}
+
 // limited 超过限速时回 429（快捷指令会等一会儿再试，见 backup.cherri）。
 func (s *Server) limited(l *ipLimiter, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

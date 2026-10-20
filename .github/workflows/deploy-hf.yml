@@ -80,6 +80,7 @@ jobs:
           TG_BACKUP_CHANNEL_ID: ${{ secrets.TG_BACKUP_CHANNEL_ID }}
           TG_EXTRA_BOT_TOKENS: ${{ secrets.TG_EXTRA_BOT_TOKENS }}
           TG_BACKUP_EXTRA_BOT_TOKENS: ${{ secrets.TG_BACKUP_EXTRA_BOT_TOKENS }}
+          XIAOJU_WEBDAV_PASSWORD: ${{ secrets.XIAOJU_WEBDAV_PASSWORD }}
           TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
           DEPLOY_MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes || '60' }}
           XIAOJU_PART_SIZE: ${{ vars.XIAOJU_PART_SIZE }}

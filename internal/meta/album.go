@@ -16,6 +16,16 @@ func (s *Store) FindFolder(ctx context.Context, userID uuid.UUID, parentID *uuid
 		LIMIT 1`, userID, parentID, name))
 }
 
+// FindChild 找目录下同名的（未删除）条目，文件、文件夹都算；没有时返回 ErrNotFound。
+func (s *Store) FindChild(ctx context.Context, userID uuid.UUID, parentID *uuid.UUID, name string) (*File, error) {
+	return scanFile(s.db.QueryRow(ctx, `
+		SELECT `+fileColumns+` FROM files
+		WHERE user_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND name = $3
+		  AND status = 'active' AND trashed_at IS NULL
+		ORDER BY type DESC
+		LIMIT 1`, userID, parentID, name))
+}
+
 // ListFilesBySize 列出目录下大小正好为 size 的文件（判断是否已经传过）。
 func (s *Store) ListFilesBySize(ctx context.Context, userID, parentID uuid.UUID, size int64) ([]*File, error) {
 	rows, err := s.db.Query(ctx, `

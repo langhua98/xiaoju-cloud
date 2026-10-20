@@ -31,6 +31,8 @@ SECRET_KEYS = [
     # 可选：额外的 Bot（同一个频道的管理员），和主 Bot 轮流上传、下载
     "TG_EXTRA_BOT_TOKENS",
     "TG_BACKUP_EXTRA_BOT_TOKENS",
+    # 可选：设了就在 /dav 开 WebDAV（用户名随意，密码是这个）
+    "XIAOJU_WEBDAV_PASSWORD",
 ]
 VARIABLE_KEYS = [
     "TG_TRANSPORT",

@@ -91,6 +91,12 @@ GitHub Actions ──上传源码 + 写入 Secrets──▶ HF 私有 Space（xi
 重新运行工作流，日志出现 `extra bot added` 即生效（`extra bot skipped` 表示那个 Bot 连不上或不是频道管理员，不影响服务）。
 说明见 README“多个 Bot 轮流用”。
 
+## 可选：WebDAV
+
+在 GitHub Secrets 中添加 `XIAOJU_WEBDAV_PASSWORD`（至少 12 位，如 `openssl rand -hex 16`），重新运行工作流，日志出现
+`webdav enabled=true` 即生效。地址 `https://<space>.hf.space/dav/`，用户名随意，密码是这个。Space 需要是公开的
+（`HF_SPACE_PUBLIC=true`）。说明见 README“WebDAV”。
+
 ## 使用
 
 Space 是私有的，请求需同时带 HF token（给 HF 网关）和本服务的令牌：
