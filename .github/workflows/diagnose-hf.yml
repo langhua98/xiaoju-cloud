@@ -44,6 +44,9 @@ jobs:
           echo "::group::drive stats"
           api "$HOST/api/stats"
           echo "::endgroup::"
+          echo "::group::upload activity (active: uploads in progress right now)"
+          api "$HOST/api/maintenance/activity"
+          echo "::endgroup::"
 
           pretty() { out=$(cat); printf '%s\n' "$out" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$out"; }
           case "$RECONCILE" in
@@ -55,13 +58,16 @@ jobs:
                     echo "::endgroup::" ;;
           esac
 
-          echo "::group::space run logs (backup / ingest / thumbnail / warnings / errors, last 200)"
+          # Telegram 的 flood wait 一次几百行，会把要看的上传日志挤掉：不逐行打印，只记个数
           curl -sS -N --max-time 30 -H "Authorization: Bearer $HF" \
             "https://huggingface.co/api/spaces/$SPACE/logs/run" 2>/dev/null \
             | sed -n 's/^data: //p' \
             | python3 -c 'import sys, json
           for line in sys.stdin:
               try: print(json.loads(line).get("data", "").rstrip())
-              except ValueError: print(line.rstrip())' \
-            | grep -E "backup|WARN|ERROR|Startup|listening|ingest|thumbnail" | tail -200 || true
+              except ValueError: print(line.rstrip())' > run.log || true
+          echo "::group::space run logs (backup / ingest / thumbnail / warnings / errors, last 300)"
+          grep -E "backup|WARN|ERROR|Startup|listening|ingest|thumbnail|scrub" run.log | grep -v "telegram flood wait" | tail -300 || true
           echo "::endgroup::"
+          echo "telegram flood waits in these logs: $(grep -c "telegram flood wait" run.log || true)" \
+            "(last: $(grep "telegram flood wait" run.log | tail -1 | sed -n 's/^time=\([^ ]*\).*/\1/p'))"
