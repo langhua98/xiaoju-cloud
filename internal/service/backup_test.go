@@ -145,6 +145,10 @@ func TestBackupIntegration(t *testing.T) {
 	// 7. 主存储和备份一起写；主存储写到一半失败：上传失败，两边已经写进去的分块都删掉
 	before = countFiles(t, backupDir)
 	beforePrimary := countFiles(t, primaryDir)
+	// 写失败会再试几次（putRetryDelays）：这里主存储一直坏着，不用等
+	delays := putRetryDelays
+	putRetryDelays = nil
+	defer func() { putRetryDelays = delays }()
 	flaky := New(store, &failingDriver{Driver: primary, failAt: 2}, optsB)
 	if _, err := flaky.Upload(ctx, UploadRequest{UserID: userID, Name: "flaky.bin", Body: bytes.NewReader(randBytes(2500))}); err == nil {
 		t.Fatal("upload must fail when the primary storage fails")
@@ -157,14 +161,14 @@ func TestBackupIntegration(t *testing.T) {
 	}
 }
 
-// failingDriver 的第 failAt 次写入失败。
+// failingDriver 从第 failAt 次写入起都失败（failFor 大于 0 时只失败这么多次，之后恢复）。
 type failingDriver struct {
 	storage.Driver
-	puts, failAt int
+	puts, failAt, failFor int
 }
 
 func (d *failingDriver) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
-	if d.puts++; d.puts == d.failAt {
+	if d.puts++; d.puts >= d.failAt && (d.failFor == 0 || d.puts < d.failAt+d.failFor) {
 		io.Copy(io.Discard, req.Body)
 		return storage.Location{}, errors.New("primary storage unavailable")
 	}

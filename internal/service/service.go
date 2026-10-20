@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -381,7 +382,7 @@ func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPar
 			backup <- result{loc, err}
 		}()
 	}
-	loc, err := s.driver.Put(ctx, req())
+	loc, err := s.putPart(ctx, fileID, sp, req)
 	if err != nil {
 		if backup != nil {
 			if b := <-backup; b.err == nil { // 主存储没写成，备份里的这块用不上了
@@ -405,6 +406,29 @@ func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPar
 		}
 	}
 	return part, loc, nil
+}
+
+// putRetryDelays：分块写主存储失败后，隔多久再试一次（试完这几次还不行才算上传失败）。
+// Telegram 的连接偶尔会断一下（“engine forcibly closed”），以前一次就让整个文件失败：4GB 的视频要写十几块，
+// 几乎总有一块碰上，快捷指令再从头传也一样。分块存在临时文件里，可以从头再读。
+// 等的时间不能太长：等着的时候收数据的一方也停着（见 partWriter），手机那边太久没进展会断开。
+var putRetryDelays = []time.Duration{3 * time.Second, 10 * time.Second, 30 * time.Second}
+
+// putPart 把分块写进主存储，失败了按 putRetryDelays 再试；ctx 取消了就不再试。
+func (s *Service) putPart(ctx context.Context, fileID uuid.UUID, sp *sealedPart, req func() storage.PutRequest) (storage.Location, error) {
+	for attempt := 0; ; attempt++ {
+		loc, err := s.driver.Put(ctx, req())
+		if err == nil || attempt >= len(putRetryDelays) || ctx.Err() != nil {
+			return loc, err
+		}
+		d := putRetryDelays[attempt]
+		s.log.Warn("storage write failed; retrying the part", "file", fileID, "part", sp.no, "attempt", attempt+1, "in", d, "err", err)
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return storage.Location{}, err
+		}
+	}
 }
 
 func partName(fileID uuid.UUID, partNo int) string {
