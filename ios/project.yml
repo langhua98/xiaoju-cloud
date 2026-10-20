@@ -39,6 +39,10 @@ targets:
         NSRemindersFullAccessUsageDescription: 把提醒事项备份到小桔云盘。
         # 自动备份：充电、有网络时系统运行的后台任务（AutoBackup.swift）
         UIBackgroundModes: [processing, fetch]
+        # 快捷指令「充电时备份到小桔云盘」用 xiaojubackup://backup 打开 App 跑一次备份
+        CFBundleURLTypes:
+          - CFBundleURLName: com.langhua98.xiaoju.backup
+            CFBundleURLSchemes: [xiaojubackup]
         BGTaskSchedulerPermittedIdentifiers: [com.langhua98.xiaoju.backup.sync]
         XiaojuAPIURL: $(XIAOJU_API_URL)
         XiaojuWebURL: $(XIAOJU_WEB_URL)

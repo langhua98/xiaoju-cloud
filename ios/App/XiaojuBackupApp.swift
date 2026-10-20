@@ -15,6 +15,10 @@ struct XiaojuBackupApp: App {
                 AlbumsView().tabItem { Label("相册", systemImage: "photo.on.rectangle") }
                 ContentView().tabItem { Label("备份", systemImage: "arrow.up.circle") }
             }
+            .onOpenURL { url in
+                // 快捷指令「充电时备份到小桔云盘」：xiaojubackup://backup
+                if url.host == "backup" { AutoBackup.shared.start(reason: "快捷指令") }
+            }
         }
     }
 }

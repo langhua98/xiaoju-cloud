@@ -1,0 +1,10 @@
+// “充电时备份到小桔云盘”快捷指令（Cherri 语言）：打开小桔备份 App，让它马上跑一次自动备份
+// （全部照片、勾选的相册、隐藏相册、通讯录、日历、提醒事项，只传新的；见 ios/App/AutoBackup.swift）。
+// 苹果不让分享「自动化」，所以在快捷指令 → 自动化 → 充电器 → 已连接 → 立即运行里选这个快捷指令。
+// 用 App 的网址 xiaojubackup://backup 打开（自签名会改 App 的标识，直接调用 App 的操作可能对不上）。
+#include 'actions/web'
+#define name 充电时备份到小桔云盘
+#define color orange
+#define glyph uploadArrow
+
+openURL("xiaojubackup://backup")
