@@ -1,6 +1,7 @@
 import AppIntents
 import BackgroundTasks
 import Contacts
+import CryptoKit
 import EventKit
 import Photos
 import UIKit
@@ -12,7 +13,7 @@ import UIKit
 //   1. 系统的后台任务（BGProcessingTask，要求接着电源、有网络），一般是夜里充电时；
 //   2. 快捷指令自动化「连接充电器时」运行「备份到小桔云盘」（会打开 App，跑完自动锁屏照常）；
 //   3. App 里点「现在备份」。
-// 导出的原图交给系统的后台 URLSession 上传，App 被挂起、锁屏了也会传完；传过的记在本地，下次跳过，
+// 导出的原图交给系统的后台 URLSession 上传，App 被挂起、锁屏了也会传完（大视频分段断点续传）；传过的记在本地，下次跳过，
 // 服务端也按名字 + 大小跳过。苹果不让第三方 App 读的数据（短信、备忘录、健康……）这里做不了。
 final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
     static let shared = AutoBackup()
@@ -196,6 +197,31 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
                 return
             }
         }
+        // 大文件（视频）：分段断点续传，断了下次从断的地方接着传。导出的文件留着，下次不用再导出
+        let size = resource.value(forKey: "fileSize") as? Int64 ?? 0
+        if size > 16 << 20 {
+            let file = spool.appendingPathComponent(Self.sha(key))
+            if !FileManager.default.fileExists(atPath: file.path) {
+                let part = file.appendingPathExtension("part")
+                try? FileManager.default.removeItem(at: part)
+                let opts = PHAssetResourceRequestOptions()
+                opts.isNetworkAccessAllowed = true
+                try await PHAssetResourceManager.default().writeData(for: resource, toFile: part, options: opts)
+                try FileManager.default.moveItem(at: part, to: file)
+            }
+            var extra: [String: String] = [:]
+            if let album {
+                if album.hidden { extra["X-Xiaoju-Album"] = "hidden" } else { extra["X-Xiaoju-Album-Name"] = encodedName(album.title) }
+            }
+            let name = resource.originalFilename
+            let uploaded = try await ResumableIngest.send(file: file, name: name, server: server, headers: extra) { done, total in
+                self.setStatus("正在传 \(name)：\(done >> 20)/\(total >> 20) MB")
+            }
+            try? FileManager.default.removeItem(at: file)
+            markDone(key)
+            if uploaded { counts.uploaded += 1 } else { counts.skipped += 1 }
+            return
+        }
         while await session.allTasks.count >= 6 {
             if Task.isCancelled { return }
             try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -355,6 +381,10 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
 
     private static func calendar(_ body: String) -> String {
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//xiaoju//backup//CN\r\n" + body + "END:VCALENDAR\r\n"
+    }
+
+    private static func sha(_ s: String) -> String {
+        SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func icsText(_ s: String) -> String {
