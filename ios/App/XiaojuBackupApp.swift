@@ -1,3 +1,4 @@
+import CoreLocation
 import Photos
 import SwiftUI
 import SafariServices
@@ -7,6 +8,7 @@ import SafariServices
 // 「云盘」页直接打开网盘网页（浏览、下载、分享都用网页的功能），「相册」页按手机相册原样上传，「备份」页管后台自动备份。
 @main
 struct XiaojuBackupApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
         WindowGroup {
             TabView {
@@ -67,6 +69,7 @@ struct ContentView: View {
     @State private var enabled = PHPhotoLibrary.shared().uploadJobExtensionEnabled
     @State private var message = ""
     @State private var busy = false
+    @ObservedObject private var keepAlive = KeepAliveBackup.shared
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
 
@@ -83,10 +86,25 @@ struct ContentView: View {
                     }
                 }
                 Section {
+                    Toggle("保活备份", isOn: Binding(get: { keepAlive.enabled }, set: { keepAlive.setEnabled($0) }))
+                        .disabled(auth != .authorized)
+                    if keepAlive.enabled && keepAlive.locationAuth != .authorizedAlways {
+                        Text("定位权限请选「始终」：设置 → 小桔备份 → 位置 → 始终。不然锁屏后会停。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                    if !keepAlive.status.isEmpty {
+                        Text(keepAlive.status).font(.footnote).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("后台静默备份（推荐）")
+                } footer: {
+                    Text("App 借后台定位一直在后台待着，一拍新照片就传进云盘的「相册」，锁屏也照传（打开时补传最近 24 小时的）。会多耗一点电；不要在多任务里把 App 划掉。")
+                }
+                Section {
                     Toggle("后台自动备份", isOn: Binding(get: { enabled }, set: { setEnabled($0) }))
                         .disabled(auth != .authorized)
                 } header: {
-                    Text("后台上传")
+                    Text("系统后台上传（开着 iCloud 照片时系统不调用，先别指望它）")
                 } footer: {
                     Text("打开后，之后新拍的照片、视频由系统在后台传进小桔云盘的「相册」（最近 24 小时拍的也会补传，更早的不传）。系统会挑网络、电量合适的时候传，可能要等几分钟到几小时。")
                 }

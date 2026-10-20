@@ -34,6 +34,10 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
+        # 保活备份：靠后台定位让 App 在后台一直运行（只要最低精度，不记录位置）
+        NSLocationWhenInUseUsageDescription: 让小桔备份在后台保持运行，新拍的照片随时备份。不会记录你的位置。
+        NSLocationAlwaysAndWhenInUseUsageDescription: 让小桔备份在后台保持运行，新拍的照片随时备份。不会记录你的位置。
+        UIBackgroundModes: [location]
         XiaojuAPIURL: $(XIAOJU_API_URL)
         XiaojuWebURL: $(XIAOJU_WEB_URL)
         ITSAppUsesNonExemptEncryption: false # 只用 HTTPS，上传 TestFlight 时不用再答出口合规
