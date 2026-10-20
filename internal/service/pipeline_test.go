@@ -102,3 +102,41 @@ func TestSpoolWritesWhileReceiving(t *testing.T) {
 		t.Fatalf("%d temp files left", len(entries))
 	}
 }
+
+// 分块写主存储偶尔失败（Telegram 连接断了一下）：再试一次就好，不让整个文件失败；一直失败才返回错误。
+func TestPutPartRetries(t *testing.T) {
+	delays := putRetryDelays
+	putRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { putRetryDelays = delays }()
+	base, _ := local.New(t.TempDir())
+	data := []byte("encrypted part")
+	req := func() storage.PutRequest {
+		return storage.PutRequest{Name: "p", Body: bytes.NewReader(data), Size: int64(len(data))}
+	}
+	ctx := context.Background()
+
+	flaky := &failingDriver{Driver: base, failAt: 1, failFor: 2}
+	svc := &Service{driver: flaky, log: slog.New(slog.DiscardHandler)}
+	loc, err := svc.putPart(ctx, [16]byte{}, &sealedPart{}, req)
+	if err != nil || flaky.puts != 3 {
+		t.Fatalf("flaky storage: err %v after %d puts, want success on the 3rd", err, flaky.puts)
+	}
+	rc, _ := base.ReadRange(ctx, loc, 0, int64(len(data)))
+	if got, _ := io.ReadAll(rc); !bytes.Equal(got, data) {
+		t.Fatalf("stored %q, want %q", got, data)
+	}
+
+	broken := &failingDriver{Driver: base, failAt: 1}
+	svc.driver = broken
+	if _, err := svc.putPart(ctx, [16]byte{}, &sealedPart{}, req); err == nil || broken.puts != 3 {
+		t.Fatalf("broken storage: err %v after %d puts, want failure after 3", err, broken.puts)
+	}
+
+	// 请求取消了就不再试
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	broken.puts = 0
+	if _, err := svc.putPart(cancelled, [16]byte{}, &sealedPart{}, req); err == nil || broken.puts != 1 {
+		t.Fatalf("cancelled: err %v after %d puts, want failure after 1", err, broken.puts)
+	}
+}
