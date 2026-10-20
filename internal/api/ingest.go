@@ -44,6 +44,7 @@ var ingestAlbums = map[string]string{"": AlbumFolder, "hidden": HiddenAlbumFolde
 //
 //	头部 X-File-Name: 文件名（也可以放在 ?name=；没有扩展名时按文件内容补上）
 //	头部 X-Xiaoju-Album: hidden 时放进“隐藏相册”，不带时放进“相册”
+//	头部 X-Xiaoju-Album-Name: 手机上的相册名（可以 URL 编码），放进“相册”下面同名的子文件夹（没有就新建）
 //	请求体：文件原始内容
 //
 // 文件名去掉自动加的序号后相同、大小也相同的视为已经传过，直接跳过：
@@ -79,6 +80,17 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(w, err)
 		return
+	}
+	sub, ok := ingestSubAlbum(r, folder)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad album name")
+		return
+	} else if sub != "" {
+		if album, err = s.subAlbumFolder(r, album, sub); err != nil {
+			s.fail(w, err)
+			return
+		}
+		folder += "/" + sub
 	}
 	// 开始收文件时也记一条：大视频要传很久，只有传完才记日志的话，中间看不出在传哪个、是不是卡住了。
 	// 快捷指令还报了它算出的大小和摘要（X-Debug-*）：和实际收到的对不上，就是本地比对失灵、传过的又发了一遍
@@ -124,7 +136,8 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		f, err := s.svc.Upload(uploadCtx, service.UploadRequest{
 			UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Body: body,
 			Spool: true, OnSpooled: func() { received = time.Now(); hb = startHeartbeat(w) },
-			SkipSameContent: true,
+			// 按手机相册传的（子文件夹）照样存一份：同一张照片多半已经在“相册”里了，跳过的话相册文件夹就是空的
+			SkipSameContent: sub == "",
 		})
 		started := hb.end() // 之后只有这里写回复
 		// 重名在读请求体之前就会发现（hb 还没创建），可以换个名字重试
@@ -260,6 +273,8 @@ func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 	size := parseByteCount(r.Header.Get("X-File-Size"))
 	name, named := ingestName(r, "")
 	if album == nil || size <= 0 || !named {
+		// App 的后台扩展每次运行也来问一声（名字是 xiaoju-backup-heartbeat …），记下来才看得出它在跑
+		s.log.Info("ingest exists asked", "name", name, "size", size, "album_found", album != nil, "agent", r.UserAgent())
 		writeJSON(w, http.StatusOK, missing)
 		return
 	}
@@ -390,7 +405,15 @@ func (s *Server) ingestAlbum(w http.ResponseWriter, r *http.Request) (album *met
 		writeError(w, http.StatusBadRequest, "unknown album")
 		return nil, false
 	}
+	sub, ok := ingestSubAlbum(r, folder)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad album name")
+		return nil, false
+	}
 	album, err := s.svc.Store().FindFolder(r.Context(), s.userID, nil, folder)
+	if err == nil && sub != "" {
+		album, err = s.svc.Store().FindFolder(r.Context(), s.userID, &album.ID, sub)
+	}
 	if errors.Is(err, meta.ErrNotFound) {
 		return nil, true
 	}
@@ -399,6 +422,36 @@ func (s *Server) ingestAlbum(w http.ResponseWriter, r *http.Request) (album *met
 		return nil, false
 	}
 	return album, true
+}
+
+// ingestSubAlbum 取 X-Xiaoju-Album-Name（App 按手机相册上传时带的相册名，可以是 URL 编码的）。
+// 只能放在“相册”下面一层；名字不合法、或者配的是隐藏相册时 ok 为 false。
+func ingestSubAlbum(r *http.Request, folder string) (name string, ok bool) {
+	raw := r.Header.Get("X-Xiaoju-Album-Name")
+	if raw == "" {
+		return "", true
+	}
+	if u, err := url.PathUnescape(raw); err == nil {
+		raw = u
+	}
+	name = cleanName(raw)
+	if name == "" || folder != AlbumFolder || utf8.RuneCountInString(name) > 100 {
+		return "", false
+	}
+	return name, true
+}
+
+// subAlbumFolder 返回 parent 下名为 name 的文件夹，没有就新建。
+func (s *Server) subAlbumFolder(r *http.Request, parent *meta.File, name string) (*meta.File, error) {
+	store := s.svc.Store()
+	f, err := store.FindFolder(r.Context(), s.userID, &parent.ID, name)
+	if errors.Is(err, meta.ErrNotFound) {
+		f, err = store.CreateFolder(r.Context(), s.userID, &parent.ID, name)
+		if errors.Is(err, meta.ErrConflict) {
+			return store.FindFolder(r.Context(), s.userID, &parent.ID, name)
+		}
+	}
+	return f, err
 }
 
 // parseByteCount 读字节数：只允许数字和千位分隔符（“12,345”“12 345”），其他（“1.2 MB”）返回 0。

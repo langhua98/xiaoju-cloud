@@ -4,13 +4,14 @@ import WebKit
 
 // 小桔备份（测试版）：打开 PhotoKit 的后台上传扩展（iOS 26.1 起苹果开放给第三方备份 App 的接口），
 // 之后系统在后台把新拍的照片、视频交给扩展（Extension/BackgroundUploadExtension.swift）传进小桔云盘的「相册」。
-// 「云盘」页直接打开网盘网页（浏览、上传、下载、分享都用网页的功能），「备份」页管后台自动备份。
+// 「云盘」页直接打开网盘网页（浏览、下载、分享都用网页的功能），「相册」页按手机相册原样上传，「备份」页管后台自动备份。
 @main
 struct XiaojuBackupApp: App {
     var body: some Scene {
         WindowGroup {
             TabView {
                 DriveView().tabItem { Label("云盘", systemImage: "externaldrive") }
+                AlbumsView().tabItem { Label("相册", systemImage: "photo.on.rectangle") }
                 ContentView().tabItem { Label("备份", systemImage: "arrow.up.circle") }
             }
         }

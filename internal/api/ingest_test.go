@@ -398,6 +398,34 @@ func TestIngest(t *testing.T) {
 	if code, _ := call("GET", "/api/stats?folder=x", "", tokenH...); code != 400 {
 		t.Errorf("stats with a bad folder id: %d", code)
 	}
+
+	// App 按手机相册上传：放进“相册”下面同名的子文件夹，exists 也按子文件夹查
+	trip := "%E6%97%85%E8%A1%8C" // 旅行
+	if code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", "IMG_0900.jpg", "X-File-Size", "2504", "X-Xiaoju-Album-Name", trip); code != 200 || out["result"] != "missing" {
+		t.Fatalf("exists before the sub-album is created: %d %v", code, out)
+	}
+	if code, out := call("POST", "/api/ingest", jpeg, "X-File-Name", "IMG_0900.jpg", "X-Xiaoju-Album-Name", trip); code != 201 || out["result"] != "uploaded" {
+		t.Fatalf("ingest into a sub-album: %d %v", code, out)
+	}
+	if code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", "IMG_0900.jpg", "X-File-Size", "2504", "X-Xiaoju-Album-Name", trip); code != 200 || out["result"] != "exists" {
+		t.Fatalf("exists in the sub-album: %d %v", code, out)
+	}
+	_, kids := call("GET", "/api/folders/"+albumID+"/children", "", tokenH...)
+	found := false
+	for _, it := range kids["items"].([]any) {
+		if m := it.(map[string]any); m["name"] == "旅行" && m["type"] == "folder" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("sub-album folder missing: %v", kids)
+	}
+	if code, _ := call("POST", "/api/ingest", jpeg, "X-File-Name", "a.jpg", "X-Xiaoju-Album", "hidden", "X-Xiaoju-Album-Name", trip); code != 400 {
+		t.Errorf("sub-album under the hidden album: %d", code)
+	}
+	if code, _ := call("POST", "/api/ingest", jpeg, "X-File-Name", "a.jpg", "X-Xiaoju-Album-Name", "."); code != 400 {
+		t.Errorf("bad sub-album name: %d", code)
+	}
 }
 
 // slowDriver 模拟写 Telegram 很慢（大视频）
