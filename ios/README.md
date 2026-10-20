@@ -1,5 +1,8 @@
 # 小桔备份（iPhone App，测试版）
 
+> 还没编译通过、也没在真机上试过：装到手机上要签名（免费的要借电脑装一次 SideStore，或者每年 99 美元的开发者账号），
+> 暂时搁置。现在的自动备份用快捷指令「自动备份新照片」。
+
 目标是像 iCloud 照片一样：新拍的照片、视频由系统在后台自动传进小桔云盘的「相册」，锁屏、切到别的 App 也照样传。
 用的是苹果 iOS 26.1 起开放给第三方备份 App 的 PhotoKit「后台上传扩展」
 （[Uploading asset resources in the background](https://developer.apple.com/documentation/photokit/uploading-asset-resources-in-the-background)），
@@ -15,7 +18,7 @@
 
 ## 编译和安装
 
-仓库里不放 Xcode 工程。推送改动后 `.github/workflows/ios.yml` 在 GitHub 的 Mac 机器上 `xcodegen generate` 再编译。
+仓库里不放 Xcode 工程。在 Actions 里手动运行 `.github/workflows/ios.yml` 在 GitHub 的 Mac 机器上 `xcodegen generate` 再编译。
 服务端地址默认是 `web/config.js` 里那个，设了仓库变量 `XIAOJU_API_URL` 时用它。
 
 **TestFlight（推荐）**：需要付费的苹果开发者账号（每年 99 美元），全程只用手机。
@@ -25,7 +28,7 @@
    `ASC_KEY_P8`（.p8 文件全文）、`APPLE_TEAM_ID`（团队 ID）。
 3. 在 App Store Connect 新建 App「小桔备份」，套装 ID `com.langhua98.xiaoju.backup`（列表里没有的话，先让工作流跑一次，
    自动签名时会注册上）。
-4. 之后每次推送 `ios/` 的改动，工作流自动签名、上传 TestFlight（编号是工作流的运行次数）。处理完后在手机的 TestFlight 里安装
+4. 之后每次手动运行工作流，自动签名、上传 TestFlight（编号是工作流的运行次数）。处理完后在手机的 TestFlight 里安装
    （自己是「内部测试员」，不用等审核）。
 
 **没签名的 .ipa**：每次也会发布到 Release「ios-test」（每次覆盖），可以用自己的证书签名安装（如 SideStore + 自己的 Apple ID）。

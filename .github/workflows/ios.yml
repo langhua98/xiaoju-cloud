@@ -4,12 +4,9 @@ name: Build iPhone app
 # - build：没签名的 .ipa，发布到 Release「ios-test」（每次覆盖），可以自己签名安装；
 # - testflight：仓库里配好 App Store Connect 的 API 密钥（Secrets：ASC_KEY_ID、ASC_ISSUER_ID、ASC_KEY_P8、
 #   APPLE_TEAM_ID）后，自动签名、上传 TestFlight，手机上在 TestFlight 里安装。见 ios/README.md。
+# 只手动运行（Actions → Build iPhone app → Run workflow）：Mac 机器的分钟数贵，App 也还要先解决签名才能装。
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "ios/**"
-      - ".github/workflows/ios.yml"
 
 permissions:
   contents: write
