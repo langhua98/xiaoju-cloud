@@ -20,6 +20,7 @@ env:
 
 jobs:
   build:
+    # 后台上传接口要 iOS 26.4 的 SDK，macos-15 上的 Xcode 太旧编不过
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4

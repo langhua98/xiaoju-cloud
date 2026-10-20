@@ -5,7 +5,7 @@ import Photos
 
 // PhotoKit 后台上传扩展：系统在网络、电量合适的时候调用 processJobs()，这里给新照片、视频的每个原始资源建一个上传任务
 // （POST /api/ingest），真正的上传由系统在后台做，锁屏、切到别的 App 也照样传。
-// 只传打开开关之后新加进相册的：第一次被调用时记下当时的「变更令牌」，之后按令牌取新增的照片。
+// 只传最近拍的：第一次被调用时传最近 24 小时的，并记下当时的「变更令牌」，之后按令牌取新增的照片。
 // 用的是 iOS 26.1 的 PHBackgroundResourceUploadExtension（iOS 27 起有新的 async 版本，但 GitHub 的 Mac 机器上
 // 还没有 iOS 27 的 SDK；旧接口在 iOS 27 上照样能用）。
 // 见 https://developer.apple.com/documentation/photokit/uploading-asset-resources-in-the-background
@@ -22,22 +22,43 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     required init() {}
 
     func process() -> PHBackgroundResourceUploadProcessingResult {
+        let result: PHBackgroundResourceUploadProcessingResult
+        var note = ""
         do {
             try retryFailedJobs()
             try acknowledgeFinishedJobs()
             try collectNewAssets()
+            note = "pending=\(defaults.stringArray(forKey: Self.pendingKey)?.count ?? 0)"
             let more = try createJobs()
-            return more ? .processing : .completed
+            result = more ? .processing : .completed
         } catch PHPhotosError.limitExceeded {
-            return .processing // 任务数到上限：等已建的传完再来
+            note = "limitExceeded"
+            result = .processing // 任务数到上限：等已建的传完再来
         } catch PHPhotosError.persistentChangeTokenExpired {
             log.error("change token expired, starting over from now")
             defaults.removeObject(forKey: Self.tokenKey)
-            return .processing
+            note = "tokenExpired"
+            result = .processing
         } catch {
             log.error("processJobs failed: \(error.localizedDescription, privacy: .public)")
-            return .failure
+            note = "error: \(error)"
+            result = .failure
         }
+        heartbeat("\(note) result=\(String(describing: result))")
+        return result
+    }
+
+    // 测试版用：每次被系统叫醒都问服务端一声 /api/ingest/exists，服务端日志里能看到扩展有没有在跑、跑到哪一步。
+    private func heartbeat(_ text: String) {
+        guard let base = Bundle.main.object(forInfoDictionaryKey: "BackgroundUploadURLBase") as? String,
+              let url = URL(string: base + "/api/ingest/exists")
+        else { return }
+        var req = URLRequest(url: url, timeoutInterval: 5)
+        req.setValue(encodedName("xiaoju-backup-heartbeat " + text), forHTTPHeaderField: "X-File-Name")
+        req.setValue("0", forHTTPHeaderField: "X-File-Size")
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 5)
     }
 
     func notifyTermination() {
@@ -90,9 +111,15 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         guard let data = defaults.data(forKey: Self.tokenKey),
               let token = try NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: data)
         else {
-            // 第一次：从现在开始算，之前的照片不传
+            // 第一次：记下现在的令牌，之后按令牌取新增的。系统第一次叫醒扩展可能是打开开关之后很久，
+            // 这期间拍的照片令牌里没有，所以把最近 24 小时拍的也放进待传列表，再早的不传。
             try save(token: library.currentChangeToken)
-            log.info("first run: watching for new photos from now on")
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(format: "creationDate > %@", Date().addingTimeInterval(-24 * 3600) as NSDate)
+            var recent: [String] = []
+            PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in recent.append(asset.localIdentifier) }
+            defaults.set(recent, forKey: Self.pendingKey)
+            log.info("first run: \(recent.count) photos from the last 24 hours, then new ones from now on")
             return
         }
         var pending = Set(defaults.stringArray(forKey: Self.pendingKey) ?? [])
@@ -136,6 +163,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                     for resource in resources {
                         var req = URLRequest(url: url)
                         req.httpMethod = "POST"
+                        // 用流量也传（系统可能还是会优先等 Wi-Fi）
+                        req.allowsCellularAccess = true
+                        req.allowsExpensiveNetworkAccess = true
+                        req.allowsConstrainedNetworkAccess = true
                         req.setValue(encodedName(resource.originalFilename), forHTTPHeaderField: "X-File-Name")
                         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
                         _ = PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: req, resource: resource)
