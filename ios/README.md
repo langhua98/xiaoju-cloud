@@ -3,7 +3,7 @@
 目标是像 iCloud 照片一样：新拍的照片、视频由系统在后台自动传进小桔云盘的「相册」，锁屏、切到别的 App 也照样传。
 用的是苹果 iOS 26.1 起开放给第三方备份 App 的 PhotoKit「后台上传扩展」
 （[Uploading asset resources in the background](https://developer.apple.com/documentation/photokit/uploading-asset-resources-in-the-background)），
-这里按 iOS 27 的新接口 `PHBackgroundResourceUploadJobExtension` 写，**需要 iOS 27**。
+这里用 iOS 26.1 的 `PHBackgroundResourceUploadExtension`（iOS 27 起有新的 async 版本 `PHBackgroundResourceUploadJobExtension`，但 GitHub 的 Mac 机器上还只有 iOS 26.5 的 SDK；旧接口在 iOS 27 上照样能用），**需要 iOS 26.1 以上**。
 
 这一版只验证流程：
 

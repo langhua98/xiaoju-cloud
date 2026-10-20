@@ -6,9 +6,11 @@ import Photos
 // PhotoKit 后台上传扩展：系统在网络、电量合适的时候调用 processJobs()，这里给新照片、视频的每个原始资源建一个上传任务
 // （POST /api/ingest），真正的上传由系统在后台做，锁屏、切到别的 App 也照样传。
 // 只传打开开关之后新加进相册的：第一次被调用时记下当时的「变更令牌」，之后按令牌取新增的照片。
+// 用的是 iOS 26.1 的 PHBackgroundResourceUploadExtension（iOS 27 起有新的 async 版本，但 GitHub 的 Mac 机器上
+// 还没有 iOS 27 的 SDK；旧接口在 iOS 27 上照样能用）。
 // 见 https://developer.apple.com/documentation/photokit/uploading-asset-resources-in-the-background
 @main
-final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
+final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private let log = Logger(subsystem: "com.xiaoju.backup", category: "upload")
     private let defaults = UserDefaults.standard
     private let lock = NSLock()
@@ -19,12 +21,12 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
 
     required init() {}
 
-    func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
+    func process() -> PHBackgroundResourceUploadProcessingResult {
         do {
-            try await retryFailedJobs()
-            try await acknowledgeFinishedJobs()
+            try retryFailedJobs()
+            try acknowledgeFinishedJobs()
             try collectNewAssets()
-            let more = try await createJobs()
+            let more = try createJobs()
             return more ? .processing : .completed
         } catch PHPhotosError.limitExceeded {
             return .processing // 任务数到上限：等已建的传完再来
@@ -38,14 +40,14 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
         }
     }
 
-    func willTerminate() async {
+    func notifyTermination() {
         lock.withLock { cancelled = true }
     }
 
     private var isCancelled: Bool { lock.withLock { cancelled } }
 
     // 失败的任务：网络断了、超时这类重试；服务端拒绝（4xx）的确认掉，不再传。
-    private func retryFailedJobs() async throws {
+    private func retryFailedJobs() throws {
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(action: .retry, options: nil)
         for i in 0..<jobs.count {
@@ -57,7 +59,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
                 permanent = false
             }
             log.info("job failed: \(String(describing: job.error), privacy: .public) permanent=\(permanent)")
-            try await library.performChanges {
+            try library.performChangesAndWait {
                 guard let req = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                 if permanent {
                     req.acknowledge()
@@ -69,14 +71,14 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
     }
 
     // 传完（成功或失败）的任务要确认掉，才能腾出位置建新任务。
-    private func acknowledgeFinishedJobs() async throws {
+    private func acknowledgeFinishedJobs() throws {
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(action: .acknowledge, options: nil)
         for i in 0..<jobs.count {
             let job = jobs.object(at: i)
-            let name = PHAssetResource.assetResource(forUploadJob: job)?.originalFilename ?? "?"
+            let name = (job.resource as PHAssetResource?)?.originalFilename ?? "?"
             log.info("job done: \(name, privacy: .public) state=\(String(describing: job.state), privacy: .public)")
-            try await library.performChanges {
+            try library.performChangesAndWait {
                 PHAssetResourceUploadJobChangeRequest(for: job)?.acknowledge()
             }
         }
@@ -111,7 +113,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
     }
 
     // 给待传的照片建上传任务：照片原图、视频原片，实况照片的视频部分也传。还有没建完的返回 true。
-    private func createJobs() async throws -> Bool {
+    private func createJobs() throws -> Bool {
         var pending = defaults.stringArray(forKey: Self.pendingKey) ?? []
         guard !pending.isEmpty else { return false }
         guard let base = Bundle.main.object(forInfoDictionaryKey: "BackgroundUploadURLBase") as? String,
@@ -130,7 +132,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
             if let asset = byID[id] {
                 let resources = PHAssetResource.assetResources(for: asset)
                     .filter { [.photo, .video, .pairedVideo].contains($0.type) }
-                try await library.performChanges {
+                try library.performChangesAndWait {
                     for resource in resources {
                         var req = URLRequest(url: url)
                         req.httpMethod = "POST"
