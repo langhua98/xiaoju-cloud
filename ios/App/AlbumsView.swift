@@ -1,3 +1,4 @@
+import CryptoKit
 import Photos
 import SwiftUI
 
@@ -40,6 +41,9 @@ struct AlbumsView: View {
                     }
                     if !uploader.status.isEmpty {
                         Text(uploader.status).font(.footnote).textSelection(.enabled)
+                    }
+                    if uploader.running && !uploader.detail.isEmpty {
+                        Text(uploader.detail).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -101,6 +105,7 @@ struct PhoneAlbum: Identifiable {
 final class AlbumUploader: ObservableObject {
     @Published var running = false
     @Published var status = ""
+    @Published var detail = "" // 大视频的上传进度
     private var task: Task<Void, Never>?
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
@@ -138,6 +143,14 @@ final class AlbumUploader: ObservableObject {
         }
     }
 
+    private func spoolFile(for resource: PHAssetResource) -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("albums")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let key = "\(resource.assetLocalIdentifier)|\(resource.type.rawValue)|\(resource.originalFilename)"
+        let name = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return dir.appendingPathComponent(name)
+    }
+
     private func request(_ path: String, _ resource: PHAssetResource, _ album: PhoneAlbum) throws -> URLRequest {
         guard let url = URL(string: server + path) else { throw URLError(.badURL) }
         var req = URLRequest(url: url)
@@ -160,31 +173,28 @@ final class AlbumUploader: ObservableObject {
                 return false
             }
         }
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: file) }
-        let opts = PHAssetResourceRequestOptions()
-        opts.isNetworkAccessAllowed = true // 原图在 iCloud 上时先下载
-        try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: opts)
-        var req = try request("/api/ingest", resource, album)
-        req.httpMethod = "POST"
-        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 600
-        let (data, resp) = try await URLSession.shared.upload(for: req, fromFile: file)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else {
-            throw NSError(domain: "xiaoju", code: code, userInfo: [NSLocalizedDescriptionKey: "HTTP \(code) \(String(decoding: data, as: UTF8.self))"])
+        // 断点续传：导出的文件放在固定的地方，断了下次直接接着传，不用再导出
+        let file = spoolFile(for: resource)
+        if !FileManager.default.fileExists(atPath: file.path) {
+            let opts = PHAssetResourceRequestOptions()
+            opts.isNetworkAccessAllowed = true // 原图在 iCloud 上时先下载
+            let part = file.appendingPathExtension("part")
+            try? FileManager.default.removeItem(at: part)
+            try await PHAssetResourceManager.default().writeData(for: resource, toFile: part, options: opts)
+            try FileManager.default.moveItem(at: part, to: file)
         }
-        let result = (try? JSONSerialization.jsonObject(with: data.trimmingSpaces()) as? [String: Any])?["result"] as? String
-        if result == "error" {
-            throw NSError(domain: "xiaoju", code: 0, userInfo: [NSLocalizedDescriptionKey: String(decoding: data, as: UTF8.self)])
+        var headers: [String: String] = [:]
+        if album.hidden {
+            headers["X-Xiaoju-Album"] = "hidden"
+        } else {
+            headers["X-Xiaoju-Album-Name"] = encodedName(album.title)
         }
-        return result != "skipped"
-    }
-}
-
-private extension Data {
-    // 大视频写入时服务端先发空格保持连接，JSON 在最后
-    func trimmingSpaces() -> Data {
-        Data(String(decoding: self, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+        let uploaded = try await ResumableIngest.send(file: file, name: resource.originalFilename, server: server, headers: headers) { done, total in
+            if total > 32 << 20 {
+                Task { @MainActor in self.detail = "\(resource.originalFilename) \(done >> 20)/\(total >> 20) MB" }
+            }
+        }
+        try? FileManager.default.removeItem(at: file)
+        return uploaded
     }
 }

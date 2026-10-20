@@ -426,6 +426,29 @@ func TestIngest(t *testing.T) {
 	if code, _ := call("POST", "/api/ingest", jpeg, "X-File-Name", "a.jpg", "X-Xiaoju-Album-Name", "."); code != 400 {
 		t.Errorf("bad sub-album name: %d", code)
 	}
+	// App 的断点续传：分两段传，中间断开后问进度接着传；再开始一次同一个文件就是“传过了”
+	big := "\xFF\xD8\xFF\xE0" + strings.Repeat("r", 2996)
+	upHdr := []string{"X-File-Name", "IMG_0950.JPG", "X-File-Size", "3000", "X-Xiaoju-Album-Name", trip}
+	code, up := call("POST", "/api/ingest/uploads", "", upHdr...)
+	id, _ := up["id"].(string)
+	if code != 200 || up["result"] != "started" || id == "" || up["offset"] != 0.0 {
+		t.Fatalf("start ingest upload: %d %v", code, up)
+	}
+	if code, out := call("PUT", "/api/ingest/uploads/"+id+"?offset=0", big[:1200]); code != 200 || out["offset"] != 1200.0 {
+		t.Fatalf("first piece: %d %v", code, out)
+	}
+	if code, out := call("POST", "/api/ingest/uploads", "", upHdr...); code != 200 || out["id"] != id || out["offset"] != 1200.0 {
+		t.Fatalf("restart must resume: %d %v", code, out)
+	}
+	if code, out := call("GET", "/api/ingest/uploads/"+id, ""); code != 200 || out["offset"] != 1200.0 {
+		t.Fatalf("upload status: %d %v", code, out)
+	}
+	if code, out := call("PUT", "/api/ingest/uploads/"+id+"?offset=1200", big[1200:]); code != 201 || out["file"] == nil {
+		t.Fatalf("last piece: %d %v", code, out)
+	}
+	if code, out := call("POST", "/api/ingest/uploads", "", upHdr...); code != 200 || out["result"] != "skipped" {
+		t.Fatalf("finished upload must be skipped: %d %v", code, out)
+	}
 	// 通讯录、日历这类放进“手机数据”下面的子文件夹
 	if code, out := call("POST", "/api/ingest", "BEGIN:VCARD\nEND:VCARD\n", "X-File-Name", "contacts.vcf", "X-Xiaoju-Album", "data", "X-Xiaoju-Album-Name", "%E9%80%9A%E8%AE%AF%E5%BD%95"); code != 201 || out["result"] != "uploaded" {
 		t.Fatalf("ingest phone data: %d %v", code, out)

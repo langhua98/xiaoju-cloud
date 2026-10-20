@@ -147,6 +147,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/ingest", s.limited(s.ingestLimit, s.tracked(s.ingest)))
 	api.HandleFunc("OPTIONS /api/ingest", s.ingestPreflight)
 	api.HandleFunc("GET /api/ingest/exists", s.limited(s.ingestAskLimit, s.ingestExists))
+	// App 的断点续传（见 ingest_resumable.go）：后两个和网页的 /api/uploads/{id} 同一套，上传 ID 是随机的
+	api.HandleFunc("POST /api/ingest/uploads", s.limited(s.ingestLimit, s.startIngestUpload))
+	api.HandleFunc("GET /api/ingest/uploads/{id}", s.limited(s.ingestAskLimit, s.uploadStatus))
+	api.HandleFunc("PUT /api/ingest/uploads/{id}", s.limited(s.ingestLimit, s.tracked(s.writeUpload)))
 	api.HandleFunc("GET /api/ingest/names", s.limited(s.ingestAskLimit, s.ingestNames))
 	api.HandleFunc("POST /api/ingest/plan", s.limited(s.ingestAskLimit, s.tracked(s.ingestPlan)))
 	// 分享链接：不需要认证，见 shares.go

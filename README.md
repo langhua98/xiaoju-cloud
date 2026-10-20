@@ -102,6 +102,7 @@ make run
 | `GET` | `/api/trash` | 回收站：单独删掉的条目，最近删的在前 |
 | `GET` | `/api/stats[?folder=id]` | 整个网盘（或一个文件夹里，连同子文件夹）的文件数、照片 / 视频 / 其他、大小、已双备份的文件数 |
 | `GET` | `/api/backup/phone` | 手机备份到哪了：“相册”“隐藏相册”各有几个文件、最近一次上传，以及快捷指令最近一次清单（手机上几个、当时已有几个、之后又传了几个） |
+| `POST` | `/api/ingest/uploads` | App 的断点续传：头部同 `/api/ingest`，加 `X-File-Size`、`X-Upload-Probe`；传过的返回 `{"result":"skipped"}`，否则返回 `{id,offset,chunk}`，之后 `PUT /api/ingest/uploads/{id}?offset=` 一段段传、`GET /api/ingest/uploads/{id}` 查进度（不需要认证） |
 | `GET` | `/api/ingest/exists` | 批量上传前先问：头部 `X-File-Name`、`X-File-Size`（字节数）、`X-Xiaoju-Album`（以及 App 用的 `X-Xiaoju-Album-Name`），返回 `{"result":"exists"\|"missing"}`（不需要认证） |
 | `POST` | `/api/ingest/plan` | JSON `{"album","names","sizes"}`（各一行一个文件，名字不带扩展名，大小是“30.4 MB”这样的文字；从相册直接读时用 `dates` 代替 `sizes`）：回答 `{"todo":"3\n7","count":2,"uploaded":120,"files":122}`，todo 是还没传过的是第几个；每次清单记进 `ingest_checks`（不需要认证） |
 | `GET` | `/api/ingest/names` | 头部 `X-Xiaoju-Album`：相册里每个文件 `SHA-256("名字\|字节数")`（`text/plain`，一行一个；带“ (2)”序号的另给去掉序号的一行；只给摘要，列不出文件名；不需要认证） |
