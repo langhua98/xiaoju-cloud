@@ -142,6 +142,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                     for resource in resources {
                         var req = URLRequest(url: url)
                         req.httpMethod = "POST"
+                        // 用流量也传（系统可能还是会优先等 Wi-Fi）
+                        req.allowsCellularAccess = true
+                        req.allowsExpensiveNetworkAccess = true
+                        req.allowsConstrainedNetworkAccess = true
                         req.setValue(encodedName(resource.originalFilename), forHTTPHeaderField: "X-File-Name")
                         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
                         _ = PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: req, resource: resource)
