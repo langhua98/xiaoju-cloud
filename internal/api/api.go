@@ -145,6 +145,7 @@ func (s *Server) Handler() http.Handler {
 
 	// 批量上传（快捷指令）：不需要认证，只能往“相册”里添加文件，见 ingest.go
 	api.HandleFunc("POST /api/ingest", s.limited(s.ingestLimit, s.tracked(s.ingest)))
+	api.HandleFunc("OPTIONS /api/ingest", s.ingestPreflight)
 	api.HandleFunc("GET /api/ingest/exists", s.limited(s.ingestAskLimit, s.ingestExists))
 	api.HandleFunc("GET /api/ingest/names", s.limited(s.ingestAskLimit, s.ingestNames))
 	api.HandleFunc("POST /api/ingest/plan", s.limited(s.ingestAskLimit, s.tracked(s.ingestPlan)))

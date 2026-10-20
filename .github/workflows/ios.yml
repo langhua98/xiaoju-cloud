@@ -1,0 +1,59 @@
+name: Build iPhone app
+
+# 小桔备份（ios/）：在 GitHub 的 Mac 机器上用 XcodeGen 生成工程、编译出没签名的 .ipa，
+# 发布到 Release「ios-test」（每次覆盖），手机上用 Feather 等工具签名后安装。见 ios/README.md。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build
+        working-directory: ios
+        env:
+          XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
+        run: |
+          xcodegen generate
+          xcodebuild -project XiaojuBackup.xcodeproj -scheme XiaojuBackup -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${XIAOJU_API_URL:+XIAOJU_API_URL="$XIAOJU_API_URL"} \
+            build
+          app=build/Build/Products/Release-iphoneos/XiaojuBackup.app
+          find "$app" -maxdepth 3 -name '*.appex' -print
+          mkdir Payload && cp -R "$app" Payload/
+          zip -qry ../XiaojuBackup.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XiaojuBackup-ipa
+          path: XiaojuBackup.ipa
+      - name: Publish to the ios-test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ios-test --yes --cleanup-tag || true
+          gh release create ios-test XiaojuBackup.ipa --prerelease --target "$GITHUB_SHA" \
+            --title "小桔备份 测试版（${GITHUB_REF_NAME} ${GITHUB_SHA::7}）" \
+            --notes "没签名的测试版，手机上用 Feather 签名后安装。见 ios/README.md。"

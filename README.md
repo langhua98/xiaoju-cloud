@@ -350,11 +350,14 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/api/ingest` | 不需要认证。头部 `X-File-Name`（或 `?name=`，没有扩展名时按内容补上），请求体是文件原始内容；新文件 `201 {"result":"uploaded"}`，已存在 `200 {"result":"skipped"}`，网盘里已有内容一样的 `200 {"result":"skipped","same_content":true}` |
+| `OPTIONS` | `/api/ingest` | iPhone App（`ios/`，PhotoKit 后台上传）上传前问支不支持断点续传：现在回 `501`，日志记 `ingest preflight` |
 
 **文件名**：快捷指令先把文件名做 URL 编码再放进 `X-File-Name`（服务端解码）。以前直接放中文，iOS 的请求头放不了，
 遇到第一个中文字就把后面（连扩展名）全丢了：“video_啦啦啦….mov”存成了“video_.mov”，“@奶茶文.mp4”存成了“@ (3).mp4”，
 上传计划也认不出来，每次运行都重发一遍。已经存成截断名字的，上传计划（手机发来的完整名字 + 大小）和上传时
 （完全一样的字节数）认出来就改回真名（`api/cutnames.go`）。
+
+**进度日志**：大文件每收 256MB 或每隔 1 分钟记一条 `ingest progress`（收到多少、速度、预计还要多久）；手机断网等原因没传完时记 `ingest interrupted`（收到多少、共多少）。
 
 **边收边写**：大视频收好一个分块就在后台写进 Telegram，接着收下一块（`service.partWriter`），不再收完整个文件才开始写
 （2.8GB 的视频以前收 47 分钟、再写 12 分钟）；临时目录里最多同时三块。
