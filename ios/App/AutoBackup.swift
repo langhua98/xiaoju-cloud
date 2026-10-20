@@ -13,9 +13,9 @@ import UIKit
 //   1. 系统的后台任务（BGProcessingTask，要求接着电源、有网络），一般是夜里充电时；
 //   2. 快捷指令自动化「连接充电器时」运行「备份到小桔云盘」（会打开 App，跑完自动锁屏照常）；
 //   3. App 里点「现在备份」。
-// 导出的原图交给系统的后台 URLSession 上传，App 被挂起、锁屏了也会传完（大视频分段断点续传）；传过的记在本地，下次跳过，
+// 导出的原图交给系统的后台 URLSession 上传，App 被挂起、锁屏了也会传完（大视频 8MB 一段交给后台、一段段接着传，断了下次接着传）；传过的记在本地，下次跳过，
 // 服务端也按名字 + 大小跳过。苹果不让第三方 App 读的数据（短信、备忘录、健康……）这里做不了。
-final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
+final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     static let shared = AutoBackup()
     static let taskID = "com.langhua98.xiaoju.backup.sync"
 
@@ -122,6 +122,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
             UIApplication.shared.isIdleTimerDisabled = true // 开着 App 跑的时候不自动锁屏（充电时）
         }
         setStatus("正在备份（\(reason)）…")
+        await resumeBigJobs()
         await backupData()
         await backupPhotos()
         saveDone(force: true)
@@ -213,13 +214,13 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
             if let album {
                 if album.hidden { extra["X-Xiaoju-Album"] = "hidden" } else { extra["X-Xiaoju-Album-Name"] = encodedName(album.title) }
             }
-            let name = resource.originalFilename
-            let uploaded = try await ResumableIngest.send(file: file, name: name, server: server, headers: extra) { done, total in
-                self.setStatus("正在传 \(name)：\(done >> 20)/\(total >> 20) MB")
+            // 同时最多 2 个大文件在后台分段传
+            while await chunkTasks() >= 2 {
+                if Task.isCancelled { return }
+                try await Task.sleep(nanoseconds: 2_000_000_000)
             }
-            try? FileManager.default.removeItem(at: file)
-            markDone(key)
-            if uploaded { counts.uploaded += 1 } else { counts.skipped += 1 }
+            let job = BigJob(key: key, file: file.path, name: resource.originalFilename, headers: extra, size: size)
+            if try await startBig(job) { counts.uploaded += 1 } else { counts.skipped += 1 }
             return
         }
         while await session.allTasks.count >= 6 {
@@ -240,7 +241,16 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
         counts.uploaded += 1
     }
 
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.withLock { replies[dataTask.taskIdentifier, default: Data()].append(data) }
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let reply = lock.withLock { replies.removeValue(forKey: task.taskIdentifier) } ?? Data()
+        if task.taskDescription?.hasPrefix("chunk\t") == true {
+            chunkDone(task, reply: reply, error: error)
+            return
+        }
         let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
         if parts.count == 2 { try? FileManager.default.removeItem(atPath: parts[1]) }
         let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
@@ -257,6 +267,127 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionTaskDelegate {
         DispatchQueue.main.async {
             self.backgroundCompletion?()
             self.backgroundCompletion = nil
+        }
+    }
+
+    // MARK: 大文件：交给系统后台一段段传（8MB 一段，传完一段在回调里接着交下一段，锁屏、App 被挂起也不停）
+
+    struct BigJob: Codable {
+        var key: String
+        var file: String // 导出的原文件，传完才删
+        var name: String
+        var headers: [String: String]
+        var size: Int64
+        var id = ""
+        var chunk: Int64 = 8 << 20
+    }
+
+    private var replies: [Int: Data] = [:]
+    private var jobsFile: URL { support.appendingPathComponent("bigjobs.json") }
+
+    private func loadJobs() -> [String: BigJob] {
+        guard let data = try? Data(contentsOf: jobsFile) else { return [:] }
+        return (try? JSONDecoder().decode([String: BigJob].self, from: data)) ?? [:]
+    }
+
+    private func saveJob(_ job: BigJob?, key: String) {
+        lock.withLock {
+            var jobs = loadJobs()
+            jobs[key] = job
+            if let data = try? JSONEncoder().encode(jobs) { try? data.write(to: jobsFile, options: .atomic) }
+        }
+    }
+
+    private func chunkTasks() async -> Int {
+        await session.allTasks.filter { $0.taskDescription?.hasPrefix("chunk\t") == true }.count
+    }
+
+    // 开始（或接着）传一个大文件：问服务端收到了多少，从那里交出下一段。服务端早就有了返回 false。
+    private func startBig(_ job: BigJob) async throws -> Bool {
+        var job = job
+        guard let url = URL(string: server + "/api/ingest/uploads") else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue(encodedName(job.name), forHTTPHeaderField: "X-File-Name")
+        req.setValue(String(job.size), forHTTPHeaderField: "X-File-Size")
+        for (k, v) in job.headers { req.setValue(v, forHTTPHeaderField: k) }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let out = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            throw NSError(domain: "xiaoju", code: 0, userInfo: [NSLocalizedDescriptionKey: String(decoding: data, as: UTF8.self)])
+        }
+        if out["result"] as? String == "skipped" {
+            finishBig(job)
+            return false
+        }
+        job.id = out["id"] as? String ?? ""
+        job.chunk = max((out["chunk"] as? NSNumber)?.int64Value ?? job.chunk, 1 << 20)
+        saveJob(job, key: job.key)
+        try queueChunk(job, offset: (out["offset"] as? NSNumber)?.int64Value ?? 0)
+        return true
+    }
+
+    private func queueChunk(_ job: BigJob, offset: Int64) throws {
+        guard let handle = FileHandle(forReadingAtPath: job.file) else { throw URLError(.fileDoesNotExist) }
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        let piece = try handle.read(upToCount: Int(min(job.chunk, job.size - offset))) ?? Data()
+        let chunkFile = spool.appendingPathComponent("\(job.id)-\(offset)")
+        try piece.write(to: chunkFile)
+        var req = URLRequest(url: URL(string: server + "/api/ingest/uploads/\(job.id)?offset=\(offset)")!)
+        req.httpMethod = "PUT"
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let task = session.uploadTask(with: req, fromFile: chunkFile)
+        task.taskDescription = ["chunk", job.key, chunkFile.path, String(offset + Int64(piece.count))].joined(separator: "\t")
+        task.resume()
+        setStatus("后台在传 \(job.name)：\(offset >> 20)/\(job.size >> 20) MB")
+    }
+
+    private func chunkDone(_ task: URLSessionTask, reply: Data, error: Error?) {
+        let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+        guard parts.count == 4, let job = loadJobs()[parts[1]] else { return }
+        try? FileManager.default.removeItem(atPath: parts[2])
+        let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
+        let out = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any] ?? [:]
+        let next = (out["offset"] as? NSNumber)?.int64Value ?? Int64(parts[3]) ?? 0
+        do {
+            switch code {
+            case 201:
+                finishBig(job)
+            case 200 where out["same_content"] as? Bool == true:
+                finishBig(job)
+            case 200, 409:
+                try queueChunk(job, offset: next)
+            default:
+                throw NSError(domain: "xiaoju", code: code, userInfo: [NSLocalizedDescriptionKey:
+                    error?.localizedDescription ?? "HTTP \(code) \(String(decoding: reply, as: UTF8.self))"])
+            }
+        } catch {
+            // 断了：留着这个任务，下次备份时问服务端收到多少接着传
+            lastError = "\(job.name)：\(error.localizedDescription)（下次接着传）"
+            setStatus("\(Self.time()) \(lastError)")
+        }
+    }
+
+    private func finishBig(_ job: BigJob) {
+        try? FileManager.default.removeItem(atPath: job.file)
+        saveJob(nil, key: job.key)
+        markDone(job.key)
+        saveDone(force: true)
+        setStatus("\(Self.time()) 后台传完 \(job.name)")
+    }
+
+    // 上次没传完的大文件（断网、App 被杀）：接着传。
+    private func resumeBigJobs() async {
+        let active = Set(await session.allTasks.compactMap { $0.taskDescription?.components(separatedBy: "\t") }
+            .filter { $0.first == "chunk" && $0.count > 1 }.map { $0[1] })
+        for job in loadJobs().values where !active.contains(job.key) {
+            if Task.isCancelled { return }
+            guard FileManager.default.fileExists(atPath: job.file) else {
+                saveJob(nil, key: job.key) // 文件被系统清掉了：下次从头导出
+                continue
+            }
+            do { _ = try await startBig(job) } catch { lastError = "\(job.name)：\(error.localizedDescription)" }
         }
     }
 
