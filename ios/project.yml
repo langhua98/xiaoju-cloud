@@ -34,6 +34,12 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
+        NSContactsUsageDescription: 把通讯录备份到小桔云盘。
+        NSCalendarsFullAccessUsageDescription: 把日历备份到小桔云盘。
+        NSRemindersFullAccessUsageDescription: 把提醒事项备份到小桔云盘。
+        # 自动备份：充电、有网络时系统运行的后台任务（AutoBackup.swift）
+        UIBackgroundModes: [processing, fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.langhua98.xiaoju.backup.sync]
         XiaojuAPIURL: $(XIAOJU_API_URL)
         XiaojuWebURL: $(XIAOJU_WEB_URL)
         ITSAppUsesNonExemptEncryption: false # 只用 HTTPS，上传 TestFlight 时不用再答出口合规

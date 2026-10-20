@@ -69,5 +69,9 @@ jobs:
           echo "::group::space run logs (backup / ingest / thumbnail / warnings / errors, last 300)"
           grep -E "backup|WARN|ERROR|Startup|listening|ingest|thumbnail|scrub" run.log | grep -v "telegram flood wait" | tail -300 || true
           echo "::endgroup::"
+          echo "::group::iPhone app background extension (heartbeat / preflight / non-app agents)"
+          grep -E "heartbeat|preflight" run.log | tail -50 || true
+          grep "ingest receiving" run.log | grep -v "XiaojuBackup/1 CFNetwork" | tail -20 || true
+          echo "::endgroup::"
           echo "telegram flood waits in these logs: $(grep -c "telegram flood wait" run.log || true)" \
             "(last: $(grep "telegram flood wait" run.log | tail -1 | sed -n 's/^time=\([^ ]*\).*/\1/p'))"

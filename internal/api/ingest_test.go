@@ -426,6 +426,10 @@ func TestIngest(t *testing.T) {
 	if code, _ := call("POST", "/api/ingest", jpeg, "X-File-Name", "a.jpg", "X-Xiaoju-Album-Name", "."); code != 400 {
 		t.Errorf("bad sub-album name: %d", code)
 	}
+	// 通讯录、日历这类放进“手机数据”下面的子文件夹
+	if code, out := call("POST", "/api/ingest", "BEGIN:VCARD\nEND:VCARD\n", "X-File-Name", "contacts.vcf", "X-Xiaoju-Album", "data", "X-Xiaoju-Album-Name", "%E9%80%9A%E8%AE%AF%E5%BD%95"); code != 201 || out["result"] != "uploaded" {
+		t.Fatalf("ingest phone data: %d %v", code, out)
+	}
 }
 
 // slowDriver 模拟写 Telegram 很慢（大视频）

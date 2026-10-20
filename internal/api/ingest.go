@@ -37,14 +37,17 @@ const AlbumFolder = "相册"
 // HiddenAlbumFolder 放 iPhone“已隐藏”相簿里的照片，和其他照片分开。
 const HiddenAlbumFolder = "隐藏相册"
 
+// PhoneDataFolder 放 App 备份的通讯录、日历、提醒事项（下面按类别分子文件夹），默认私密。
+const PhoneDataFolder = "手机数据"
+
 // ingestAlbums：上传时用 X-Xiaoju-Album 选放进哪个文件夹（都在根目录）。只能选这几个，不能随意建文件夹。
-var ingestAlbums = map[string]string{"": AlbumFolder, "hidden": HiddenAlbumFolder}
+var ingestAlbums = map[string]string{"": AlbumFolder, "hidden": HiddenAlbumFolder, "data": PhoneDataFolder}
 
 // POST /api/ingest[?name=IMG_0001.HEIC]
 //
 //	头部 X-File-Name: 文件名（也可以放在 ?name=；没有扩展名时按文件内容补上）
-//	头部 X-Xiaoju-Album: hidden 时放进“隐藏相册”，不带时放进“相册”
-//	头部 X-Xiaoju-Album-Name: 手机上的相册名（可以 URL 编码），放进“相册”下面同名的子文件夹（没有就新建）
+//	头部 X-Xiaoju-Album: hidden 时放进“隐藏相册”，data 时放进“手机数据”，不带时放进“相册”
+//	头部 X-Xiaoju-Album-Name: 手机上的相册名（可以 URL 编码），放进“相册”（或“手机数据”）下面同名的子文件夹（没有就新建）
 //	请求体：文件原始内容
 //
 // 文件名去掉自动加的序号后相同、大小也相同的视为已经传过，直接跳过：
@@ -425,7 +428,7 @@ func (s *Server) ingestAlbum(w http.ResponseWriter, r *http.Request) (album *met
 }
 
 // ingestSubAlbum 取 X-Xiaoju-Album-Name（App 按手机相册上传时带的相册名，可以是 URL 编码的）。
-// 只能放在“相册”下面一层；名字不合法、或者配的是隐藏相册时 ok 为 false。
+// 只能放在“相册”或“手机数据”下面一层；名字不合法、或者配的是隐藏相册时 ok 为 false。
 func ingestSubAlbum(r *http.Request, folder string) (name string, ok bool) {
 	raw := r.Header.Get("X-Xiaoju-Album-Name")
 	if raw == "" {
@@ -435,7 +438,7 @@ func ingestSubAlbum(r *http.Request, folder string) (name string, ok bool) {
 		raw = u
 	}
 	name = cleanName(raw)
-	if name == "" || folder != AlbumFolder || utf8.RuneCountInString(name) > 100 {
+	if name == "" || (folder != AlbumFolder && folder != PhoneDataFolder) || utf8.RuneCountInString(name) > 100 {
 		return "", false
 	}
 	return name, true
@@ -605,7 +608,7 @@ func (s *Server) albumFolder(r *http.Request, name string) (*meta.File, error) {
 		if errors.Is(err, meta.ErrConflict) { // 同时有别的请求建好了
 			return store.FindFolder(r.Context(), s.userID, nil, name)
 		}
-		if err == nil && name == HiddenAlbumFolder { // 隐藏相册默认私密（网页上遮住，验证后才显示）
+		if err == nil && (name == HiddenAlbumFolder || name == PhoneDataFolder) { // 隐藏相册、手机数据默认私密（网页上遮住，验证后才显示）
 			private := true
 			f, err = store.UpdateFile(r.Context(), s.userID, f.ID, meta.FileUpdate{Private: &private})
 		}
