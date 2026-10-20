@@ -1,6 +1,6 @@
 import Photos
 import SwiftUI
-import WebKit
+import SafariServices
 
 // 小桔备份（测试版）：打开 PhotoKit 的后台上传扩展（iOS 26.1 起苹果开放给第三方备份 App 的接口），
 // 之后系统在后台把新拍的照片、视频交给扩展（Extension/BackgroundUploadExtension.swift）传进小桔云盘的「相册」。
@@ -19,100 +19,46 @@ struct XiaojuBackupApp: App {
 }
 
 struct DriveView: View {
+    @State private var generation = 0 // 点了 Safari 的「完成」就重新打开
+
     private var url: URL? {
         URL(string: Bundle.main.object(forInfoDictionaryKey: "XiaojuWebURL") as? String ?? "")
     }
 
     var body: some View {
         if let url {
-            WebView(url: url).ignoresSafeArea(edges: .bottom)
+            SafariView(url: url) { generation += 1 }
+                .id(generation)
+                .ignoresSafeArea(edges: .top)
         } else {
             Text("网页地址没配置")
         }
     }
 }
 
-// 网页登录信息存在 WKWebView 默认的持久存储里，关掉 App 再开不用重新登录。
-// 网页里的下载链接交给系统下载，下载完弹出分享面板（存到「文件」或相册）。
-struct WebView: UIViewRepresentable {
+// 用 Safari 的网页视图打开网盘：App 自己的 WKWebView 用不了 Face ID 通行密钥（要绑定域名，自签名的 App 做不到），
+// Safari 视图里可以，用的就是 Safari 里存的通行密钥。下载、分享也交给 Safari。
+struct SafariView: UIViewControllerRepresentable {
     let url: URL
+    let onDone: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(onDone: onDone) }
 
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        let view = WKWebView(frame: .zero, configuration: config)
-        view.navigationDelegate = context.coordinator
-        view.uiDelegate = context.coordinator
-        view.allowsBackForwardNavigationGestures = true
-        let refresh = UIRefreshControl()
-        refresh.addTarget(context.coordinator, action: #selector(Coordinator.reload(_:)), for: .valueChanged)
-        view.scrollView.refreshControl = refresh
-        context.coordinator.webView = view
-        view.load(URLRequest(url: url))
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let config = SFSafariViewController.Configuration()
+        config.barCollapsingEnabled = true
+        let view = SFSafariViewController(url: url, configuration: config)
+        view.dismissButtonStyle = .close
+        view.delegate = context.coordinator
         return view
     }
 
-    func updateUIView(_ view: WKWebView, context: Context) {}
+    func updateUIViewController(_ view: SFSafariViewController, context: Context) {}
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
-        weak var webView: WKWebView?
-        private var files: [ObjectIdentifier: URL] = [:]
-
-        @objc func reload(_ sender: UIRefreshControl) {
-            webView?.reload()
-            sender.endRefreshing()
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
-            action.shouldPerformDownload ? .download : .allow
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-            response.canShowMIMEType ? .allow : .download
-        }
-
-        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-            download.delegate = self
-        }
-
-        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-            download.delegate = self
-        }
-
-        // 网页里 target=_blank 的链接（比如分享页）在当前页打开
-        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
-                     for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            webView.load(action.request)
-            return nil
-        }
-
-        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String) async -> URL? {
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let file = dir.appendingPathComponent(suggestedFilename)
-            files[ObjectIdentifier(download)] = file
-            return file
-        }
-
-        func downloadDidFinish(_ download: WKDownload) {
-            guard let file = files.removeValue(forKey: ObjectIdentifier(download)) else { return }
-            Task { @MainActor in self.share(file) }
-        }
-
-        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-            files.removeValue(forKey: ObjectIdentifier(download))
-        }
-
-        @MainActor private func share(_ file: URL) {
-            guard let view = webView, let root = view.window?.rootViewController else { return }
-            var top = root
-            while let next = top.presentedViewController { top = next }
-            let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
-            sheet.popoverPresentationController?.sourceView = view
-            top.present(sheet, animated: true)
-        }
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        let onDone: () -> Void
+        init(onDone: @escaping () -> Void) { self.onDone = onDone }
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) { onDone() }
     }
 }
 
