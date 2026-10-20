@@ -4,7 +4,7 @@ name: XiaojuBackup
 options:
   bundleIdPrefix: com.xiaoju
   deploymentTarget:
-    iOS: "26.1"
+    iOS: "26.4"
 settings:
   base:
     SWIFT_VERSION: "5.0"
