@@ -4,3 +4,9 @@
 *.test
 *.out
 __pycache__/
+
+# iPhone App：xcodegen 生成的工程和编译产物
+ios/*.xcodeproj/
+ios/build/
+ios/Payload/
+*.ipa

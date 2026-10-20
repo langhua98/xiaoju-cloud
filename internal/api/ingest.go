@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -55,7 +56,8 @@ var ingestAlbums = map[string]string{"": AlbumFolder, "hidden": HiddenAlbumFolde
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start := time.Now()
-	body := bufio.NewReaderSize(r.Body, 64<<10)
+	progress := &ingestProgress{r: r.Body, total: r.ContentLength, start: start, next: ingestProgressBytes, last: start}
+	body := bufio.NewReaderSize(progress, 64<<10)
 	head, _ := body.Peek(64)
 	ext, sniffed := media.Sniff(head)
 	name, ok := ingestName(r, ext)
@@ -80,7 +82,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	// 开始收文件时也记一条：大视频要传很久，只有传完才记日志的话，中间看不出在传哪个、是不是卡住了。
 	// 快捷指令还报了它算出的大小和摘要（X-Debug-*）：和实际收到的对不上，就是本地比对失灵、传过的又发了一遍
+	progress.log = s.log.With("name", name, "client", clientIP(r))
 	s.log.Info("ingest receiving", "folder", folder, "name", name, "size", r.ContentLength, "client", clientIP(r),
+		"agent", r.UserAgent(),
 		"phone_size", debugHeader(r, "X-Debug-Size"), "phone_size_text", debugHeader(r, "X-Debug-Size-Text"),
 		"phone_bytes", debugHeader(r, "X-Debug-Bytes"),
 		"phone_hash", fmt.Sprintf("%q", rawHeader(r, "X-Debug-Hash")), "want_hash", nameSizeHash(name, r.ContentLength),
@@ -141,6 +145,11 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			if !started {
+				if progress.err != nil { // 手机断网、快捷指令被停掉：记下断在哪
+					s.log.Warn("ingest interrupted", "folder", folder, "name", name, "client", clientIP(r),
+						"received", progress.n, "size", r.ContentLength,
+						"took", time.Since(start).Round(100*time.Millisecond), "err", progress.err)
+				}
 				s.fail(w, err)
 				return
 			}
@@ -159,6 +168,13 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+}
+
+// OPTIONS /api/ingest：iPhone 的后台上传（小桔备份 App，PhotoKit 后台上传扩展）开始前先问服务端支不支持
+// 断点续传（IETF Resumable Uploads for HTTP）。还不支持，按苹果的要求回 501，系统照常一个请求传完。
+func (s *Server) ingestPreflight(w http.ResponseWriter, r *http.Request) {
+	s.log.Info("ingest preflight", "client", clientIP(r), "agent", r.UserAgent())
+	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // uploadedBefore 找文件夹里已经传过的同一个文件：文件名去掉自动加的序号后相同（不分大小写）、大小也相同。
@@ -402,6 +418,54 @@ func parseByteCount(v string) int64 {
 		return 0
 	}
 	return n
+}
+
+// ingestProgressBytes、ingestProgressEvery：收大文件时每收这么多字节、或隔这么久，记一条进度日志。
+var (
+	ingestProgressBytes int64 = 256 << 20
+	ingestProgressEvery       = time.Minute
+)
+
+// ingestProgress 数着收到的字节，大文件传的时候定时记进度（收到多少、速度、预计还要多久），
+// 读请求体出错（客户端断开）时记下错误，好在日志里写清楚断在哪。
+type ingestProgress struct {
+	r     io.Reader
+	log   *slog.Logger // 知道文件名后才设，之前不记进度
+	total int64        // Content-Length，不知道时是 -1
+	start time.Time
+	n     int64
+	next  int64     // 收到这么多时记下一条
+	last  time.Time // 上一次记的时间
+	err   error     // 读请求体的错误（不含 EOF）
+}
+
+func (p *ingestProgress) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.n += int64(n)
+	if err != nil && err != io.EOF && p.err == nil {
+		p.err = err
+	}
+	if p.log != nil && (p.n >= p.next || time.Since(p.last) >= ingestProgressEvery) && err == nil {
+		p.report()
+	}
+	return n, err
+}
+
+func (p *ingestProgress) report() {
+	now := time.Now()
+	p.last = now
+	p.next = p.n + ingestProgressBytes
+	elapsed := now.Sub(p.start)
+	rate := float64(p.n) / elapsed.Seconds() // 字节每秒
+	args := []any{"received_mb", p.n >> 20, "elapsed", elapsed.Round(time.Second),
+		"mb_per_s", strconv.FormatFloat(rate/(1<<20), 'f', 2, 64)}
+	if p.total > 0 {
+		args = append(args, "size_mb", p.total>>20, "percent", p.n*100/p.total)
+		if rate > 0 {
+			args = append(args, "eta", time.Duration(float64(p.total-p.n)/rate*float64(time.Second)).Round(time.Second))
+		}
+	}
+	p.log.Info("ingest progress", args...)
 }
 
 // ingestHeartbeat 是写 Telegram 期间给客户端发空格的间隔（要明显短于快捷指令约 60 秒的等待上限）。

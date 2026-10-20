@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/google/uuid"
@@ -407,4 +409,39 @@ type slowDriver struct {
 func (d slowDriver) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
 	time.Sleep(d.delay)
 	return d.Driver.Put(ctx, req)
+}
+
+// iPhone 后台上传开始前的 OPTIONS：还不支持断点续传，回 501。
+func TestIngestPreflight(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	w := httptest.NewRecorder()
+	s.ingestPreflight(w, httptest.NewRequest(http.MethodOptions, "/api/ingest", nil))
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status %d, want 501", w.Code)
+	}
+}
+
+// 收大文件时按字节数记进度；读请求体出错时记下错误。
+func TestIngestProgress(t *testing.T) {
+	var buf strings.Builder
+	old := ingestProgressBytes
+	ingestProgressBytes = 1000
+	defer func() { ingestProgressBytes = old }()
+	p := &ingestProgress{r: iotest.OneByteReader(strings.NewReader(strings.Repeat("x", 2500))), total: 2500, start: time.Now(),
+		next: ingestProgressBytes, last: time.Now(), log: slog.New(slog.NewTextHandler(&buf, nil))}
+	if _, err := io.Copy(io.Discard, io.LimitReader(p, 2500)); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(buf.String(), "ingest progress"); n < 2 {
+		t.Errorf("progress lines = %d, want at least 2:\n%s", n, buf.String())
+	}
+	if p.n != 2500 || p.err != nil {
+		t.Errorf("n=%d err=%v", p.n, p.err)
+	}
+
+	broken := &ingestProgress{r: io.MultiReader(strings.NewReader("abc"), iotest.ErrReader(io.ErrUnexpectedEOF))}
+	io.Copy(io.Discard, broken)
+	if broken.n != 3 || !errors.Is(broken.err, io.ErrUnexpectedEOF) {
+		t.Errorf("n=%d err=%v", broken.n, broken.err)
+	}
 }

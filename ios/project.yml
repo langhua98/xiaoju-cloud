@@ -1,0 +1,56 @@
+# 小桔备份（iPhone App）的 XcodeGen 工程描述：GitHub Actions 的 Mac 机器上 `xcodegen generate` 生成 Xcode 工程再编译，
+# 仓库里不放 .xcodeproj。见 ios/README.md。
+name: XiaojuBackup
+options:
+  bundleIdPrefix: com.langhua98.xiaoju
+  deploymentTarget:
+    iOS: "26.4"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    # 服务端地址：编译时可用 XIAOJU_API_URL=... 覆盖（Actions 里取仓库变量）
+    XIAOJU_API_URL: https://langhua1998-xiaoju-cloud.hf.space
+    # 签名由 xcodebuild 的命令行决定：没签名的测试包传 CODE_SIGNING_ALLOWED=NO；
+    # 上传 TestFlight 时传 DEVELOPMENT_TEAM，自动签名（见 .github/workflows/ios.yml）
+    CODE_SIGN_STYLE: Automatic
+targets:
+  XiaojuBackup:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.backup
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: 小桔备份
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
+        XiaojuAPIURL: $(XIAOJU_API_URL)
+        ITSAppUsesNonExemptEncryption: false # 只用 HTTPS，上传 TestFlight 时不用再答出口合规
+    dependencies:
+      - target: BackupExtension
+        embed: true
+        codeSign: false
+  BackupExtension:
+    type: extensionkit-extension
+    platform: iOS
+    sources: [Extension]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.backup.upload
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: 小桔备份上传
+        NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.photos.background-upload
+        # 系统用它检查扩展访问的网络地址
+        BackgroundUploadURLBase: $(XIAOJU_API_URL)
