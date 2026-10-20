@@ -11,7 +11,7 @@ import Photos
 // 见 https://developer.apple.com/documentation/photokit/uploading-asset-resources-in-the-background
 @main
 final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
-    private let log = Logger(subsystem: "com.xiaoju.backup", category: "upload")
+    private let log = Logger(subsystem: "com.langhua98.xiaoju.backup", category: "upload")
     private let defaults = UserDefaults.standard
     private let lock = NSLock()
     private var cancelled = false

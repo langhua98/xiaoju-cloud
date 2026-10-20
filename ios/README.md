@@ -13,17 +13,25 @@
 - 上传前系统会先发 `OPTIONS /api/ingest` 问支不支持断点续传，服务端现在回 501（不支持），日志里记 `ingest preflight`。
   之后会实现 IETF 断点续传协议，大视频断网后能接着传。
 
-## 编译
+## 编译和安装
 
-仓库里不放 Xcode 工程。推送改动后 `.github/workflows/ios.yml` 在 GitHub 的 Mac 机器上 `xcodegen generate` 再编译，
-得到**没签名**的 `XiaojuBackup.ipa`，发布到 Release「ios-test」（每次覆盖）。服务端地址默认是 `web/config.js` 里那个，
-设了仓库变量 `XIAOJU_API_URL` 时用它。
+仓库里不放 Xcode 工程。推送改动后 `.github/workflows/ios.yml` 在 GitHub 的 Mac 机器上 `xcodegen generate` 再编译。
+服务端地址默认是 `web/config.js` 里那个，设了仓库变量 `XIAOJU_API_URL` 时用它。
 
-## 安装（不用电脑）
+**TestFlight（推荐）**：需要付费的苹果开发者账号（每年 99 美元），全程只用手机。
 
-1. 手机上装 [Feather](https://github.com/khcrysalis/feather)（开源的手机端签名安装工具），导入一张证书。
-2. 在 Safari 打开 Release「ios-test」，下载 `XiaojuBackup.ipa`，用 Feather 打开、签名、安装。
-3. 打开「小桔备份」，允许访问**所有**照片，点「现在上传最新的一张」，看到 HTTP 200 / 201 说明通了。
-4. 打开「后台自动备份」，拍一张新照片，锁屏等一会儿（系统挑时机，可能几分钟到几小时），再去网页上看「相册」。
+1. 在 App Store Connect →「用户和访问」→「集成」→「App Store Connect API」生成一个团队密钥（权限「App 管理」），下载 .p8。
+2. 仓库 Settings → Secrets and variables → Actions 新建：`ASC_KEY_ID`（密钥 ID）、`ASC_ISSUER_ID`（Issuer ID）、
+   `ASC_KEY_P8`（.p8 文件全文）、`APPLE_TEAM_ID`（团队 ID）。
+3. 在 App Store Connect 新建 App「小桔备份」，套装 ID `com.langhua98.xiaoju.backup`（列表里没有的话，先让工作流跑一次，
+   自动签名时会注册上）。
+4. 之后每次推送 `ios/` 的改动，工作流自动签名、上传 TestFlight（编号是工作流的运行次数）。处理完后在手机的 TestFlight 里安装
+   （自己是「内部测试员」，不用等审核）。
 
-免费证书经常被苹果吊销，吊销后 App 打不开，换一张证书重签即可（照片在服务端，不受影响）。
+**没签名的 .ipa**：每次也会发布到 Release「ios-test」（每次覆盖），可以用自己的证书签名安装（如 SideStore + 自己的 Apple ID）。
+
+## 试一下
+
+1. 打开「小桔备份」，允许访问**所有**照片，点「现在上传最新的一张」，看到 HTTP 200 / 201 说明手机到服务端是通的。
+2. 打开「后台自动备份」，拍一张新照片，锁屏等一会儿（系统挑时机，可能几分钟到几小时），再去网页上看「相册」。
+   服务端日志里会先看到 `ingest preflight`，再看到 `ingest receiving`。

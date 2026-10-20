@@ -1,7 +1,9 @@
 name: Build iPhone app
 
-# 小桔备份（ios/）：在 GitHub 的 Mac 机器上用 XcodeGen 生成工程、编译出没签名的 .ipa，
-# 发布到 Release「ios-test」（每次覆盖），手机上用 Feather 等工具签名后安装。见 ios/README.md。
+# 小桔备份（ios/）：在 GitHub 的 Mac 机器上用 XcodeGen 生成工程再编译。
+# - build：没签名的 .ipa，发布到 Release「ios-test」（每次覆盖），可以自己签名安装；
+# - testflight：仓库里配好 App Store Connect 的 API 密钥（Secrets：ASC_KEY_ID、ASC_ISSUER_ID、ASC_KEY_P8、
+#   APPLE_TEAM_ID）后，自动签名、上传 TestFlight，手机上在 TestFlight 里安装。见 ios/README.md。
 on:
   workflow_dispatch:
   push:
@@ -16,6 +18,9 @@ concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
+
 jobs:
   build:
     runs-on: macos-26
@@ -23,17 +28,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Pick the newest Xcode
         run: |
-          ls -d /Applications/Xcode*.app
           xcode=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
-          xcodebuild -showsdks | grep -i iphoneos
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Build
         working-directory: ios
-        env:
-          XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
         run: |
           xcodegen generate
           xcodebuild -project XiaojuBackup.xcodeproj -scheme XiaojuBackup -configuration Release \
@@ -56,4 +57,71 @@ jobs:
           gh release delete ios-test --yes --cleanup-tag || true
           gh release create ios-test XiaojuBackup.ipa --prerelease --target "$GITHUB_SHA" \
             --title "小桔备份 测试版（${GITHUB_REF_NAME} ${GITHUB_SHA::7}）" \
-            --notes "没签名的测试版，手机上用 Feather 签名后安装。见 ios/README.md。"
+            --notes "没签名的测试版，需要自己签名后安装；配好 TestFlight 后用 TestFlight 装更省事。见 ios/README.md。"
+
+  # 没配 App Store Connect 密钥时跳过 TestFlight
+  keys:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "App Store Connect secrets not set; skipping TestFlight"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  testflight:
+    needs: [build, keys]
+    if: needs.keys.outputs.ready == 'true'
+    runs-on: macos-26
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Write the API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+      - name: Archive and upload to TestFlight
+        working-directory: ios
+        run: |
+          xcodegen generate
+          auth=(-allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+                -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          # 每次上传的编号要比上次大：用工作流的运行次数
+          xcodebuild -project XiaojuBackup.xcodeproj -scheme XiaojuBackup -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/XiaojuBackup.xcarchive \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            ${XIAOJU_API_URL:+XIAOJU_API_URL="$XIAOJU_API_URL"} \
+            "${auth[@]}" archive
+          cat > build/ExportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>automatic</string>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath build/XiaojuBackup.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist -exportPath build/export "${auth[@]}"

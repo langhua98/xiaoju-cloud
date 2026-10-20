@@ -2,7 +2,7 @@
 # 仓库里不放 .xcodeproj。见 ios/README.md。
 name: XiaojuBackup
 options:
-  bundleIdPrefix: com.xiaoju
+  bundleIdPrefix: com.langhua98.xiaoju
   deploymentTarget:
     iOS: "26.4"
 settings:
@@ -12,9 +12,9 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     # 服务端地址：编译时可用 XIAOJU_API_URL=... 覆盖（Actions 里取仓库变量）
     XIAOJU_API_URL: https://langhua1998-xiaoju-cloud.hf.space
-    # 不在这里签名：编译出没签名的 .ipa，装到手机前用 Feather 等工具签
-    CODE_SIGNING_ALLOWED: "NO"
-    CODE_SIGNING_REQUIRED: "NO"
+    # 签名由 xcodebuild 的命令行决定：没签名的测试包传 CODE_SIGNING_ALLOWED=NO；
+    # 上传 TestFlight 时传 DEVELOPMENT_TEAM，自动签名（见 .github/workflows/ios.yml）
+    CODE_SIGN_STYLE: Automatic
 targets:
   XiaojuBackup:
     type: application
@@ -22,7 +22,8 @@ targets:
     sources: [App]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.xiaoju.backup
+        PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.backup
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
     info:
       path: App/Info.plist
@@ -32,6 +33,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
         XiaojuAPIURL: $(XIAOJU_API_URL)
+        ITSAppUsesNonExemptEncryption: false # 只用 HTTPS，上传 TestFlight 时不用再答出口合规
     dependencies:
       - target: BackupExtension
         embed: true
@@ -42,7 +44,7 @@ targets:
     sources: [Extension]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.xiaoju.backup.upload
+        PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.backup.upload
     info:
       path: Extension/Info.plist
       properties:
