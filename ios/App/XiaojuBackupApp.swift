@@ -77,6 +77,12 @@ struct ContentView: View {
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
 
+    // 「12/490 MB」；小于 1MB 的显示百分比
+    static func progressText(_ t: AutoBackup.Transfer) -> String {
+        if t.total < 1 << 20 { return "\(t.sent * 100 / max(t.total, 1))%" }
+        return "\(t.sent >> 20)/\(t.total >> 20) MB"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -98,6 +104,16 @@ struct ContentView: View {
                             .disabled(auth != .authorized || albumUploader.running)
                         if albumUploader.running {
                             Text("「相册」页正在上传，等它传完或停掉再备份。").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    ForEach(auto.transfers) { t in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(t.name).font(.footnote).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Text(Self.progressText(t)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: Double(t.sent), total: Double(max(t.total, 1)))
                         }
                     }
                     if !auto.status.isEmpty {
