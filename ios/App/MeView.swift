@@ -50,7 +50,7 @@ struct MeView: View {
             .navigationTitle("我的")
             .refreshable { await load() }
             .task { await load() }
-            .sheet(isPresented: $showBackup) { BackupView() }
+            .fullScreenCover(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showWeb) {
                 if let url = cloud.webURL { SafariView(url: url) { showWeb = false }.ignoresSafeArea() }
             }

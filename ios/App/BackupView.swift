@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 
 // 「备份」页（备份中心）：上面一个进度环和「手机上 / 已备份 / 还剩」三个数，下面是正在传的文件、没传上去的、
 // 一个「自动备份」开关和几个设置。服务端地址、试传一张这类排查用的东西放在右上角的「诊断」里。
+// 全屏打开（不是能往下拖走的卡片），左上角「完成」关掉。
 struct BackupView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var auto = AutoBackup.shared
     @State private var auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var tally: AutoBackup.Tally?
@@ -88,8 +90,11 @@ struct BackupView: View {
             }
             .navigationTitle("备份")
             .toolbar {
-                NavigationLink { DiagnosticsView() } label: { Image(systemName: "stethoscope") }
-                    .accessibilityLabel("诊断")
+                ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink { DiagnosticsView() } label: { Image(systemName: "stethoscope") }
+                        .accessibilityLabel("诊断")
+                }
             }
             .refreshable {
                 await AutoBackup.shared.reconcileAll()
