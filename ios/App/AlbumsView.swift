@@ -40,7 +40,7 @@ struct AlbumsView: View {
                         }
                         .disabled(selected.isEmpty || auto.running)
                         if auto.running {
-                            Text("「备份」页的「现在备份」正在跑，它已经包含勾选的相册和隐藏相册。两个一起传会抢网速，等它跑完或停掉再在这里传。")
+                            Text("「备份」页的「现在备份」正在跑，它会先传隐藏相册，也包含勾选的相册。两个一起传会抢网速，等它跑完或停掉再在这里传。")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
@@ -211,7 +211,7 @@ final class AlbumUploader: ObservableObject {
 }
 
 // 同一时间只跑一个上传：「现在备份」和「相册」页一起传会抢网速，还会同时传同一个大视频。
-// （「现在备份」已经包含勾选的相册和隐藏相册。）
+// （「现在备份」总是先传隐藏相册，也包含勾选的相册。）
 enum UploadGate {
     private static let lock = NSLock()
     private static var owner: String?
