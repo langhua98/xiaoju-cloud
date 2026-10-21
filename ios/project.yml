@@ -37,6 +37,7 @@ targets:
         NSContactsUsageDescription: 把通讯录备份到小桔云盘。
         NSCalendarsFullAccessUsageDescription: 把日历备份到小桔云盘。
         NSRemindersFullAccessUsageDescription: 把提醒事项备份到小桔云盘。
+        NSFaceIDUsageDescription: 打开私密相簿、私密文件夹前确认是你本人。
         # 自动备份：充电、有网络时系统运行的后台任务（AutoBackup.swift）
         UIBackgroundModes: [processing, fetch]
         # 快捷指令「充电时备份到小桔云盘」用 xiaojubackup://backup 打开 App 跑一次备份

@@ -5,43 +5,53 @@ import UniformTypeIdentifiers
 
 // 小桔备份（测试版）：打开 PhotoKit 的后台上传扩展（iOS 26.1 起苹果开放给第三方备份 App 的接口），
 // 之后系统在后台把新拍的照片、视频交给扩展（Extension/BackgroundUploadExtension.swift）传进小桔云盘的「相册」。
-// 「云盘」页直接打开网盘网页（浏览、下载、分享都用网页的功能），「备份」页（BackupView.swift）管备份：一个「自动备份」开关，
-// 进度、没传上去的、备份哪些相册都在这一页。
+// 底栏按内容分：「照片」「相簿」「文件」直接看云盘（登录见 LoginView.swift），「我的」放空间、回收站这些不常用的。
+// 备份不占底栏：每页右上角的进度环（BackupRing）点开就是备份中心（BackupView.swift）。
 @main
 struct XiaojuBackupApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var restorer = Restorer.shared
     var body: some Scene {
         WindowGroup {
-            TabView {
-                DriveView().tabItem { Label("云盘", systemImage: "externaldrive") }
-                BackupView().tabItem { Label("备份", systemImage: "arrow.triangle.2.circlepath.icloud") }
-            }
-            .sheet(isPresented: $restorer.show) { RestoreView() }
-            .onOpenURL { url in
-                // 快捷指令「充电时备份到小桔云盘」：xiaojubackup://backup
-                if url.host == "backup" { AutoBackup.shared.start(reason: "快捷指令") }
-                // 网页「恢复到手机」：xiaojubackup://restore?server=…&token=…
-                if url.host == "restore" { Restorer.shared.open(url) }
-            }
+            RootView()
+                .sheet(isPresented: $restorer.show) { RestoreView() }
+                .onOpenURL { url in
+                    // 快捷指令「充电时备份到小桔云盘」：xiaojubackup://backup
+                    if url.host == "backup" { AutoBackup.shared.start(reason: "快捷指令") }
+                    // 网页「恢复到手机」：xiaojubackup://restore?server=…&token=…
+                    if url.host == "restore" { Restorer.shared.open(url) }
+                }
         }
     }
 }
 
-struct DriveView: View {
-    @State private var generation = 0 // 点了 Safari 的「完成」就重新打开
-
-    private var url: URL? {
-        URL(string: Bundle.main.object(forInfoDictionaryKey: "XiaojuWebURL") as? String ?? "")
-    }
+struct RootView: View {
+    @ObservedObject private var cloud = Cloud.shared
 
     var body: some View {
-        if let url {
-            SafariView(url: url) { generation += 1 }
-                .id(generation)
-                .ignoresSafeArea(edges: .top)
+        TabView {
+            signedIn { PhotosView() }
+                .tabItem { Label("照片", systemImage: "photo.on.rectangle") }
+            signedIn { CloudAlbumsView() }
+                .tabItem { Label("相簿", systemImage: "rectangle.stack") }
+            signedIn { FilesView() }
+                .tabItem { Label("文件", systemImage: "folder") }
+            MeView()
+                .tabItem { Label("我的", systemImage: "person.crop.circle") }
+        }
+        .tint(.orange)
+        .sheet(item: $cloud.gridPrompt) { _ in GridGateView() }
+    }
+
+    // 没登录（或登录过期）时先显示登录页；备份照常可以从右上角进去
+    @ViewBuilder
+    private func signedIn<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if cloud.signedIn {
+            content()
         } else {
-            Text("网页地址没配置")
+            NavigationStack {
+                LoginView().toolbar { BackupRing() }
+            }
         }
     }
 }
