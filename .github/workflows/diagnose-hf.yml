@@ -67,7 +67,7 @@ jobs:
               try: print(json.loads(line).get("data", "").rstrip())
               except ValueError: print(line.rstrip())' > run.log || true
           echo "::group::space run logs (backup / ingest / thumbnail / warnings / errors, last 300)"
-          grep -E "backup|WARN|ERROR|Startup|listening|ingest|thumbnail|scrub" run.log | grep -v "telegram flood wait" | tail -300 || true
+          grep -E "backup|WARN|ERROR|Startup|listening|ingest|thumbnail|scrub|extra bot" run.log | grep -v "telegram flood wait" | tail -300 || true
           echo "::endgroup::"
           echo "::group::iPhone app background extension (heartbeat / preflight / non-app agents)"
           grep -E "heartbeat|preflight" run.log | tail -50 || true
