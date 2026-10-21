@@ -280,7 +280,7 @@ func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (stora
 	tgAPI, done, err := telegram.Start(ctx, telegram.ClientConfig{
 		AppID: t.AppID, AppHash: t.AppHash, BotToken: t.BotToken, SessionFile: t.SessionFile,
 		Transport: t.Transport,
-	}, log)
+	}, log.With("bot", botID(t.BotToken)))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -304,7 +304,7 @@ func newBackupDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 	tgAPI, done, err := telegram.Start(ctx, telegram.ClientConfig{
 		AppID: t.AppID, AppHash: t.AppHash, BotToken: t.BackupBotToken, SessionFile: t.BackupSessionFile,
 		Transport: t.Transport,
-	}, blog)
+	}, blog.With("bot", botID(t.BackupBotToken)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("backup: %w", err)
 	}

@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/gotd/td/tgerr"
 
 	"github.com/langhua98/xiaoju-cloud/internal/storage"
 )
@@ -17,6 +21,7 @@ type fakeBot struct {
 	name   string
 	doc    *fakeDoc
 	broken bool
+	flood  int // 接下来几次请求回 FLOOD_WAIT_30
 
 	mu     sync.Mutex
 	puts   int
@@ -30,6 +35,10 @@ func (b *fakeBot) Put(ctx context.Context, req storage.PutRequest) (storage.Loca
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.puts++
+	if b.flood > 0 {
+		b.flood--
+		return storage.Location{}, fmt.Errorf("send media: %w", tgerr.New(420, "FLOOD_WAIT_30"))
+	}
 	if b.broken {
 		return storage.Location{}, errors.New(b.name + " is broken")
 	}
@@ -157,5 +166,59 @@ func TestPoolCanceledRequestNotRetried(t *testing.T) {
 	defer p.mu.Unlock()
 	if !p.benched[1].IsZero() {
 		t.Fatal("a canceled request must not pause the bot")
+	}
+}
+
+func TestPoolFloodHandsOff(t *testing.T) {
+	main, extra := &fakeBot{name: "main", flood: 1}, &fakeBot{name: "extra"}
+	p := newPool(main, slog.New(slog.DiscardHandler))
+	p.add(extra)
+	body := []byte("hello part")
+
+	// 主 Bot 被限速：这一块交给额外的 Bot，从头重读数据；主 Bot 歇着，额外的 Bot 不算出错、不停用
+	if _, err := p.Put(context.Background(), storage.PutRequest{Body: bytes.NewReader(body), Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if main.puts != 1 || extra.puts != 1 || !bytes.Equal(extra.bodies[0], body) {
+		t.Fatalf("puts main=%d extra=%d", main.puts, extra.puts)
+	}
+	for range 3 {
+		if _, err := p.Put(context.Background(), storage.PutRequest{Body: bytes.NewReader(body), Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if main.puts != 1 || extra.puts != 4 {
+		t.Fatalf("flood-limited main bot was used again: main=%d extra=%d", main.puts, extra.puts)
+	}
+
+	// 额外的 Bot 也被限速了：两个都在歇，最早的要歇 30 秒，等不起就报错（这里用很短的期限）
+	extra.flood = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := p.Put(ctx, storage.PutRequest{Body: bytes.NewReader(body), Size: int64(len(body))}); err == nil {
+		t.Fatal("expected an error while every bot is flood-limited")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.benched[1].IsZero() {
+		t.Fatal("a flood wait must not pause the bot as broken")
+	}
+}
+
+func TestPoolPicksLeastBusy(t *testing.T) {
+	p := newPool(&fakeBot{name: "main"}, slog.New(slog.DiscardHandler))
+	p.add(&fakeBot{name: "a"})
+	p.add(&fakeBot{name: "b"})
+	k0, _, _ := p.pick()
+	k1, _, _ := p.pick()
+	p.done(k0)
+	// k0 闲下来了，k1 还忙：下一个要么是没活的第三个，要么是 k0，绝不是 k1
+	k2, _, _ := p.pick()
+	if k2 == k1 || k0 == k1 {
+		t.Fatalf("picked %d, %d, %d", k0, k1, k2)
+	}
+	k3, _, _ := p.pick()
+	if k3 == k1 || k3 == k2 {
+		t.Fatalf("picked a busy bot: %d after %d, %d", k3, k1, k2)
 	}
 }

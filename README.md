@@ -228,9 +228,12 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 3. GitHub 仓库 Secret `TG_EXTRA_BOT_TOKENS` 填它们的令牌（逗号、空格或换行分隔），重新部署。
    备份频道同理：用第二个账号建，加进备份频道，填 `TG_BACKUP_EXTRA_BOT_TOKENS`。
 
-启用后上传的每个分块、下载的每 1MB 轮流交给不同的 Bot（`internal/storage/telegram/pool.go`，思路来自 Teldrive 1.x 的
-`bot_selector.go`）。删除、对账只用主 Bot。额外的 Bot 在服务启动后在后台连接，日志 `extra bot added`；连不上、不是频道管理员的
+启用后上传的每个分块、下载的每 1MB 交给手上活最少的 Bot，一样少的轮流（`internal/storage/telegram/pool.go`，思路来自 Teldrive 的
+`bot_selector.go` 和 `botgateway/runner.go`）。删除、对账只用主 Bot。额外的 Bot 在服务启动后在后台连接，日志 `extra bot added`；连不上、不是频道管理员的
 只记 `extra bot skipped`，不影响服务。用的时候出错（比如文件在别的数据中心）这一次改用主 Bot，那个 Bot 停用 10 分钟。
+被限速时（日志 `telegram flood wait`，带 `bot`、`method`、`wait`，能看出是哪个 Bot 的哪种请求）那个 Bot（主 Bot 也一样）歇到 Telegram 说的时间，
+活马上交给别的 Bot（日志 `handing work to another bot`）；全都在歇时等最早歇完的那个，最多等 2 分钟。
+发消息（每个分块一条）每个 Bot 在本地排队，平均 3 秒一条（`client.go` 的 `sendEvery`），Bot 越多总的发送速度越快。
 每个 Bot 的登录状态存在主 Bot 会话文件旁边的 `tg-session-bot<数字ID>.json`。
 两个频道都在 Telegram，防不了 Telegram 整体不可用；重要文件请另外保留原件。
 
