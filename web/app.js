@@ -1184,6 +1184,7 @@ async function openRestore() {
 const SHORTCUT_FILE = "xiaoju-backup.shortcut"; // 备份照片：上传「文件」里的一个文件夹
 const NEW_PHOTOS_SHORTCUT_FILE = "xiaoju-newphotos.shortcut"; // 自动备份新照片：直接从相册传最新的
 const SHARE_SHORTCUT_FILE = "xiaoju-share.shortcut"; // 分享到小桔云盘：分享菜单里传几张
+const NOTES_SHORTCUT_FILE = "xiaoju-notes.shortcut"; // 备份备忘录：所有备忘录合成一个文本文件
 
 // 网页旁边有没有签好名的快捷指令（GitHub Pages 发布时生成）
 async function shortcutAvailable(file) {
@@ -1222,6 +1223,10 @@ async function renderShortcutSec() {
     mk("a", { className: "button", href: SHARE_SHORTCUT_FILE, textContent: "安装「分享到小桔云盘」" }),
     mk("p", { className: "hint", textContent: "传几张、几十张：在照片 App 里选好 → 分享 → 「分享到小桔云盘」（第一次在分享菜单最下面「编辑操作」里加上），"
       + "选放进「相册」还是「隐藏相册」。传过的会自动跳过。几百张以上用「备份照片」，分享菜单一次给太多 iOS 会卡住。" }));
+  const notes = mk("div", { className: "key-install", hidden: true },
+    mk("a", { className: "button", href: NOTES_SHORTCUT_FILE, textContent: "安装「备份备忘录」" }),
+    mk("p", { className: "hint", textContent: "App 读不了备忘录，快捷指令可以：运行一次把所有备忘录的文字合成「备忘录 日期.txt」，传进网盘「手机数据/备忘录」"
+      + "（第一次要允许访问备忘录）。图片、附件和带锁的备忘录不在里面。想每天自动备份：自动化 →「充电器」→「立即运行」→ 选「备份备忘录到小桔云盘」。" }));
   const howto = mk("p", { className: "hint", hidden: true, textContent: "安装：点按钮后 Safari 问是否下载就选「下载」，再在下载列表里点开，"
     + "在快捷指令 App 里点「添加快捷指令」。第一次运行会问能否连接网盘、共享照片，选「始终允许」；问的时候别锁屏、别切走。" });
   const manual = mk("details", { className: "key-manual" },
@@ -1232,12 +1237,14 @@ async function renderShortcutSec() {
       mk("li", {}, "添加「重复每一项」，在里面添加「获取 URL 的内容」：URL 粘贴上面的地址；方法 ", code("POST"),
         "；头部加一项 ", code("X-File-Name"), "，值选变量「重复项目」后改成「名称」；请求体选「文件」= 「重复项目」。"),
       mk("li", {}, "运行。中途出错就再运行一次，传过的会自动跳过。")));
-  box.replaceChildren(install, newPhotos, share, howto, manual);
-  const [ok, okNew, okShare] = await Promise.all([SHORTCUT_FILE, NEW_PHOTOS_SHORTCUT_FILE, SHARE_SHORTCUT_FILE].map(shortcutAvailable));
+  box.replaceChildren(install, newPhotos, share, notes, howto, manual);
+  const [ok, okNew, okShare, okNotes] = await Promise.all(
+    [SHORTCUT_FILE, NEW_PHOTOS_SHORTCUT_FILE, SHARE_SHORTCUT_FILE, NOTES_SHORTCUT_FILE].map(shortcutAvailable));
   install.hidden = !ok;
   newPhotos.hidden = !okNew;
   share.hidden = !okShare;
-  howto.hidden = !(ok || okNew || okShare);
+  notes.hidden = !okNotes;
+  howto.hidden = !(ok || okNew || okShare || okNotes);
   if (howto.hidden) manual.open = true;
 }
 

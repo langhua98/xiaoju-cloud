@@ -1,0 +1,58 @@
+// “备份备忘录到小桔云盘”快捷指令（Cherri 语言）：苹果不让第三方 App 读备忘录，快捷指令可以。
+// 用「查找备忘录」取出所有备忘录，合成一个文本文件「备忘录 2026-10-21.txt」，传进网盘「手机数据/备忘录」
+// （每天一份，同一天再跑一次内容没变就跳过）。第一次运行要允许快捷指令访问备忘录。
+// 可以在 快捷指令 → 自动化 → 充电器 → 已连接 → 立即运行 里加上它，每次充电备份一次。
+// 只有文字：备忘录里的图片、附件、手写不在里面；带锁的备忘录读不出来。
+#include 'actions/scripting'
+#include 'actions/web'
+#include 'actions/text'
+#include 'actions/calendar'
+#define name 备份备忘录到小桔云盘
+#define color yellow
+#define glyph uploadArrow
+
+// 「获取 URL 的内容」：POST，请求体是文件本身
+action 'downloadurl' uploadFile(
+    text url: 'WFURL',
+    variable file: 'WFRequestVariable',
+    dictionary! headers: 'WFHTTPHeaders'
+) {
+    "WFHTTPMethod": "POST",
+    "WFHTTPBodyType": "File",
+    "ShowHeaders": true
+}
+
+// 「查找备忘录」（Cherri 没有这个操作）：不加条件，就是所有备忘录
+action 'filter.notes' findNotes()
+
+// 上传地址：构建时由 build.py 换成网盘地址
+@uploadURL = "__INGEST_URL__"
+
+@notes = findNotes()
+@total = count(notes)
+if total == 0 {
+    alert("没找到备忘录。第一次运行时要允许快捷指令访问备忘录；带锁的备忘录读不出来。", "备忘录")
+    stop()
+}
+// 每条备忘录的正文（第一行就是标题），中间用分隔线隔开
+@all = joinText(notes, "\n\n━━━━━━━━━━\n\n")
+@now = currentDate()
+@day = formatDate(now, "Custom", "yyyy-MM-dd")
+@fileName = "备忘录 {day}.txt"
+@file = setName(all, fileName)
+// 文件名、文件夹名先做 URL 编码（请求头放不了中文，服务端会解码）
+@encodedName = urlEncode(fileName)
+@encodedFolder = urlEncode("备忘录")
+@resp = uploadFile(uploadURL, file, {"X-File-Name": "{encodedName}", "X-Xiaoju-Album": "data", "X-Xiaoju-Album-Name": "{encodedFolder}"})
+@respDict = getDictionary(resp)
+@resultValue = getValue(respDict, "result")
+@result = "{resultValue}"
+if result == "uploaded" {
+    showNotification("{total} 条备忘录已传进网盘「手机数据/备忘录」", "小桔云盘 · 备忘录", false)
+} else {
+    if result == "skipped" {
+        showNotification("今天的备忘录已经传过了，内容没变", "小桔云盘 · 备忘录", false)
+    } else {
+        alert("备忘录没传上去：{resp}", "上传失败")
+    }
+}
