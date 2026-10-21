@@ -112,7 +112,7 @@ struct ContentView: View {
                     Toggle("后台自动备份", isOn: Binding(get: { enabled }, set: { setEnabled($0) }))
                         .disabled(auth != .authorized)
                 } header: {
-                    Text("系统后台上传（开着 iCloud 照片时系统不调用，先别指望它）")
+                    Text("系统后台上传（建议关掉 iCloud 照片，开着时系统可能不调用）")
                 } footer: {
                     Text("打开后，之后新拍的照片、视频由系统在后台传进小桔云盘的「相册」（最近 24 小时拍的也会补传，更早的不传）。系统会挑网络、电量合适的时候传，可能要等几分钟到几小时。")
                 }
