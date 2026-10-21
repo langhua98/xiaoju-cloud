@@ -272,7 +272,7 @@ struct BackupRing: View {
             .frame(width: 26, height: 26)
         }
         .accessibilityLabel("备份状态")
-        .sheet(isPresented: $showing) { BackupView() }
+        .fullScreenCover(isPresented: $showing) { BackupView() }
     }
 
     private var tint: Color {
