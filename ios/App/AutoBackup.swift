@@ -271,18 +271,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             fail("照片", "没有照片权限")
             return
         }
-        var targets: [(key: String, label: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?)] = []
-        let albums = PhoneAlbum.all()
-        for album in albums where album.hidden && Self.flag(Self.backupHidden) {
-            targets.append(("hidden", album.title, album.assets(), album))
-        }
-        targets.append(("all", "全部照片", Self.allPhotos(), nil)) // 新的先传
-        let selected = Set(defaults.stringArray(forKey: Self.selectedAlbums) ?? [])
-        for album in albums where !album.hidden && selected.contains(album.id) {
-            targets.append(("album:\(album.title)", album.title, album.assets(), album))
-        }
-        for target in targets {
+        for target in photoTargets() {
             let assets = target.assets
+            await reconcile(target: target.key, assets: assets, album: target.album)
             for i in 0..<assets.count {
                 if Task.isCancelled { return }
                 if i % 20 == 0 {
@@ -302,6 +293,69 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             }
         }
     }
+
+    typealias PhotoTarget = (key: String, label: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?)
+
+    // 要备份的：隐藏相册（总是最先传）、全部照片（新的先传）、「备份哪些照片」里打开的相册
+    private func photoTargets() -> [PhotoTarget] {
+        var targets: [PhotoTarget] = []
+        let albums = PhoneAlbum.all()
+        for album in albums where album.hidden && Self.flag(Self.backupHidden) {
+            targets.append(("hidden", album.title, album.assets(), album))
+        }
+        targets.append(("all", "全部照片", Self.allPhotos(), nil))
+        let selected = Set(defaults.stringArray(forKey: Self.selectedAlbums) ?? [])
+        for album in albums where !album.hidden && selected.contains(album.id) {
+            targets.append(("album:\(album.title)", album.title, album.assets(), album))
+        }
+        return targets
+    }
+
+    // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
+    // （GET /api/ingest/names），在手机上比对，对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
+    func reconcile(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+        guard let url = URL(string: server + "/api/ingest/names") else { return }
+        var req = URLRequest(url: url)
+        if let album {
+            if album.hidden {
+                req.setValue("hidden", forHTTPHeaderField: "X-Xiaoju-Album")
+            } else {
+                req.setValue(encodedName(album.title), forHTTPHeaderField: "X-Xiaoju-Album-Name")
+            }
+        }
+        guard let reply = try? await URLSession.shared.data(for: req),
+              (reply.1 as? HTTPURLResponse)?.statusCode == 200 else { return }
+        let known = Set(String(decoding: reply.0, as: UTF8.self).split(separator: "\n").map(String.init))
+        guard !known.isEmpty else { return }
+        var found = 0
+        assets.enumerateObjects { asset, _, _ in
+            for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
+                let key = "\(target)|\(asset.localIdentifier)|\(resource.type.rawValue)"
+                guard let size = resource.value(forKey: "fileSize") as? Int64, size > 0,
+                      known.contains(Self.sha("\(resource.originalFilename)|\(size)")),
+                      !self.lock.withLock({ self.done.contains(key) }) else { continue }
+                self.markDone(key)
+                found += 1
+            }
+        }
+        if found > 0 { saveDone(force: true) }
+    }
+
+    // 「备份」页打开时：把每个要备份的相册都和云盘比对一遍（同一时间只跑一个）
+    func reconcileAll() async {
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              lock.withLock({ () -> Bool in
+                  if reconciling { return false }
+                  reconciling = true
+                  return true
+              }) else { return }
+        defer { lock.withLock { reconciling = false } }
+        for target in photoTargets() {
+            await reconcile(target: target.key, assets: target.assets, album: target.album)
+        }
+    }
+
+    private var reconciling = false
 
     private func headers(_ req: inout URLRequest, name: String, album: PhoneAlbum?) {
         req.setValue(encodedName(name), forHTTPHeaderField: "X-File-Name")

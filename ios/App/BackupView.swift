@@ -84,8 +84,16 @@ struct BackupView: View {
                 NavigationLink { DiagnosticsView() } label: { Image(systemName: "stethoscope") }
                     .accessibilityLabel("诊断")
             }
-            .refreshable { await refresh() }
+            .refreshable {
+                await AutoBackup.shared.reconcileAll()
+                await refresh()
+            }
             .onAppear { albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count }
+            // 先和云盘比对一遍（以前用快捷指令、网页传过的也算进「已备份」），再算三个数
+            .task {
+                await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileAll() }.value
+                await refresh()
+            }
             // 备份的时候每 10 秒重算一次三个数，停了再算一次
             .task(id: auto.running) {
                 await refresh()

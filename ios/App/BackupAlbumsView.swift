@@ -77,6 +77,7 @@ struct BackupAlbumsView: View {
     private func load() async {
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
         let (list, counts, whole) = await Task.detached(priority: .userInitiated) {
+            await AutoBackup.shared.reconcileAll()
             let list = PhoneAlbum.all()
             var counts: [String: AutoBackup.Tally] = [:]
             for album in list {
