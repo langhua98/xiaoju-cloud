@@ -2,6 +2,7 @@ import Contacts
 import EventKit
 import Photos
 import SwiftUI
+import UniformTypeIdentifiers
 
 // 「备份」页（备份中心）：上面一个进度环和「手机上 / 已备份 / 还剩」三个数，下面是正在传的文件、没传上去的、
 // 一个「自动备份」开关和几个设置。服务端地址、试传一张这类排查用的东西放在右上角的「诊断」里。
@@ -53,7 +54,13 @@ struct BackupView: View {
                         LabeledContent("备份哪些照片", value: albumCount == 0 ? "全部照片" : "全部 + \(albumCount) 个相册")
                     }
                     NavigationLink("手机数据") { PhoneDataView() }
+                    NavigationLink {
+                        SyncFoldersView()
+                    } label: {
+                        LabeledContent("同步文件夹", value: auto.folders.isEmpty ? "没有" : "\(auto.folders.count) 个")
+                    }
                     NavigationLink("插上电就备份") { ChargeShortcutView() }
+                    Button("从云盘恢复到手机…") { Restorer.shared.show = true }
                 } footer: {
                     Text(switchError.isEmpty
                         ? "打开后，新拍的照片由系统在后台传；插着电、连着网的时候（一般是夜里）再把没传的补齐。"
@@ -287,6 +294,31 @@ struct PhoneDataView: View {
         }
         .onChange(of: reminders) { _, on in
             if on { Task { _ = try? await EKEventStore().requestFullAccessToReminders() } }
+        }
+    }
+}
+
+// 「文件」App 里的文件夹：每次备份时把新文件、改过的文件传进云盘「手机数据/文件/文件夹名」。
+struct SyncFoldersView: View {
+    @ObservedObject private var auto = AutoBackup.shared
+    @State private var picking = false
+    @State private var error = ""
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(auto.folders) { f in Label(f.name, systemImage: "folder") }
+                    .onDelete { rows in rows.map { auto.folders[$0].id }.forEach(auto.removeFolder) }
+                Button("添加文件夹") { picking = true }
+            } footer: {
+                Text(error.isEmpty
+                    ? "「文件」App 里的文件夹（我的 iPhone、iCloud 云盘、微信 / QQ 存的文件……），每次备份时把新文件和改过的文件传进云盘「手机数据/文件/文件夹名」，子文件夹照搬。左滑移除（云盘里已经传的不删）。"
+                    : error)
+            }
+        }
+        .navigationTitle("同步文件夹")
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
+            do { try auto.addFolder(result.get()) } catch { self.error = "添加文件夹失败：\(error.localizedDescription)" }
         }
     }
 }

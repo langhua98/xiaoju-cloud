@@ -51,6 +51,9 @@ targets:
       - target: BackupExtension
         embed: true
         codeSign: false
+      - target: ShareExtension
+        embed: true
+        codeSign: false
   BackupExtension:
     type: extensionkit-extension
     platform: iOS
@@ -67,3 +70,27 @@ targets:
           EXExtensionPointIdentifier: com.apple.photos.background-upload
         # 系统用它检查扩展访问的网络地址
         BackgroundUploadURLBase: $(XIAOJU_API_URL)
+  # 分享菜单里的「小桔云盘」：微信、QQ、照片、「文件」里选好东西 → 分享 → 小桔云盘，直接传进网盘（Share/ShareViewController.swift）
+  ShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Share
+      - App/ResumableIngest.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.backup.share
+        TARGETED_DEVICE_FAMILY: "1"
+    info:
+      path: Share/Info.plist
+      properties:
+        CFBundleDisplayName: 小桔云盘
+        XiaojuAPIURL: $(XIAOJU_API_URL)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 200
+              NSExtensionActivationSupportsMovieWithMaxCount: 200
+              NSExtensionActivationSupportsFileWithMaxCount: 200

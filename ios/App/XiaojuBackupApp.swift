@@ -1,6 +1,7 @@
 import Photos
-import SwiftUI
 import SafariServices
+import SwiftUI
+import UniformTypeIdentifiers
 
 // 小桔备份（测试版）：打开 PhotoKit 的后台上传扩展（iOS 26.1 起苹果开放给第三方备份 App 的接口），
 // 之后系统在后台把新拍的照片、视频交给扩展（Extension/BackgroundUploadExtension.swift）传进小桔云盘的「相册」。
@@ -9,15 +10,19 @@ import SafariServices
 @main
 struct XiaojuBackupApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @ObservedObject private var restorer = Restorer.shared
     var body: some Scene {
         WindowGroup {
             TabView {
                 DriveView().tabItem { Label("云盘", systemImage: "externaldrive") }
                 BackupView().tabItem { Label("备份", systemImage: "arrow.triangle.2.circlepath.icloud") }
             }
+            .sheet(isPresented: $restorer.show) { RestoreView() }
             .onOpenURL { url in
                 // 快捷指令「充电时备份到小桔云盘」：xiaojubackup://backup
                 if url.host == "backup" { AutoBackup.shared.start(reason: "快捷指令") }
+                // 网页「恢复到手机」：xiaojubackup://restore?server=…&token=…
+                if url.host == "restore" { Restorer.shared.open(url) }
             }
         }
     }
