@@ -9,6 +9,7 @@ import UIKit
 // 自动备份：像 iCloud 那样，充电、连着网的时候把手机上能备份的都增量传到云盘。
 //   照片：全部照片放进「相册」；「备份哪些照片」里打开的相册放进「相册/相册名」，隐藏相册放进「隐藏相册」。
 //   通讯录（.vcf）、日历和提醒事项（.ics）：每天一份，放进「手机数据/通讯录」这类文件夹（默认私密）。
+//   「文件」App 里选好的文件夹：整个同步到「手机数据/文件/文件夹名」，改过的文件再传一份。
 // 「备份」页只有一个「自动备份」开关：同时管系统的后台上传扩展（新拍的照片）和下面这个充电时的后台任务（把没传的补齐）。
 // 什么时候跑：
 //   1. 系统的后台任务（BGProcessingTask，要求接着电源、有网络），一般是夜里充电时；
@@ -248,6 +249,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         await resumeBigJobs()
         await backupData()
         await backupPhotos()
+        await backupFolders()
         saveDone(force: true)
         if !Task.isCancelled {
             let now = Date()
@@ -357,23 +359,31 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     private var reconciling = false
 
-    private func headers(_ req: inout URLRequest, name: String, album: PhoneAlbum?) {
-        req.setValue(encodedName(name), forHTTPHeaderField: "X-File-Name")
-        if let album {
-            if album.hidden {
-                req.setValue("hidden", forHTTPHeaderField: "X-Xiaoju-Album")
-            } else {
-                req.setValue(encodedName(album.title), forHTTPHeaderField: "X-Xiaoju-Album-Name")
-            }
+    // 放进哪个相册的头部：隐藏相册 X-Xiaoju-Album: hidden，其他相册 X-Xiaoju-Album-Name: 相册名
+    private func albumHeaders(_ album: PhoneAlbum?) -> [String: String] {
+        guard let album else { return [:] }
+        return album.hidden ? ["X-Xiaoju-Album": "hidden"] : ["X-Xiaoju-Album-Name": encodedName(album.title)]
+    }
+
+    private func upload(_ resource: PHAssetResource, key: String, album: PhoneAlbum?) async throws {
+        let opts = PHAssetResourceRequestOptions()
+        opts.isNetworkAccessAllowed = true // 原图在 iCloud 上时先下载
+        let size = resource.value(forKey: "fileSize") as? Int64 ?? 0
+        try await send(name: resource.originalFilename, size: size, key: key, extra: albumHeaders(album)) { dest in
+            try await PHAssetResourceManager.default().writeData(for: resource, toFile: dest, options: opts)
         }
     }
 
-    // 先问服务端有没有；没有就导出原图交给后台上传（同时最多 10 个排队，不占满手机空间）。
-    private func upload(_ resource: PHAssetResource, key: String, album: PhoneAlbum?) async throws {
+    // 先问服务端有没有；没有就用 export 把内容写到本地，交给后台上传（同时最多 10 个排队，不占满手机空间）。
+    // extra 是放进哪个文件夹的头部（X-Xiaoju-Album、X-Xiaoju-Album-Name）。
+    private func send(name: String, size: Int64, key: String, extra: [String: String],
+                      export: (URL) async throws -> Void) async throws
+    {
         guard let base = URL(string: server) else { throw URLError(.badURL) }
-        if let size = resource.value(forKey: "fileSize") as? Int64, size > 0 {
+        if size > 0 {
             var ask = URLRequest(url: base.appendingPathComponent("api/ingest/exists"))
-            headers(&ask, name: resource.originalFilename, album: album)
+            ask.setValue(encodedName(name), forHTTPHeaderField: "X-File-Name")
+            for (k, v) in extra { ask.setValue(v, forHTTPHeaderField: k) }
             ask.setValue(String(size), forHTTPHeaderField: "X-File-Size")
             let (data, _) = try await URLSession.shared.data(for: ask)
             if (try? JSONDecoder().decode([String: String].self, from: data))?["result"] == "exists" {
@@ -383,27 +393,20 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             }
         }
         // 大文件（视频）：分段断点续传，断了下次从断的地方接着传。导出的文件留着，下次不用再导出
-        let size = resource.value(forKey: "fileSize") as? Int64 ?? 0
         if size > 16 << 20 {
             let file = spool.appendingPathComponent(Self.sha(key))
             if !FileManager.default.fileExists(atPath: file.path) {
                 let part = file.appendingPathExtension("part")
                 try? FileManager.default.removeItem(at: part)
-                let opts = PHAssetResourceRequestOptions()
-                opts.isNetworkAccessAllowed = true
-                try await PHAssetResourceManager.default().writeData(for: resource, toFile: part, options: opts)
+                try await export(part)
                 try FileManager.default.moveItem(at: part, to: file)
-            }
-            var extra: [String: String] = [:]
-            if let album {
-                if album.hidden { extra["X-Xiaoju-Album"] = "hidden" } else { extra["X-Xiaoju-Album-Name"] = encodedName(album.title) }
             }
             // 同时最多 3 个大文件在后台分段传
             while await chunkTasks() >= 3 {
                 if Task.isCancelled { return }
                 try await Task.sleep(nanoseconds: 2_000_000_000)
             }
-            let job = BigJob(key: key, file: file.path, name: resource.originalFilename, headers: extra, size: size)
+            let job = BigJob(key: key, file: file.path, name: name, headers: extra, size: size)
             if try await startBig(job) { counts.uploaded += 1 } else { counts.skipped += 1 }
             return
         }
@@ -412,17 +415,16 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
         let file = spool.appendingPathComponent(UUID().uuidString)
-        let opts = PHAssetResourceRequestOptions()
-        opts.isNetworkAccessAllowed = true // 原图在 iCloud 上时先下载
-        try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: opts)
+        try await export(file)
         var req = URLRequest(url: base.appendingPathComponent("api/ingest"))
         req.httpMethod = "POST"
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        headers(&req, name: resource.originalFilename, album: album)
+        req.setValue(encodedName(name), forHTTPHeaderField: "X-File-Name")
+        for (k, v) in extra { req.setValue(v, forHTTPHeaderField: k) }
         let task = session.uploadTask(with: req, fromFile: file)
         task.taskDescription = key + "\t" + file.path
-        lock.withLock { lastNames[key] = resource.originalFilename }
-        track(key, name: resource.originalFilename, sent: 0, total: size)
+        lock.withLock { lastNames[key] = name }
+        track(key, name: name, sent: 0, total: size)
         task.resume()
         counts.uploaded += 1
     }
@@ -658,6 +660,97 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         if let keys, let data = try? JSONEncoder().encode(keys) {
             try? data.write(to: doneFile, options: .atomic)
         }
+    }
+
+    // MARK: 「文件」App 里的文件夹：选好的文件夹整个同步到「手机数据/文件/文件夹名/…」，子文件夹照搬
+
+    struct SyncFolder: Codable, Identifiable {
+        var id: String
+        var name: String
+        var bookmark: Data
+    }
+
+    @Published private(set) var folders: [SyncFolder] = {
+        guard let data = UserDefaults.standard.data(forKey: "sync.folders") else { return [] }
+        return (try? JSONDecoder().decode([SyncFolder].self, from: data)) ?? []
+    }()
+
+    private func saveFolders(_ list: [SyncFolder]) {
+        defaults.set(try? JSONEncoder().encode(list), forKey: "sync.folders")
+        DispatchQueue.main.async { self.folders = list }
+    }
+
+    // 「文件」App 选来的文件夹：存一个书签，以后（包括后台）还能打开它
+    func addFolder(_ url: URL) throws {
+        let ok = url.startAccessingSecurityScopedResource()
+        defer { if ok { url.stopAccessingSecurityScopedResource() } }
+        let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        var list = folders.filter { $0.name != url.lastPathComponent }
+        list.append(SyncFolder(id: UUID().uuidString, name: url.lastPathComponent, bookmark: bookmark))
+        saveFolders(list)
+    }
+
+    func removeFolder(_ id: String) {
+        saveFolders(folders.filter { $0.id != id })
+    }
+
+    private func backupFolders() async {
+        for folder in folders {
+            if Task.isCancelled { return }
+            var stale = false
+            guard let root = try? URL(resolvingBookmarkData: folder.bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
+                lastError = "打不开文件夹「\(folder.name)」，在 App 里删掉重新选一次"
+                continue
+            }
+            let ok = root.startAccessingSecurityScopedResource()
+            defer { if ok { root.stopAccessingSecurityScopedResource() } }
+            if stale, let fresh = try? root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+                saveFolders(folders.map { $0.id == folder.id ? SyncFolder(id: $0.id, name: $0.name, bookmark: fresh) : $0 })
+            }
+            // 「文件」里的 iCloud 云盘文件可能还没下载：用 NSFileCoordinator 读的时候系统会先下载
+            let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+            let files = Self.listFiles(root, keys: keys)
+            for (i, file) in files.enumerated() {
+                if Task.isCancelled { return }
+                guard let v = try? file.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { continue }
+                if i % 20 == 0 {
+                    setStatus("正在同步文件夹「\(folder.name)」\(i)/\(files.count)：新传 \(counts.uploaded)，已有 \(counts.skipped)，失败 \(counts.failed)")
+                }
+                let rel = String(file.path.dropFirst(root.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let size = Int64(v.fileSize ?? 0)
+                let mtime = Int(v.contentModificationDate?.timeIntervalSince1970 ?? 0)
+                let key = "file|\(folder.id)|\(rel)|\(size)|\(mtime)"
+                if lock.withLock({ done.contains(key) }) { continue }
+                let dir = ([ "文件", folder.name ] + rel.split(separator: "/").dropLast().map(String.init)).joined(separator: "/")
+                do {
+                    try await send(name: file.lastPathComponent, size: size, key: key,
+                                   extra: ["X-Xiaoju-Album": "data", "X-Xiaoju-Album-Name": encodedName(dir)]) { dest in
+                        try Self.coordinatedCopy(file, to: dest)
+                    }
+                } catch {
+                    counts.failed += 1
+                    fail(file.lastPathComponent, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    // 同步函数里列文件（目录枚举器不能在 async 函数里直接遍历）
+    private static func listFiles(_ root: URL, keys: [URLResourceKey]) -> [URL] {
+        let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys,
+                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        var out: [URL] = []
+        while let url = walker?.nextObject() as? URL { out.append(url) }
+        return out
+    }
+
+    private static func coordinatedCopy(_ src: URL, to dest: URL) throws {
+        var coordError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: src, options: [], error: &coordError) { url in
+            do { try FileManager.default.copyItem(at: url, to: dest) } catch { copyError = error }
+        }
+        if let e = coordError ?? copyError { throw e }
     }
 
     // MARK: 通讯录、日历、提醒事项

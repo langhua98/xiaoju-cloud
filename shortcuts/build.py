@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """编译并签名快捷指令：“备份照片到小桔云盘”（backup，上传「文件」里的一个文件夹）、“自动备份新照片”（newphotos，
-直接从相册传最新的照片）、“分享到小桔云盘”（share，分享菜单里传几张）
-或“充电时备份到小桔云盘”（charge，打开 App 跑一次自动备份，给充电自动化用）。
+直接从相册传最新的照片）、“分享到小桔云盘”（share，分享菜单里传几张）、
+“充电时备份到小桔云盘”（charge，打开 App 跑一次自动备份，给充电自动化用）或
+“备份备忘录到小桔云盘”（notes，所有备忘录合成一个文本文件传进「手机数据/备忘录」）。
 
-    python3 shortcuts/build.py [--shortcut backup|newphotos|share|charge] --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
+    python3 shortcuts/build.py [--shortcut backup|newphotos|share|charge|notes] --out web/xiaoju-backup.shortcut [--api https://xxx.hf.space] [--skip-sign]
 
 1. 用 Cherri 编译 <shortcut>.cherri（默认上传地址取 --api，或 web/config.js 里的 XIAOJU_API_URL）；
 2. 修正导入问题指向的操作（如果有；Cherri 1.3.2 会把多个问题都指向第 0 个操作）；
@@ -27,7 +28,7 @@ import urllib.request
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 SHORTCUTS = {"backup": "备份照片到小桔云盘", "newphotos": "自动备份新照片", "share": "分享到小桔云盘",
-             "charge": "充电时备份到小桔云盘"}
+             "charge": "充电时备份到小桔云盘", "notes": "备份备忘录到小桔云盘"}
 HUBSIGN = "https://hubsign.routinehub.services/sign"
 
 
@@ -74,6 +75,7 @@ PLACEHOLDERS = {
     "newphotos": [{"order": "Latest First"}],
     "share": [],
     "charge": [],
+    "notes": [],
 }
 
 

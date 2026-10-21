@@ -27,7 +27,7 @@ jobs:
         env:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
         run: |
-          for s in backup newphotos share charge; do
+          for s in backup newphotos share charge notes; do
             python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "xiaoju-$s.shortcut" \
               ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"}
           done

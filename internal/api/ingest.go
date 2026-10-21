@@ -415,7 +415,11 @@ func (s *Server) ingestAlbum(w http.ResponseWriter, r *http.Request) (album *met
 	}
 	album, err := s.svc.Store().FindFolder(r.Context(), s.userID, nil, folder)
 	if err == nil && sub != "" {
-		album, err = s.svc.Store().FindFolder(r.Context(), s.userID, &album.ID, sub)
+		for _, seg := range strings.Split(sub, "/") {
+			if album, err = s.svc.Store().FindFolder(r.Context(), s.userID, &album.ID, seg); err != nil {
+				break
+			}
+		}
 	}
 	if errors.Is(err, meta.ErrNotFound) {
 		return nil, true
@@ -428,7 +432,8 @@ func (s *Server) ingestAlbum(w http.ResponseWriter, r *http.Request) (album *met
 }
 
 // ingestSubAlbum 取 X-Xiaoju-Album-Name（App 按手机相册上传时带的相册名，可以是 URL 编码的）。
-// 只能放在“相册”或“手机数据”下面一层；名字不合法、或者配的是隐藏相册时 ok 为 false。
+// 只能放在“相册”或“手机数据”下面；“手机数据”下面可以用 / 分多层（App 同步「文件」里的文件夹时保留目录结构，
+// 最多 subAlbumDepth 层），“相册”下面只有一层（相册名里的 / 换成 _）。名字不合法、或者配的是隐藏相册时 ok 为 false。
 func ingestSubAlbum(r *http.Request, folder string) (name string, ok bool) {
 	raw := r.Header.Get("X-Xiaoju-Album-Name")
 	if raw == "" {
@@ -437,24 +442,47 @@ func ingestSubAlbum(r *http.Request, folder string) (name string, ok bool) {
 	if u, err := url.PathUnescape(raw); err == nil {
 		raw = u
 	}
-	name = cleanName(raw)
-	if name == "" || (folder != AlbumFolder && folder != PhoneDataFolder) || utf8.RuneCountInString(name) > 100 {
+	if folder != AlbumFolder && folder != PhoneDataFolder {
 		return "", false
 	}
-	return name, true
+	segs := []string{raw}
+	if folder == PhoneDataFolder {
+		segs = strings.Split(strings.Trim(raw, "/"), "/")
+	}
+	if len(segs) > subAlbumDepth {
+		return "", false
+	}
+	for i, seg := range segs {
+		seg = cleanName(seg)
+		if seg == "" || utf8.RuneCountInString(seg) > 100 {
+			return "", false
+		}
+		segs[i] = seg
+	}
+	return strings.Join(segs, "/"), true
 }
 
-// subAlbumFolder 返回 parent 下名为 name 的文件夹，没有就新建。
+// subAlbumDepth：“手机数据”下面最多几层子文件夹。
+const subAlbumDepth = 8
+
+// subAlbumFolder 返回 parent 下名为 name 的文件夹（name 可以是 a/b/c 多层），没有就新建。
 func (s *Server) subAlbumFolder(r *http.Request, parent *meta.File, name string) (*meta.File, error) {
 	store := s.svc.Store()
-	f, err := store.FindFolder(r.Context(), s.userID, &parent.ID, name)
-	if errors.Is(err, meta.ErrNotFound) {
-		f, err = store.CreateFolder(r.Context(), s.userID, &parent.ID, name)
-		if errors.Is(err, meta.ErrConflict) {
-			return store.FindFolder(r.Context(), s.userID, &parent.ID, name)
+	f := parent
+	for _, seg := range strings.Split(name, "/") {
+		next, err := store.FindFolder(r.Context(), s.userID, &f.ID, seg)
+		if errors.Is(err, meta.ErrNotFound) {
+			next, err = store.CreateFolder(r.Context(), s.userID, &f.ID, seg)
+			if errors.Is(err, meta.ErrConflict) {
+				next, err = store.FindFolder(r.Context(), s.userID, &f.ID, seg)
+			}
 		}
+		if err != nil {
+			return nil, err
+		}
+		f = next
 	}
-	return f, err
+	return f, nil
 }
 
 // parseByteCount 读字节数：只允许数字和千位分隔符（“12,345”“12 345”），其他（“1.2 MB”）返回 0。

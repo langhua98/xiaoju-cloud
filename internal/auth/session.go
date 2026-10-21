@@ -148,3 +148,28 @@ func (s *Sessions) sign(body string) string {
 	m.Write([]byte(body))
 	return hex.EncodeToString(m.Sum(nil))
 }
+
+// RestoreTTL 是“恢复到手机”凭证的有效期：手机 App 拿它列出、下载相册和手机数据，存回手机。
+const RestoreTTL = 24 * time.Hour
+
+// IssueRestore 签发“恢复到手机”的凭证 "r1.<过期时间戳>.<HMAC>"。前缀不同，不能当会话或刷脸凭证使用；
+// 更换访问令牌后立即失效。
+func (s *Sessions) IssueRestore() (string, time.Time) {
+	exp := s.now().Add(RestoreTTL).Truncate(time.Second)
+	body := "r1." + strconv.FormatInt(exp.Unix(), 10)
+	return body + "." + s.sign(body), exp
+}
+
+// Restore 校验“恢复到手机”的凭证。
+func (s *Sessions) Restore(token string) bool {
+	i := strings.LastIndexByte(token, '.')
+	if i < 0 || !strings.HasPrefix(token, "r1.") {
+		return false
+	}
+	body, sig := token[:i], token[i+1:]
+	if !hmac.Equal([]byte(sig), []byte(s.sign(body))) {
+		return false
+	}
+	exp, err := strconv.ParseInt(strings.TrimPrefix(body, "r1."), 10, 64)
+	return err == nil && s.now().Unix() < exp
+}

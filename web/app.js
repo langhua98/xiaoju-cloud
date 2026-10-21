@@ -1136,12 +1136,55 @@ function reverifyFace(body) {
   });
 }
 
+// ---------- 恢复到手机 ----------
+// 网页已登录：重新刷脸（注册了刷脸设备时）、开了格子口令再答一道题，换一个恢复凭证，
+// 跳到 xiaojubackup://restore 交给小桔备份 App（App 自己不能刷脸登录）。
+
+async function openRestore() {
+  const dlg = $("#restore-dlg");
+  const body = $("#restore-body");
+  body.replaceChildren(mk("p", { className: "hint", textContent: "正在准备…" }));
+  if (!dlg.open) dlg.showModal();
+  let status = { passkey_required: false, enabled: false };
+  try { status = await request("GET", "/api/auth/grid"); } catch { /* 没有格子口令功能 */ }
+  let ticket = "";
+  if (status.passkey_required) {
+    ticket = await reverifyFace(body);
+    if (!ticket) { closeDialog(dlg); return; }
+  }
+  const done = (res) => {
+    const link = `xiaojubackup://restore?server=${encodeURIComponent(state.api)}&token=${encodeURIComponent(res.token)}`;
+    body.replaceChildren(
+      mk("p", { className: "hint", textContent: "已确认。点下面的按钮打开小桔备份 App，在「恢复」页选要恢复的内容。" }),
+      mk("div", { className: "dialog-actions" }, mk("a", { className: "button primary", href: link, textContent: "打开小桔备份 App" })));
+  };
+  const onError = (err) => {
+    if (err.code === "passkey_required") { toast("刷脸验证已超时，请重新操作"); closeDialog(dlg); return true; }
+    if (err.status === 401) { fail(err); return true; }
+    return false;
+  };
+  if (!status.enabled) {
+    try { done(await request("POST", "/api/restore/grant", { ticket })); } catch (err) { if (!onError(err)) fail(err); }
+    return;
+  }
+  const quiz = mk("div");
+  body.replaceChildren(mk("p", { className: "hint", textContent: "再答对一道格子题。" }), quiz);
+  mountGridQuiz(quiz, {
+    label: "确认恢复",
+    timed: true,
+    load: () => request("POST", "/api/auth/grid/challenge"),
+    async submit(payload) { done(await request("POST", "/api/restore/grant", { ticket, ...payload })); },
+    onError,
+  });
+}
+
 // ---------- 安全设置：快捷指令批量上传 ----------
 // 上传接口只进不出（不需要密钥，只能往“相册”里添加），快捷指令装上就能用。
 
 const SHORTCUT_FILE = "xiaoju-backup.shortcut"; // 备份照片：上传「文件」里的一个文件夹
 const NEW_PHOTOS_SHORTCUT_FILE = "xiaoju-newphotos.shortcut"; // 自动备份新照片：直接从相册传最新的
 const SHARE_SHORTCUT_FILE = "xiaoju-share.shortcut"; // 分享到小桔云盘：分享菜单里传几张
+const NOTES_SHORTCUT_FILE = "xiaoju-notes.shortcut"; // 备份备忘录：所有备忘录合成一个文本文件
 
 // 网页旁边有没有签好名的快捷指令（GitHub Pages 发布时生成）
 async function shortcutAvailable(file) {
@@ -1180,6 +1223,10 @@ async function renderShortcutSec() {
     mk("a", { className: "button", href: SHARE_SHORTCUT_FILE, textContent: "安装「分享到小桔云盘」" }),
     mk("p", { className: "hint", textContent: "传几张、几十张：在照片 App 里选好 → 分享 → 「分享到小桔云盘」（第一次在分享菜单最下面「编辑操作」里加上），"
       + "选放进「相册」还是「隐藏相册」。传过的会自动跳过。几百张以上用「备份照片」，分享菜单一次给太多 iOS 会卡住。" }));
+  const notes = mk("div", { className: "key-install", hidden: true },
+    mk("a", { className: "button", href: NOTES_SHORTCUT_FILE, textContent: "安装「备份备忘录」" }),
+    mk("p", { className: "hint", textContent: "App 读不了备忘录，快捷指令可以：运行一次把所有备忘录的文字合成「备忘录 日期.txt」，传进网盘「手机数据/备忘录」"
+      + "（第一次要允许访问备忘录）。图片、附件和带锁的备忘录不在里面。想每天自动备份：自动化 →「充电器」→「立即运行」→ 选「备份备忘录到小桔云盘」。" }));
   const howto = mk("p", { className: "hint", hidden: true, textContent: "安装：点按钮后 Safari 问是否下载就选「下载」，再在下载列表里点开，"
     + "在快捷指令 App 里点「添加快捷指令」。第一次运行会问能否连接网盘、共享照片，选「始终允许」；问的时候别锁屏、别切走。" });
   const manual = mk("details", { className: "key-manual" },
@@ -1190,12 +1237,14 @@ async function renderShortcutSec() {
       mk("li", {}, "添加「重复每一项」，在里面添加「获取 URL 的内容」：URL 粘贴上面的地址；方法 ", code("POST"),
         "；头部加一项 ", code("X-File-Name"), "，值选变量「重复项目」后改成「名称」；请求体选「文件」= 「重复项目」。"),
       mk("li", {}, "运行。中途出错就再运行一次，传过的会自动跳过。")));
-  box.replaceChildren(install, newPhotos, share, howto, manual);
-  const [ok, okNew, okShare] = await Promise.all([SHORTCUT_FILE, NEW_PHOTOS_SHORTCUT_FILE, SHARE_SHORTCUT_FILE].map(shortcutAvailable));
+  box.replaceChildren(install, newPhotos, share, notes, howto, manual);
+  const [ok, okNew, okShare, okNotes] = await Promise.all(
+    [SHORTCUT_FILE, NEW_PHOTOS_SHORTCUT_FILE, SHARE_SHORTCUT_FILE, NOTES_SHORTCUT_FILE].map(shortcutAvailable));
   install.hidden = !ok;
   newPhotos.hidden = !okNew;
   share.hidden = !okShare;
-  howto.hidden = !(ok || okNew || okShare);
+  notes.hidden = !okNotes;
+  howto.hidden = !(ok || okNew || okShare || okNotes);
   if (howto.hidden) manual.open = true;
 }
 
@@ -2846,6 +2895,7 @@ const ACTIONS = {
   install: () => installApp(),
   security: () => openSecurity(),
   shortcuts: () => openShortcuts(),
+  restore: () => openRestore(),
   logout: () => logout(),
 };
 menu.addEventListener("click", (e) => {
