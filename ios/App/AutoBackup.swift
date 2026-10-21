@@ -77,6 +77,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private let lock = NSLock()
     private var job: Task<Void, Never>?
     private var done: Set<String> = []
+    private var inCloud: Set<String> = [] // "target|assetLocalID"：按名字 + 拍摄日期认出云盘里已经有的（见 planMatch）
     private var doneDirty = 0
     private var counts = (uploaded: 0, skipped: 0, failed: 0)
     private var lastError = ""
@@ -96,6 +97,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         return dir
     }
     private var doneFile: URL { support.appendingPathComponent("uploaded.json") }
+    private var inCloudFile: URL { support.appendingPathComponent("incloud.json") }
     private var spool: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("upload")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -106,6 +108,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         super.init()
         if let data = try? Data(contentsOf: doneFile), let keys = try? JSONDecoder().decode([String].self, from: data) {
             done = Set(keys)
+        }
+        if let data = try? Data(contentsOf: inCloudFile), let keys = try? JSONDecoder().decode([String].self, from: data) {
+            inCloud = Set(keys)
         }
         if let data = defaults.data(forKey: Keys.failures), let list = try? JSONDecoder().decode([Failure].self, from: data) {
             failed = list
@@ -202,7 +207,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     }
 
     // target 和备份时记录的一样："all"、"hidden"、"album:相册名"。照片或视频有一份传过就算。
-    // 只算 App 自己核对过的：系统后台扩展刚传的，下次备份核对过后才算进来。
+    // 只算核对过的：系统后台扩展刚传的，下次备份核对过后才算进来。快捷指令、网页传的按名字 + 拍摄日期认出来的也算。
     func tally(target: String, assets: PHFetchResult<PHAsset>) -> Tally {
         let prefix = target + "|"
         let ids: Set<String> = lock.withLock {
@@ -210,7 +215,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 guard key.hasPrefix(prefix) else { return nil }
                 let rest = key.dropFirst(prefix.count)
                 return rest.lastIndex(of: "|").map { String(rest[..<$0]) }
-            })
+            }).union(inCloud.compactMap { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : nil })
         }
         var n = 0
         assets.enumerateObjects { asset, _, _ in
@@ -297,9 +302,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                     setStatus("正在备份「\(target.label)」\(i)/\(assets.count)：新传 \(counts.uploaded)，已有 \(counts.skipped)，失败 \(counts.failed)")
                 }
                 let asset = assets.object(at: i)
+                let known = lock.withLock { inCloud.contains("\(target.key)|\(asset.localIdentifier)") }
                 for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
                     let key = "\(target.key)|\(asset.localIdentifier)|\(resource.type.rawValue)"
                     if lock.withLock({ done.contains(key) }) { continue }
+                    if known && resource.type != .pairedVideo { continue } // 快捷指令、网页传过这张：不重传（实况照片的视频照常问）
                     do {
                         try await upload(resource, key: key, album: target.album)
                     } catch {
@@ -331,6 +338,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
     // （GET /api/ingest/names），在手机上比对，对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
     func reconcile(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+        await matchNames(target: target, assets: assets, album: album)
+        await planMatch(target: target, assets: assets, album: album)
+    }
+
+    private func matchNames(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
         guard let url = URL(string: server + "/api/ingest/names") else { return }
         var req = URLRequest(url: url)
         if let album {
@@ -356,6 +368,48 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             }
         }
         if found > 0 { saveDone(force: true) }
+    }
+
+    // 快捷指令、网页传的照片常常和手机上的原件大小不一样（导出时重新编码），按“名字|大小”认不出来，
+    // 「已备份」就只剩 App 自己传的几十张。所以再把每张的名字和拍摄日期一次发给服务端（POST /api/ingest/plan，
+    // 和快捷指令同一套比法：名字不分大小写、不比扩展名，拍摄日期差一天以内），认出来的记进 inCloud：
+    // 算进「已备份」，备份时不再重传；但「释放手机空间」只认按原件核对过的（done），不会因为这个删照片。
+    // 服务端只认顶层的「相册」「隐藏相册」，勾选的相册（相册/名字）还是只按“名字|大小”认。
+    private func planMatch(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+        guard album?.hidden ?? true, let url = URL(string: server + "/api/ingest/plan") else { return }
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd"
+        var ids: [String] = [], names: [String] = [], dates: [String] = []
+        assets.enumerateObjects { asset, _, _ in
+            let resources = PHAssetResource.assetResources(for: asset)
+            guard let main = resources.first(where: { $0.type == .photo || $0.type == .video }) else { return }
+            ids.append(asset.localIdentifier)
+            names.append(main.originalFilename.replacingOccurrences(of: "\n", with: " "))
+            dates.append(asset.creationDate.map(day.string(from:)) ?? "")
+        }
+        guard !ids.isEmpty else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["album": album == nil ? "" : "hidden",
+                                      "names": names.joined(separator: "\n"), "dates": dates.joined(separator: "\n")]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        struct Plan: Decodable {
+            let todo: String
+            let files: Int
+        }
+        guard let reply = try? await URLSession.shared.data(for: req),
+              (reply.1 as? HTTPURLResponse)?.statusCode == 200,
+              let plan = try? JSONDecoder().decode(Plan.self, from: reply.0), plan.files == ids.count else { return }
+        let todo = Set(plan.todo.split(separator: "\n").compactMap { Int($0) })
+        let prefix = target + "|"
+        let keys = lock.withLock { () -> [String] in
+            inCloud = inCloud.filter { !$0.hasPrefix(prefix) }
+            for (i, id) in ids.enumerated() where !todo.contains(i + 1) { inCloud.insert(prefix + id) }
+            return Array(inCloud)
+        }
+        if let data = try? JSONEncoder().encode(keys) { try? data.write(to: inCloudFile, options: .atomic) }
     }
 
     // 「备份」页打开时：把每个要备份的相册都和云盘比对一遍（同一时间只跑一个）

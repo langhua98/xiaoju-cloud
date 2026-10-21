@@ -26,6 +26,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 要和上次推送比，看快捷指令改没改
       - name: Write config.js
         # 仓库变量 XIAOJU_API_URL（如 https://user-xiaoju-cloud.hf.space）覆盖前端默认服务端地址
         if: ${{ vars.XIAOJU_API_URL != '' }}
@@ -34,27 +36,51 @@ jobs:
         run: |
           printf 'window.XIAOJU_API_URL = %s;\n' "$(jq -Rn --arg v "$XIAOJU_API_URL" '$v')" > web/config.js
           cat web/config.js
+      # 签名快捷指令要几分钟（第三方服务 HubSign，慢的时候更久）。快捷指令没改时直接用网上现在那一份，
+      # 只改网页的部署一分钟内就能发布。手动运行（workflow_dispatch，比如换了服务端地址）总是重新签名。
+      - name: Reuse published shortcuts
+        id: reuse
+        run: |
+          live="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          before="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" != "push" ] || ! git cat-file -e "$before^{commit}" 2>/dev/null \
+            || ! git diff --quiet "$before" "$GITHUB_SHA" -- shortcuts .github/workflows/pages.yml; then
+            echo "shortcuts changed (or manual run): rebuild all"
+            echo "build=backup newphotos share charge notes" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          build=""
+          for s in backup newphotos share charge notes; do
+            curl -fsSL --max-time 30 "$live/xiaoju-$s.shortcut" -o "web/xiaoju-$s.shortcut" || build="$build $s"
+          done
+          echo "rebuild:${build:- none}"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
+        if: steps.reuse.outputs.build != ''
         with:
           go-version: "1.25"
       - name: Install Cherri
+        if: steps.reuse.outputs.build != ''
         continue-on-error: true
         run: go install github.com/electrikmilk/cherri@v1.3.2
       - name: Build iPhone shortcuts
         # 签名靠第三方服务（HubSign），失败时网页照常发布，只是安全设置里不显示对应的“安装”按钮（仍可手动搭建）。
-        # 几个快捷指令各自出错互不影响
+        # 几个快捷指令各自出错互不影响；每个最多等 2 分钟，签不出来就沿用网上那一份
+        if: steps.reuse.outputs.build != ''
         continue-on-error: true
+        timeout-minutes: 12
         env:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
+          BUILD: ${{ steps.reuse.outputs.build }}
         run: |
           status=0
           live="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
-          for s in backup newphotos share charge notes; do
-            python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "web/xiaoju-$s.shortcut" \
+          for s in $BUILD; do
+            timeout 120 python3 shortcuts/build.py --cherri "$(go env GOPATH)/bin/cherri" --shortcut "$s" --out "web/xiaoju-$s.shortcut" \
               ${XIAOJU_API_URL:+--api "$XIAOJU_API_URL"} && continue
             status=1
             # 签名失败：沿用网上现在那一份（旧版本），免得安装按钮消失
-            if curl -fsSL "$live/xiaoju-$s.shortcut" -o "web/xiaoju-$s.shortcut"; then
+            if curl -fsSL --max-time 30 "$live/xiaoju-$s.shortcut" -o "web/xiaoju-$s.shortcut"; then
               echo "::warning::$s shortcut not rebuilt (signing failed); kept the previously published one"
             else
               rm -f "web/xiaoju-$s.shortcut"
