@@ -61,10 +61,10 @@ jobs:
           gh release delete ios-test --yes --cleanup-tag || true
           changes=$(git log -1 --format=%s "$GITHUB_SHA")
           gh release create ios-test "$IPA" --prerelease --target "$GITHUB_SHA" \
-            --title "小桔备份 $VERSION（构建 $GITHUB_RUN_NUMBER）" \
-            --notes "版本 $VERSION，构建 $GITHUB_RUN_NUMBER（${GITHUB_REF_NAME} ${GITHUB_SHA::7}）。App 里「我的」最下面能看到装的是哪个构建。
+            --title "小桔备份 ${VERSION}（构建 ${GITHUB_RUN_NUMBER}）" \
+            --notes "版本 ${VERSION}，构建 ${GITHUB_RUN_NUMBER}（${GITHUB_REF_NAME} ${GITHUB_SHA::7}）。App 里「我的」最下面能看到装的是哪个构建。
 
-          这次的改动：$changes
+          这次的改动：${changes}
 
           没签名的测试版，需要自己签名后安装；配好 TestFlight 后用 TestFlight 装更省事。见 ios/README.md。"
 
