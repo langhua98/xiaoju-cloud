@@ -46,6 +46,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "com.langhua98.xiaoju.backup.auto")
         config.isDiscretionary = false
+        config.httpMaximumConnectionsPerHost = 8 // 默认只有 4 个；服务端有多个 Telegram 机器人轮流存，可以多传几个
         config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
@@ -195,7 +196,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
     }
 
-    // 先问服务端有没有；没有就导出原图交给后台上传（同时最多 6 个排队，不占满手机空间）。
+    // 先问服务端有没有；没有就导出原图交给后台上传（同时最多 10 个排队，不占满手机空间）。
     private func upload(_ resource: PHAssetResource, key: String, album: PhoneAlbum?) async throws {
         guard let base = URL(string: server) else { throw URLError(.badURL) }
         if let size = resource.value(forKey: "fileSize") as? Int64, size > 0 {
@@ -225,8 +226,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             if let album {
                 if album.hidden { extra["X-Xiaoju-Album"] = "hidden" } else { extra["X-Xiaoju-Album-Name"] = encodedName(album.title) }
             }
-            // 同时最多 2 个大文件在后台分段传
-            while await chunkTasks() >= 2 {
+            // 同时最多 3 个大文件在后台分段传
+            while await chunkTasks() >= 3 {
                 if Task.isCancelled { return }
                 try await Task.sleep(nanoseconds: 2_000_000_000)
             }
@@ -234,7 +235,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             if try await startBig(job) { counts.uploaded += 1 } else { counts.skipped += 1 }
             return
         }
-        while await session.allTasks.count >= 6 {
+        while await session.allTasks.count >= 10 {
             if Task.isCancelled { return }
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
