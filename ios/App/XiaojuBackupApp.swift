@@ -73,6 +73,7 @@ struct ContentView: View {
     @State private var message = ""
     @State private var busy = false
     @ObservedObject private var auto = AutoBackup.shared
+    @ObservedObject private var albumUploader = AlbumUploader.shared
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
 
@@ -94,7 +95,10 @@ struct ContentView: View {
                         Button("停止", role: .destructive) { auto.stop() }
                     } else {
                         Button("现在备份") { auto.start(reason: "手动") }
-                            .disabled(auth != .authorized)
+                            .disabled(auth != .authorized || albumUploader.running)
+                        if albumUploader.running {
+                            Text("「相册」页正在上传，等它传完或停掉再备份。").font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                     if !auto.status.isEmpty {
                         Text(auto.status).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)

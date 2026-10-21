@@ -8,7 +8,8 @@ import SwiftUI
 struct AlbumsView: View {
     @State private var albums: [PhoneAlbum] = []
     @State private var selected = Set(UserDefaults.standard.stringArray(forKey: "selectedAlbums") ?? [])
-    @StateObject private var uploader = AlbumUploader()
+    @ObservedObject private var uploader = AlbumUploader.shared
+    @ObservedObject private var auto = AutoBackup.shared
 
     var body: some View {
         NavigationStack {
@@ -37,7 +38,11 @@ struct AlbumsView: View {
                         Button("上传选中的 \(selected.count) 个相册") {
                             uploader.start(albums.filter { selected.contains($0.id) })
                         }
-                        .disabled(selected.isEmpty)
+                        .disabled(selected.isEmpty || auto.running)
+                        if auto.running {
+                            Text("「备份」页的「现在备份」正在跑，它已经包含勾选的相册和隐藏相册。两个一起传会抢网速，等它跑完或停掉再在这里传。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                     if !uploader.status.isEmpty {
                         Text(uploader.status).font(.footnote).textSelection(.enabled)
@@ -103,6 +108,7 @@ struct PhoneAlbum: Identifiable {
 
 @MainActor
 final class AlbumUploader: ObservableObject {
+    static let shared = AlbumUploader()
     @Published var running = false
     @Published var status = ""
     @Published var detail = "" // 大视频的上传进度
@@ -113,6 +119,10 @@ final class AlbumUploader: ObservableObject {
     func stop() { task?.cancel() }
 
     func start(_ albums: [PhoneAlbum]) {
+        if let other = UploadGate.enter("相册") {
+            status = "「\(other)」正在上传，等它传完再传相册"
+            return
+        }
         running = true
         UIApplication.shared.isIdleTimerDisabled = true // 传的时候不自动锁屏
         task = Task {
@@ -140,6 +150,7 @@ final class AlbumUploader: ObservableObject {
             status = "\(head)：新传 \(uploaded)，跳过 \(skipped)（传过的），失败 \(failed)" + (lastError.isEmpty ? "" : "\n最后一个错误：\(lastError)")
             running = false
             UIApplication.shared.isIdleTimerDisabled = false
+            UploadGate.leave()
         }
     }
 
@@ -197,4 +208,22 @@ final class AlbumUploader: ObservableObject {
         try? FileManager.default.removeItem(at: file)
         return uploaded
     }
+}
+
+// 同一时间只跑一个上传：「现在备份」和「相册」页一起传会抢网速，还会同时传同一个大视频。
+// （「现在备份」已经包含勾选的相册和隐藏相册。）
+enum UploadGate {
+    private static let lock = NSLock()
+    private static var owner: String?
+
+    // 拿到了返回 nil；别的任务正在传，返回它的名字
+    static func enter(_ name: String) -> String? {
+        lock.withLock {
+            if let owner { return owner }
+            owner = name
+            return nil
+        }
+    }
+
+    static func leave() { lock.withLock { owner = nil } }
 }

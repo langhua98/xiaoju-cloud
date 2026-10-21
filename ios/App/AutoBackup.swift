@@ -104,11 +104,18 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             completion?(true)
             return
         }
+        if let other = UploadGate.enter("现在备份") {
+            lock.unlock()
+            setStatus("\(Self.time()) 没有开始备份：「\(other)」正在上传，等它传完再备份")
+            completion?(true)
+            return
+        }
         counts = (0, 0, 0)
         lastError = ""
         job = Task.detached(priority: .utility) { [self] in
             await run(reason: reason)
             lock.withLock { job = nil }
+            UploadGate.leave()
             completion?(!Task.isCancelled)
         }
         lock.unlock()
