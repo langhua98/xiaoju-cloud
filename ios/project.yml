@@ -31,6 +31,9 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: 小桔备份
+        # 版本号：MARKETING_VERSION 手动改；构建号打包时用工作流的运行次数（ios.yml），三个 target 要一致
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
@@ -66,6 +69,8 @@ targets:
       path: Extension/Info.plist
       properties:
         CFBundleDisplayName: 小桔备份上传
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSPhotoLibraryUsageDescription: 把相册里的新照片、视频备份到小桔云盘。
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.photos.background-upload
@@ -86,6 +91,8 @@ targets:
       path: Share/Info.plist
       properties:
         CFBundleDisplayName: 小桔云盘
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         XiaojuAPIURL: $(XIAOJU_API_URL)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services

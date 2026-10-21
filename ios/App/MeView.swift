@@ -46,6 +46,9 @@ struct MeView: View {
                 } footer: {
                     Text("退出登录只影响在 App 里看照片、文件，自动备份照常跑。")
                 }
+                Section {
+                    LabeledContent("版本", value: Self.version)
+                }
             }
             .navigationTitle("我的")
             .refreshable { await load() }
@@ -56,6 +59,14 @@ struct MeView: View {
             }
         }
     }
+
+    // 「0.1（构建 32）」：构建号就是打包时工作流的运行次数，和 Release「ios-test」、安装包文件名里的对得上
+    static let version: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let short = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        return "\(short)（构建 \(build)）"
+    }()
 
     private var storage: some View {
         VStack(alignment: .leading, spacing: 8) {
