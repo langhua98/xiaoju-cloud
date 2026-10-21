@@ -219,6 +219,21 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         return Tally(done: n, total: assets.count)
     }
 
+    // 「释放手机空间」能删的：全部照片里比 before 早、照片和视频（实况照片的视频部分也算）都确认在云盘里的。
+    // 个人收藏的不删。
+    func fullyBackedUp(before: Date) -> [PHAsset] {
+        let keys = lock.withLock { done }
+        var out: [PHAsset] = []
+        Self.allPhotos().enumerateObjects { asset, _, _ in
+            guard !asset.isFavorite, (asset.creationDate ?? .distantFuture) < before else { return }
+            let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
+            if !resources.isEmpty && resources.allSatisfy({ keys.contains("all|\(asset.localIdentifier)|\($0.type.rawValue)") }) {
+                out.append(asset)
+            }
+        }
+        return out
+    }
+
     // MARK: 失败
 
     private var failed: [Failure] = []
@@ -910,6 +925,8 @@ struct XiaojuShortcuts: AppShortcutsProvider {
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // 缩略图走系统的网络缓存：照片页来回滑不用重下
+        URLCache.shared = URLCache(memoryCapacity: 64 << 20, diskCapacity: 1 << 30)
         AutoBackup.shared.register()
         AutoBackup.shared.schedule()
         return true

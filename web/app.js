@@ -350,8 +350,15 @@ async function finishLogin(btn) {
   enterApp();
 }
 
+// 小桔备份 App 的「登录」：App 用系统登录窗口打开 ?app-login=1，这里照常登录，成功后把会话交回 App
+const appLogin = new URLSearchParams(location.search).has("app-login");
+
 // 已登录：保存会话，显示主界面
 function enterApp() {
+  if (appLogin) {
+    location.href = `xiaojubackup://login?session=${encodeURIComponent(state.session)}`;
+    return;
+  }
   tabSession("set", state.session);
   $("#menu-btn").hidden = false;
   $("#fab").hidden = false;
