@@ -21,6 +21,14 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     @Published private(set) var running = false
     @Published private(set) var status = UserDefaults.standard.string(forKey: Keys.status) ?? ""
+    @Published private(set) var transfers: [Transfer] = [] // 正在传的每个文件和进度
+
+    struct Transfer: Identifiable {
+        let id: String
+        let name: String
+        var sent: Int64
+        let total: Int64
+    }
     @Published var enabled = UserDefaults.standard.object(forKey: Keys.enabled) as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(enabled, forKey: Keys.enabled)
@@ -249,6 +257,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         headers(&req, name: resource.originalFilename, album: album)
         let task = session.uploadTask(with: req, fromFile: file)
         task.taskDescription = key + "\t" + file.path
+        track(key, name: resource.originalFilename, sent: 0, total: size)
         task.resume()
         counts.uploaded += 1
     }
@@ -264,6 +273,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             return
         }
         let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+        untrack(parts[0])
         if parts.count == 2 { try? FileManager.default.removeItem(atPath: parts[1]) }
         let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         if error == nil, (200..<300).contains(code), let key = parts.first {
@@ -272,6 +282,64 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         } else {
             lastError = "后台上传失败：\(error?.localizedDescription ?? "HTTP \(code)")"
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64)
+    {
+        let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+        if parts.first == "chunk", parts.count == 4, let end = Int64(parts[3]) {
+            // 大文件：这一段的起点 + 这一段已发出的
+            let sent = end - task.countOfBytesExpectedToSend + totalBytesSent
+            if lock.withLock({ meta[parts[1]] }) == nil, let job = loadJobs()[parts[1]] {
+                lock.withLock { meta[job.key] = (job.name, job.size) }
+            }
+            updateProgress(parts[1], sent: sent)
+        } else if let key = parts.first {
+            lock.withLock {
+                if (meta[key]?.total ?? 0) <= 0 { meta[key] = (meta[key]?.name ?? "照片", totalBytesExpectedToSend) }
+            }
+            updateProgress(key, sent: totalBytesSent)
+        }
+    }
+
+    // MARK: 进度：每个正在传的文件一条，界面上每半秒刷新一次
+
+    private var meta: [String: (name: String, total: Int64)] = [:]
+    private var sentBytes: [String: Int64] = [:]
+    private var lastPublish = Date.distantPast
+
+    private func track(_ key: String, name: String, sent: Int64, total: Int64) {
+        lock.withLock {
+            meta[key] = (name, total)
+            sentBytes[key] = sent
+        }
+        publishProgress(force: true)
+    }
+
+    private func untrack(_ key: String) {
+        lock.withLock {
+            meta[key] = nil
+            sentBytes[key] = nil
+        }
+        publishProgress(force: true)
+    }
+
+    private func updateProgress(_ key: String, sent: Int64) {
+        lock.withLock { sentBytes[key] = sent }
+        publishProgress(force: false)
+    }
+
+    private func publishProgress(force: Bool) {
+        let list: [Transfer]? = lock.withLock {
+            guard force || Date().timeIntervalSince(lastPublish) > 0.5 else { return nil }
+            lastPublish = Date()
+            return sentBytes.compactMap { key, sent in
+                meta[key].map { Transfer(id: key, name: $0.name, sent: min(sent, $0.total), total: $0.total) }
+            }.sorted { $0.name < $1.name }
+        }
+        guard let list else { return }
+        DispatchQueue.main.async { self.transfers = list }
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
@@ -351,6 +419,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let task = session.uploadTask(with: req, fromFile: chunkFile)
         task.taskDescription = ["chunk", job.key, chunkFile.path, String(offset + Int64(piece.count))].joined(separator: "\t")
+        track(job.key, name: job.name, sent: offset, total: job.size)
         task.resume()
         setStatus("后台在传 \(job.name)：\(offset >> 20)/\(job.size >> 20) MB")
     }
@@ -376,12 +445,14 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             }
         } catch {
             // 断了：留着这个任务，下次备份时问服务端收到多少接着传
+            untrack(job.key)
             lastError = "\(job.name)：\(error.localizedDescription)（下次接着传）"
             setStatus("\(Self.time()) \(lastError)")
         }
     }
 
     private func finishBig(_ job: BigJob) {
+        untrack(job.key)
         try? FileManager.default.removeItem(atPath: job.file)
         saveJob(nil, key: job.key)
         markDone(job.key)
