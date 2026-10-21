@@ -73,6 +73,7 @@ struct ContentView: View {
     @State private var message = ""
     @State private var busy = false
     @ObservedObject private var auto = AutoBackup.shared
+    @ObservedObject private var albumUploader = AlbumUploader.shared
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
 
@@ -94,7 +95,10 @@ struct ContentView: View {
                         Button("停止", role: .destructive) { auto.stop() }
                     } else {
                         Button("现在备份") { auto.start(reason: "手动") }
-                            .disabled(auth != .authorized)
+                            .disabled(auth != .authorized || albumUploader.running)
+                        if albumUploader.running {
+                            Text("「相册」页正在上传，等它传完或停掉再备份。").font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                     if !auto.status.isEmpty {
                         Text(auto.status).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
@@ -102,7 +106,7 @@ struct ContentView: View {
                 } header: {
                     Text("自动备份")
                 } footer: {
-                    Text("备份全部照片（放进云盘「相册」）、「相册」页勾选的相册和隐藏相册、通讯录、日历、提醒事项，只传新的。打开开关后，系统会在充电、连着网的时候（一般是夜里）自动跑。想每次一插电就跑：快捷指令 → 自动化 → 新建 → 充电器 → 已连接 → 立即运行 → 添加操作「备份到小桔云盘」。第一次请先点「现在备份」，允许通讯录、日历、提醒事项的权限。")
+                    Text("先传隐藏相册（放进云盘「隐藏相册」），再传全部照片（放进云盘「相册」）、「相册」页勾选的相册、通讯录、日历、提醒事项，只传新的。打开开关后，系统会在充电、连着网的时候（一般是夜里）自动跑。想每次一插电就跑：快捷指令 → 自动化 → 新建 → 充电器 → 已连接 → 立即运行 → 添加操作「备份到小桔云盘」。第一次请先点「现在备份」，允许通讯录、日历、提醒事项的权限。")
                 }
                 Section {
                     Toggle("后台自动备份", isOn: Binding(get: { enabled }, set: { setEnabled($0) }))

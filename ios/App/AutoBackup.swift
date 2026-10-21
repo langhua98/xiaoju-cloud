@@ -104,11 +104,18 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             completion?(true)
             return
         }
+        if let other = UploadGate.enter("现在备份") {
+            lock.unlock()
+            setStatus("\(Self.time()) 没有开始备份：「\(other)」正在上传，等它传完再备份")
+            completion?(true)
+            return
+        }
         counts = (0, 0, 0)
         lastError = ""
         job = Task.detached(priority: .utility) { [self] in
             await run(reason: reason)
             lock.withLock { job = nil }
+            UploadGate.leave()
             completion?(!Task.isCancelled)
         }
         lock.unlock()
@@ -137,19 +144,23 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         schedule()
     }
 
-    // 照片：全部照片 → 相册；勾选的相册 → 相册/名字；隐藏 → 隐藏相册。
+    // 照片：隐藏相册 → 隐藏相册（总是最先传）；全部照片 → 相册；勾选的相册 → 相册/名字。
     private func backupPhotos() async {
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
             lastError = "没有相册权限"
             return
         }
         var targets: [(key: String, label: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?)] = []
+        let albums = PhoneAlbum.all()
+        for album in albums where album.hidden {
+            targets.append(("hidden", album.title, album.assets(), album))
+        }
         let all = PHFetchOptions()
         all.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)] // 新的先传
         targets.append(("all", "全部照片", PHAsset.fetchAssets(with: all), nil))
         let selected = Set(defaults.stringArray(forKey: "selectedAlbums") ?? [])
-        for album in PhoneAlbum.all() where selected.contains(album.id) {
-            targets.append((album.hidden ? "hidden" : "album:\(album.title)", album.title, album.assets(), album))
+        for album in albums where !album.hidden && selected.contains(album.id) {
+            targets.append(("album:\(album.title)", album.title, album.assets(), album))
         }
         for target in targets {
             let assets = target.assets
