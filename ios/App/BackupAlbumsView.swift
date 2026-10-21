@@ -108,6 +108,16 @@ struct PhoneAlbum: Identifiable {
         return PHAsset.fetchAssets(in: collection, options: options)
     }
 
+    // 系统的「隐藏」相册
+    static func hiddenAlbum() -> PhoneAlbum? {
+        guard let c = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumAllHidden, options: nil).firstObject
+        else { return nil }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        return PhoneAlbum(collection: c, title: c.localizedTitle ?? "隐藏", hidden: true,
+                          count: PHAsset.fetchAssets(in: c, options: options).count)
+    }
+
     // 隐藏相册在最前，然后是自己建的相册（按名字排）。
     static func all() -> [PhoneAlbum] {
         var out: [PhoneAlbum] = []
