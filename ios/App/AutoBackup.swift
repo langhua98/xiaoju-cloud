@@ -182,7 +182,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         task.expirationHandler = { [weak self] in
             guard let self else { return }
-            if !lock.withLock({ appActive }) { stop() } // 系统收回了：在后台就停下这一轮，下次接着传
+            if !lock.withLock({ self.appActive }) { stop() } // 系统收回了：在后台就停下这一轮，下次接着传
             finishContinued(success: false)
         }
         reportContinued(force: true)
