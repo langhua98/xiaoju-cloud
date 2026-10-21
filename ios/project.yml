@@ -41,13 +41,13 @@ targets:
         NSCalendarsFullAccessUsageDescription: 把日历备份到小桔云盘。
         NSRemindersFullAccessUsageDescription: 把提醒事项备份到小桔云盘。
         NSFaceIDUsageDescription: 打开私密相簿、私密文件夹前确认是你本人。
-        # 自动备份：充电、有网络时系统运行的后台任务（AutoBackup.swift）
+        # 自动备份：充电、有网络时系统运行的后台任务；在 App 里点了备份后切走「继续在后台运行」（AutoBackup.swift）
         UIBackgroundModes: [processing, fetch]
         # 快捷指令「充电时备份到小桔云盘」用 xiaojubackup://backup 打开 App 跑一次备份
         CFBundleURLTypes:
           - CFBundleURLName: com.langhua98.xiaoju.backup
             CFBundleURLSchemes: [xiaojubackup]
-        BGTaskSchedulerPermittedIdentifiers: [com.langhua98.xiaoju.backup.sync]
+        BGTaskSchedulerPermittedIdentifiers: [com.langhua98.xiaoju.backup.sync, com.langhua98.xiaoju.backup.continued]
         XiaojuAPIURL: $(XIAOJU_API_URL)
         XiaojuWebURL: $(XIAOJU_WEB_URL)
         ITSAppUsesNonExemptEncryption: false # 只用 HTTPS，上传 TestFlight 时不用再答出口合规
