@@ -20,7 +20,7 @@ import UIKit
 // 后台建的任务还会被系统推迟，切出 App 后大视频就停在那里不动了）；断了下次问服务端收到多少，从那里接着传。
 // 在 App 里点了备份（或快捷指令打开 App 备份）时，再向系统申请「继续在后台运行」（BGContinuedProcessingTask，iOS 26）：
 // 切到别的 App、锁屏后这一轮照样往下导出、交上传，系统会显示一个进度；这时新文件由 App 自己直接传（direct）。
-苹果不让第三方 App 读的数据（短信、备忘录、健康……）这里做不了。
+// 苹果不让第三方 App 读的数据（短信、备忘录、健康……）这里做不了。
 final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     static let shared = AutoBackup()
     static let taskID = "com.langhua98.xiaoju.backup.sync"
