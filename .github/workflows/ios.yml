@@ -38,24 +38,35 @@ jobs:
           xcodebuild -project XiaojuBackup.xcodeproj -scheme XiaojuBackup -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             ${XIAOJU_API_URL:+XIAOJU_API_URL="$XIAOJU_API_URL"} \
             build
           app=build/Build/Products/Release-iphoneos/XiaojuBackup.app
           find "$app" -maxdepth 3 -name '*.appex' -print
           mkdir Payload && cp -R "$app" Payload/
-          zip -qry ../XiaojuBackup.ipa Payload
+          # 版本号：project.yml 的 MARKETING_VERSION + 构建号（工作流的运行次数，每次加一），写进文件名，装之前分得清
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          ipa="XiaojuBackup-$version-build$GITHUB_RUN_NUMBER.ipa"
+          zip -qry "../$ipa" Payload
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "IPA=$ipa" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
-          name: XiaojuBackup-ipa
-          path: XiaojuBackup.ipa
+          name: ${{ env.IPA }}
+          path: ${{ env.IPA }}
       - name: Publish to the ios-test release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete ios-test --yes --cleanup-tag || true
-          gh release create ios-test XiaojuBackup.ipa --prerelease --target "$GITHUB_SHA" \
-            --title "小桔备份 测试版（${GITHUB_REF_NAME} ${GITHUB_SHA::7}）" \
-            --notes "没签名的测试版，需要自己签名后安装；配好 TestFlight 后用 TestFlight 装更省事。见 ios/README.md。"
+          changes=$(git log -1 --format=%s "$GITHUB_SHA")
+          gh release create ios-test "$IPA" --prerelease --target "$GITHUB_SHA" \
+            --title "小桔备份 $VERSION（构建 $GITHUB_RUN_NUMBER）" \
+            --notes "版本 $VERSION，构建 $GITHUB_RUN_NUMBER（${GITHUB_REF_NAME} ${GITHUB_SHA::7}）。App 里「我的」最下面能看到装的是哪个构建。
+
+          这次的改动：$changes
+
+          没签名的测试版，需要自己签名后安装；配好 TestFlight 后用 TestFlight 装更省事。见 ios/README.md。"
 
   # 没配 App Store Connect 密钥时跳过 TestFlight
   keys:
