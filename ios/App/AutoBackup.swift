@@ -7,8 +7,9 @@ import Photos
 import UIKit
 
 // 自动备份：像 iCloud 那样，充电、连着网的时候把手机上能备份的都增量传到云盘。
-//   照片：全部照片放进「相册」；在「相册」页勾选的相册放进「相册/相册名」，隐藏相册放进「隐藏相册」。
+//   照片：全部照片放进「相册」；「备份哪些照片」里打开的相册放进「相册/相册名」，隐藏相册放进「隐藏相册」。
 //   通讯录（.vcf）、日历和提醒事项（.ics）：每天一份，放进「手机数据/通讯录」这类文件夹（默认私密）。
+// 「备份」页只有一个「自动备份」开关：同时管系统的后台上传扩展（新拍的照片）和下面这个充电时的后台任务（把没传的补齐）。
 // 什么时候跑：
 //   1. 系统的后台任务（BGProcessingTask，要求接着电源、有网络），一般是夜里充电时；
 //   2. 快捷指令自动化「连接充电器时」运行「备份到小桔云盘」（会打开 App，跑完自动锁屏照常）；
@@ -22,6 +23,22 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     @Published private(set) var running = false
     @Published private(set) var status = UserDefaults.standard.string(forKey: Keys.status) ?? ""
     @Published private(set) var transfers: [Transfer] = [] // 正在传的每个文件和进度
+    @Published private(set) var failures: [Failure] = [] // 这一轮没传上去的，下次备份（或点「重试」）再传
+    @Published private(set) var pausedUntil = UserDefaults.standard.object(forKey: Keys.pausedUntil) as? Date
+    @Published private(set) var lastFinished = UserDefaults.standard.object(forKey: Keys.lastFinished) as? Date
+
+    struct Failure: Codable, Identifiable, Hashable {
+        var id: String { name + "\t" + reason }
+        let name: String
+        let reason: String
+    }
+
+    // 一个备份目标（全部照片、某个相册）里 App 确认传过的照片数
+    struct Tally {
+        var done: Int
+        var total: Int
+        var remaining: Int { max(total - done, 0) }
+    }
 
     struct Transfer: Identifiable {
         let id: String
@@ -41,7 +58,19 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private enum Keys {
         static let enabled = "auto.enabled"
         static let status = "auto.status"
+        static let failures = "auto.failures"
+        static let pausedUntil = "auto.pausedUntil"
+        static let lastFinished = "auto.lastFinished"
     }
+
+    // 「备份哪些照片」「手机数据」里的开关，默认都开
+    static let backupHidden = "backup.hidden"
+    static let backupContacts = "backup.contacts"
+    static let backupCalendar = "backup.calendar"
+    static let backupReminders = "backup.reminders"
+    static let selectedAlbums = "selectedAlbums"
+
+    static func flag(_ key: String) -> Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
 
     private let defaults = UserDefaults.standard
     private let lock = NSLock()
@@ -77,6 +106,10 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         if let data = try? Data(contentsOf: doneFile), let keys = try? JSONDecoder().decode([String].self, from: data) {
             done = Set(keys)
         }
+        if let data = defaults.data(forKey: Keys.failures), let list = try? JSONDecoder().decode([Failure].self, from: data) {
+            failed = list
+            failures = list
+        }
     }
 
     // MARK: 触发
@@ -106,6 +139,33 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     func stop() { job?.cancel() }
 
+    var isPaused: Bool { (pausedUntil ?? .distantPast) > Date() }
+
+    // 暂停：停掉正在跑的这一轮，到时间之前后台任务、快捷指令都不跑（点「现在备份」会先恢复）。
+    func pause(hours: Double) {
+        let until = Date().addingTimeInterval(hours * 3600)
+        defaults.set(until, forKey: Keys.pausedUntil)
+        pausedUntil = until
+        stop()
+    }
+
+    func resume() {
+        defaults.removeObject(forKey: Keys.pausedUntil)
+        pausedUntil = nil
+    }
+
+    // 「自动备份」开关：充电时的后台任务 + 系统的后台上传扩展一起开关。扩展没开成返回原因。
+    func setAutomatic(_ on: Bool) -> String? {
+        enabled = on
+        if on && PHPhotoLibrary.authorizationStatus(for: .readWrite) != .authorized { return nil }
+        do {
+            try PHPhotoLibrary.shared().setUploadJobExtensionEnabled(on)
+            return nil
+        } catch {
+            return "系统后台上传没打开：\(error.localizedDescription)"
+        }
+    }
+
     func start(reason: String, completion: ((Bool) -> Void)? = nil) {
         lock.lock()
         if job != nil {
@@ -113,21 +173,68 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             completion?(true)
             return
         }
-        if let other = UploadGate.enter("现在备份") {
+        if isPaused {
             lock.unlock()
-            setStatus("\(Self.time()) 没有开始备份：「\(other)」正在上传，等它传完再备份")
+            setStatus("\(Self.time()) 暂停中，没有备份（\(reason)）")
             completion?(true)
             return
         }
         counts = (0, 0, 0)
         lastError = ""
+        failed = [] // 这一轮会把上次没传上去的再传一遍
         job = Task.detached(priority: .utility) { [self] in
             await run(reason: reason)
             lock.withLock { job = nil }
-            UploadGate.leave()
             completion?(!Task.isCancelled)
         }
         lock.unlock()
+        publishFailures()
+    }
+
+    // MARK: 统计：「手机上 / 已备份 / 还剩」
+
+    // 全部照片（不含隐藏的），新的在前；备份和统计用同一个
+    static func allPhotos() -> PHFetchResult<PHAsset> {
+        let all = PHFetchOptions()
+        all.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        return PHAsset.fetchAssets(with: all)
+    }
+
+    // target 和备份时记录的一样："all"、"hidden"、"album:相册名"。照片或视频有一份传过就算。
+    // 只算 App 自己核对过的：系统后台扩展刚传的，下次备份核对过后才算进来。
+    func tally(target: String, assets: PHFetchResult<PHAsset>) -> Tally {
+        let prefix = target + "|"
+        let ids: Set<String> = lock.withLock {
+            Set(done.compactMap { key -> String? in
+                guard key.hasPrefix(prefix) else { return nil }
+                let rest = key.dropFirst(prefix.count)
+                return rest.lastIndex(of: "|").map { String(rest[..<$0]) }
+            })
+        }
+        var n = 0
+        assets.enumerateObjects { asset, _, _ in
+            if ids.contains(asset.localIdentifier) { n += 1 }
+        }
+        return Tally(done: n, total: assets.count)
+    }
+
+    // MARK: 失败
+
+    private var failed: [Failure] = []
+
+    private func fail(_ name: String, _ reason: String) {
+        lastError = "\(name)：\(reason)"
+        lock.withLock {
+            failed.removeAll { $0.name == name }
+            failed.append(Failure(name: name, reason: reason))
+        }
+        publishFailures()
+    }
+
+    private func publishFailures() {
+        let list = lock.withLock { failed }
+        if let data = try? JSONEncoder().encode(list) { defaults.set(data, forKey: Keys.failures) }
+        DispatchQueue.main.async { self.failures = list }
     }
 
     // MARK: 备份
@@ -142,6 +249,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         await backupData()
         await backupPhotos()
         saveDone(force: true)
+        if !Task.isCancelled {
+            let now = Date()
+            defaults.set(now, forKey: Keys.lastFinished)
+            await MainActor.run { lastFinished = now }
+        }
         let head = Task.isCancelled ? "备份中断" : "备份完成"
         setStatus("\(Self.time()) \(head)：新传 \(counts.uploaded)，已有跳过 \(counts.skipped)，失败 \(counts.failed)"
             + (lastError.isEmpty ? "" : "\n最后一个错误：\(lastError)")
@@ -156,23 +268,12 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     // 照片：隐藏相册 → 隐藏相册（总是最先传）；全部照片 → 相册；勾选的相册 → 相册/名字。
     private func backupPhotos() async {
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
-            lastError = "没有相册权限"
+            fail("照片", "没有照片权限")
             return
         }
-        var targets: [(key: String, label: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?)] = []
-        let albums = PhoneAlbum.all()
-        for album in albums where album.hidden {
-            targets.append(("hidden", album.title, album.assets(), album))
-        }
-        let all = PHFetchOptions()
-        all.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)] // 新的先传
-        targets.append(("all", "全部照片", PHAsset.fetchAssets(with: all), nil))
-        let selected = Set(defaults.stringArray(forKey: "selectedAlbums") ?? [])
-        for album in albums where !album.hidden && selected.contains(album.id) {
-            targets.append(("album:\(album.title)", album.title, album.assets(), album))
-        }
-        for target in targets {
+        for target in photoTargets() {
             let assets = target.assets
+            await reconcile(target: target.key, assets: assets, album: target.album)
             for i in 0..<assets.count {
                 if Task.isCancelled { return }
                 if i % 20 == 0 {
@@ -186,12 +287,75 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                         try await upload(resource, key: key, album: target.album)
                     } catch {
                         counts.failed += 1
-                        lastError = "\(resource.originalFilename)：\(error.localizedDescription)"
+                        fail(resource.originalFilename, error.localizedDescription)
                     }
                 }
             }
         }
     }
+
+    typealias PhotoTarget = (key: String, label: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?)
+
+    // 要备份的：隐藏相册（总是最先传）、全部照片（新的先传）、「备份哪些照片」里打开的相册
+    private func photoTargets() -> [PhotoTarget] {
+        var targets: [PhotoTarget] = []
+        let albums = PhoneAlbum.all()
+        for album in albums where album.hidden && Self.flag(Self.backupHidden) {
+            targets.append(("hidden", album.title, album.assets(), album))
+        }
+        targets.append(("all", "全部照片", Self.allPhotos(), nil))
+        let selected = Set(defaults.stringArray(forKey: Self.selectedAlbums) ?? [])
+        for album in albums where !album.hidden && selected.contains(album.id) {
+            targets.append(("album:\(album.title)", album.title, album.assets(), album))
+        }
+        return targets
+    }
+
+    // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
+    // （GET /api/ingest/names），在手机上比对，对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
+    func reconcile(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+        guard let url = URL(string: server + "/api/ingest/names") else { return }
+        var req = URLRequest(url: url)
+        if let album {
+            if album.hidden {
+                req.setValue("hidden", forHTTPHeaderField: "X-Xiaoju-Album")
+            } else {
+                req.setValue(encodedName(album.title), forHTTPHeaderField: "X-Xiaoju-Album-Name")
+            }
+        }
+        guard let reply = try? await URLSession.shared.data(for: req),
+              (reply.1 as? HTTPURLResponse)?.statusCode == 200 else { return }
+        let known = Set(String(decoding: reply.0, as: UTF8.self).split(separator: "\n").map(String.init))
+        guard !known.isEmpty else { return }
+        var found = 0
+        assets.enumerateObjects { asset, _, _ in
+            for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
+                let key = "\(target)|\(asset.localIdentifier)|\(resource.type.rawValue)"
+                guard let size = resource.value(forKey: "fileSize") as? Int64, size > 0,
+                      known.contains(Self.sha("\(resource.originalFilename)|\(size)")),
+                      !self.lock.withLock({ self.done.contains(key) }) else { continue }
+                self.markDone(key)
+                found += 1
+            }
+        }
+        if found > 0 { saveDone(force: true) }
+    }
+
+    // 「备份」页打开时：把每个要备份的相册都和云盘比对一遍（同一时间只跑一个）
+    func reconcileAll() async {
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              lock.withLock({ () -> Bool in
+                  if reconciling { return false }
+                  reconciling = true
+                  return true
+              }) else { return }
+        defer { lock.withLock { reconciling = false } }
+        for target in photoTargets() {
+            await reconcile(target: target.key, assets: target.assets, album: target.album)
+        }
+    }
+
+    private var reconciling = false
 
     private func headers(_ req: inout URLRequest, name: String, album: PhoneAlbum?) {
         req.setValue(encodedName(name), forHTTPHeaderField: "X-File-Name")
@@ -257,6 +421,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         headers(&req, name: resource.originalFilename, album: album)
         let task = session.uploadTask(with: req, fromFile: file)
         task.taskDescription = key + "\t" + file.path
+        lock.withLock { lastNames[key] = resource.originalFilename }
         track(key, name: resource.originalFilename, sent: 0, total: size)
         task.resume()
         counts.uploaded += 1
@@ -274,13 +439,15 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
         untrack(parts[0])
+        defer { lock.withLock { lastNames[parts[0]] = nil } }
         if parts.count == 2 { try? FileManager.default.removeItem(atPath: parts[1]) }
         let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         if error == nil, (200..<300).contains(code), let key = parts.first {
             markDone(key)
             saveDone(force: false)
         } else {
-            lastError = "后台上传失败：\(error?.localizedDescription ?? "HTTP \(code)")"
+            let name = lock.withLock { lastNames[parts[0]] } ?? "照片"
+            fail(name, error?.localizedDescription ?? "服务器返回 \(code)")
         }
     }
 
@@ -306,6 +473,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     // MARK: 进度：每个正在传的文件一条，界面上每半秒刷新一次
 
     private var meta: [String: (name: String, total: Int64)] = [:]
+    private var lastNames: [String: String] = [:] // 交给后台的文件名，失败时显示
     private var sentBytes: [String: Int64] = [:]
     private var lastPublish = Date.distantPast
 
@@ -446,7 +614,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         } catch {
             // 断了：留着这个任务，下次备份时问服务端收到多少接着传
             untrack(job.key)
-            lastError = "\(job.name)：\(error.localizedDescription)（下次接着传）"
+            fail(job.name, "\(error.localizedDescription)（下次接着传）")
             setStatus("\(Self.time()) \(lastError)")
         }
     }
@@ -470,7 +638,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 saveJob(nil, key: job.key) // 文件被系统清掉了：下次从头导出
                 continue
             }
-            do { _ = try await startBig(job) } catch { lastError = "\(job.name)：\(error.localizedDescription)" }
+            do { _ = try await startBig(job) } catch { fail(job.name, error.localizedDescription) }
         }
     }
 
@@ -496,23 +664,24 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     private func backupData() async {
         let day = Self.day()
-        if CNContactStore.authorizationStatus(for: .contacts) == .notDetermined {
+        let contacts = Self.flag(Self.backupContacts), events = Self.flag(Self.backupCalendar), todos = Self.flag(Self.backupReminders)
+        if contacts && CNContactStore.authorizationStatus(for: .contacts) == .notDetermined {
             _ = try? await CNContactStore().requestAccess(for: .contacts)
         }
-        if CNContactStore.authorizationStatus(for: .contacts) == .authorized, let vcf = contactsVCard() {
+        if contacts && CNContactStore.authorizationStatus(for: .contacts) == .authorized, let vcf = contactsVCard() {
             await uploadData(vcf, name: "通讯录 \(day).vcf", folder: "通讯录")
         }
         let store = EKEventStore()
-        if EKEventStore.authorizationStatus(for: .event) == .notDetermined {
+        if events && EKEventStore.authorizationStatus(for: .event) == .notDetermined {
             _ = try? await store.requestFullAccessToEvents()
         }
-        if EKEventStore.authorizationStatus(for: .event) == .fullAccess {
+        if events && EKEventStore.authorizationStatus(for: .event) == .fullAccess {
             await uploadData(Data(calendarICS(store).utf8), name: "日历 \(day).ics", folder: "日历")
         }
-        if EKEventStore.authorizationStatus(for: .reminder) == .notDetermined {
+        if todos && EKEventStore.authorizationStatus(for: .reminder) == .notDetermined {
             _ = try? await store.requestFullAccessToReminders()
         }
-        if EKEventStore.authorizationStatus(for: .reminder) == .fullAccess {
+        if todos && EKEventStore.authorizationStatus(for: .reminder) == .fullAccess {
             await uploadData(Data(await remindersICS(store).utf8), name: "提醒事项 \(day).ics", folder: "提醒事项")
         }
     }
@@ -533,11 +702,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 counts.skipped += 1
             } else {
                 counts.failed += 1
-                lastError = "\(name)：HTTP \(code) \(String(decoding: body, as: UTF8.self))"
+                fail(name, "服务器返回 \(code) \(String(decoding: body, as: UTF8.self))")
             }
         } catch {
             counts.failed += 1
-            lastError = "\(name)：\(error.localizedDescription)"
+            fail(name, error.localizedDescription)
         }
     }
 
