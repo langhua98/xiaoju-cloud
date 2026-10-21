@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -68,12 +69,12 @@ func TestIngestName(t *testing.T) {
 
 // 集成测试：不需要认证就能往“相册”里传文件；已传过的跳过；同名不同内容改名；但不能用来看文件。
 func TestIngest(t *testing.T) {
-	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
-	if url == "" {
+	dbURL := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if dbURL == "" {
 		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, url)
+	pool, err := db.Connect(ctx, dbURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,6 +453,51 @@ func TestIngest(t *testing.T) {
 	// 通讯录、日历这类放进“手机数据”下面的子文件夹
 	if code, out := call("POST", "/api/ingest", "BEGIN:VCARD\nEND:VCARD\n", "X-File-Name", "contacts.vcf", "X-Xiaoju-Album", "data", "X-Xiaoju-Album-Name", "%E9%80%9A%E8%AE%AF%E5%BD%95"); code != 201 || out["result"] != "uploaded" {
 		t.Fatalf("ingest phone data: %d %v", code, out)
+	}
+	// 「文件」App 的文件夹同步：“手机数据”下面可以多层（保留目录结构）；“相册”下面只有一层
+	nested := url.PathEscape("文件/下载/报告")
+	if code, out := call("POST", "/api/ingest", "hello", "X-File-Name", "a.txt", "X-Xiaoju-Album", "data", "X-Xiaoju-Album-Name", nested); code != 201 || out["result"] != "uploaded" {
+		t.Fatalf("ingest nested phone data: %d %v", code, out)
+	}
+	if code, out := call("GET", "/api/ingest/exists", "", "X-File-Name", "a.txt", "X-File-Size", "5", "X-Xiaoju-Album", "data", "X-Xiaoju-Album-Name", nested); code != 200 || out["result"] != "exists" {
+		t.Fatalf("exists in nested folder: %d %v", code, out)
+	}
+	if code, _ := call("POST", "/api/ingest", "x", "X-File-Name", "b.txt", "X-Xiaoju-Album", "data", "X-Xiaoju-Album-Name", url.PathEscape("a/../b")); code != 400 {
+		t.Fatalf("'..' segment must be rejected: %d", code)
+	}
+
+	// 恢复到手机：网页（已登录）换恢复凭证，App 拿它列出、下载
+	if code, _ := call("GET", "/api/restore/list?folder="+url.QueryEscape(PhoneDataFolder), "", "X-Xiaoju-Restore", "r1.9999999999.bad"); code != 401 {
+		t.Fatalf("forged restore token must be rejected: %d", code)
+	}
+	code, grant := call("POST", "/api/restore/grant", "{}", tokenH...)
+	if code != 200 || grant["token"] == nil {
+		t.Fatalf("restore grant: %d %v", code, grant)
+	}
+	restoreH := []string{"X-Xiaoju-Restore", grant["token"].(string)}
+	if code, _ := call("GET", "/api/restore/list?folder=other", "", restoreH...); code != 400 {
+		t.Fatalf("only the album and phone data folders can be restored: %d", code)
+	}
+	code, list := call("GET", "/api/restore/list?folder="+url.QueryEscape(PhoneDataFolder), "", restoreH...)
+	var fileID string
+	for _, it := range list["items"].([]any) {
+		if m := it.(map[string]any); m["path"] == PhoneDataFolder+"/文件/下载/报告/a.txt" {
+			fileID = m["id"].(string)
+		}
+	}
+	if code != 200 || fileID == "" {
+		t.Fatalf("restore list: %d %v", code, list)
+	}
+	dl, _ := http.NewRequest("GET", ts.URL+"/api/restore/files/"+fileID, nil)
+	dl.Header.Set(restoreH[0], restoreH[1])
+	dlResp, err := http.DefaultClient.Do(dl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = io.ReadAll(dlResp.Body)
+	dlResp.Body.Close()
+	if dlResp.StatusCode != 200 || string(got) != "hello" {
+		t.Fatalf("restore download: %d %q", dlResp.StatusCode, got)
 	}
 }
 

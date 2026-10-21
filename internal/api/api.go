@@ -127,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	files("DELETE /api/auth/grid", s.gridDisable)
 	files("POST /api/auth/grid/challenge", s.gridChallenge)
 	files("POST /api/auth/grid/verify", s.gridVerify)
+	files("POST /api/restore/grant", s.restoreGrant)
 
 	ops("GET /api/backup/status", s.backupStatus)
 	ops("GET /api/stats", s.stats)
@@ -154,6 +155,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/ingest/names", s.limited(s.ingestAskLimit, s.ingestNames))
 	api.HandleFunc("POST /api/ingest/plan", s.limited(s.ingestAskLimit, s.tracked(s.ingestPlan)))
 	// 分享链接：不需要认证，见 shares.go
+	// 恢复到手机（App 用网页签发的恢复凭证），见 restore.go
+	api.HandleFunc("GET /api/restore/list", s.requireRestore(s.restoreList))
+	api.HandleFunc("GET /api/restore/files/{id}", s.requireRestore(s.restoreDownload))
+
 	api.HandleFunc("GET /api/s/{token}", s.limited(s.shareLimit, s.openShare))
 	api.HandleFunc("POST /api/s/{token}/unlock", s.limited(s.shareUnlockLimit, s.unlockShare))
 
