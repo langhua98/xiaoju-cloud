@@ -41,6 +41,7 @@
     <button type="button" role="menuitem" data-act="shares" data-icon="link">分享的链接</button>
     <button type="button" role="menuitem" data-act="security" data-icon="shield">登录安全</button>
     <button type="button" role="menuitem" data-act="shortcuts" data-icon="bolt">快捷指令批量备份</button>
+    <button type="button" role="menuitem" data-act="restore" data-icon="download">恢复到手机</button>
     <button type="button" role="menuitem" data-act="install" data-icon="phone" id="menu-install">添加到主屏幕</button>
     <hr>
     <button type="button" role="menuitem" data-act="logout" data-icon="logout" class="danger">退出登录</button>
@@ -209,6 +210,14 @@
     <h2>快捷指令批量备份</h2>
     <p class="hint">用 iPhone「快捷指令」把照片、视频传进网盘，传过的自动跳过、断了能接着传：「备份照片」一次传几百上千张（隐藏的照片、整个相册），「自动备份新照片」每天自动传新拍的，「分享到小桔云盘」在分享菜单里传几张。</p>
     <div id="shortcut-box"></div>
+    <div class="dialog-actions sec-footer"><button type="button" class="ghost" data-close>关闭</button></div>
+  </dialog>
+
+  <!-- 恢复到手机：给小桔备份 App 一个 24 小时有效的恢复凭证 -->
+  <dialog id="restore-dlg">
+    <h2>恢复到手机</h2>
+    <p class="hint">换新手机或误删后，用小桔备份 App 把网盘里的「相册」「隐藏相册」存回照片 App，「手机数据」里的通讯录导回通讯录。先确认是你本人，再跳到 App（凭证 24 小时有效，只能下载这三个文件夹）。请在 iPhone 上、装了小桔备份 App 的手机里打开。</p>
+    <div id="restore-body"></div>
     <div class="dialog-actions sec-footer"><button type="button" class="ghost" data-close>关闭</button></div>
   </dialog>
 

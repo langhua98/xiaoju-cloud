@@ -1136,6 +1136,48 @@ function reverifyFace(body) {
   });
 }
 
+// ---------- 恢复到手机 ----------
+// 网页已登录：重新刷脸（注册了刷脸设备时）、开了格子口令再答一道题，换一个恢复凭证，
+// 跳到 xiaojubackup://restore 交给小桔备份 App（App 自己不能刷脸登录）。
+
+async function openRestore() {
+  const dlg = $("#restore-dlg");
+  const body = $("#restore-body");
+  body.replaceChildren(mk("p", { className: "hint", textContent: "正在准备…" }));
+  if (!dlg.open) dlg.showModal();
+  let status = { passkey_required: false, enabled: false };
+  try { status = await request("GET", "/api/auth/grid"); } catch { /* 没有格子口令功能 */ }
+  let ticket = "";
+  if (status.passkey_required) {
+    ticket = await reverifyFace(body);
+    if (!ticket) { closeDialog(dlg); return; }
+  }
+  const done = (res) => {
+    const link = `xiaojubackup://restore?server=${encodeURIComponent(state.api)}&token=${encodeURIComponent(res.token)}`;
+    body.replaceChildren(
+      mk("p", { className: "hint", textContent: "已确认。点下面的按钮打开小桔备份 App，在「恢复」页选要恢复的内容。" }),
+      mk("div", { className: "dialog-actions" }, mk("a", { className: "button primary", href: link, textContent: "打开小桔备份 App" })));
+  };
+  const onError = (err) => {
+    if (err.code === "passkey_required") { toast("刷脸验证已超时，请重新操作"); closeDialog(dlg); return true; }
+    if (err.status === 401) { fail(err); return true; }
+    return false;
+  };
+  if (!status.enabled) {
+    try { done(await request("POST", "/api/restore/grant", { ticket })); } catch (err) { if (!onError(err)) fail(err); }
+    return;
+  }
+  const quiz = mk("div");
+  body.replaceChildren(mk("p", { className: "hint", textContent: "再答对一道格子题。" }), quiz);
+  mountGridQuiz(quiz, {
+    label: "确认恢复",
+    timed: true,
+    load: () => request("POST", "/api/auth/grid/challenge"),
+    async submit(payload) { done(await request("POST", "/api/restore/grant", { ticket, ...payload })); },
+    onError,
+  });
+}
+
 // ---------- 安全设置：快捷指令批量上传 ----------
 // 上传接口只进不出（不需要密钥，只能往“相册”里添加），快捷指令装上就能用。
 
@@ -2846,6 +2888,7 @@ const ACTIONS = {
   install: () => installApp(),
   security: () => openSecurity(),
   shortcuts: () => openShortcuts(),
+  restore: () => openRestore(),
   logout: () => logout(),
 };
 menu.addEventListener("click", (e) => {
