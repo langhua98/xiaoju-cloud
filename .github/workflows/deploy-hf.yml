@@ -81,6 +81,7 @@ jobs:
           TG_EXTRA_BOT_TOKENS: ${{ secrets.TG_EXTRA_BOT_TOKENS }}
           TG_BACKUP_EXTRA_BOT_TOKENS: ${{ secrets.TG_BACKUP_EXTRA_BOT_TOKENS }}
           TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
+          TG_AGENT_BOTS: ${{ vars.TG_AGENT_BOTS }}
           DEPLOY_MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes || '60' }}
           XIAOJU_PART_SIZE: ${{ vars.XIAOJU_PART_SIZE }}
           XIAOJU_CORS_ORIGINS: ${{ vars.XIAOJU_CORS_ORIGINS }}

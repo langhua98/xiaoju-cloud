@@ -40,9 +40,11 @@ VARIABLE_KEYS = [
     "XIAOJU_WEBAUTHN_ORIGINS",
     "XIAOJU_PASSKEY_RESET",
     "XIAOJU_TIMEZONE",
+    # 可选：TG_EXTRA_BOT_TOKENS 里哪几个 Bot 只给 AI agent 接口用（Bot 的数字 ID，不是令牌）
+    "TG_AGENT_BOTS",
 ]
 # 这些变量在 GitHub 里删掉后，也要从 Space 上删掉（否则会一直生效）
-REMOVE_WHEN_UNSET = {"XIAOJU_PASSKEY_RESET"}
+REMOVE_WHEN_UNSET = {"XIAOJU_PASSKEY_RESET", "TG_AGENT_BOTS"}
 
 DONE_STAGES = {"RUNNING", "RUNTIME_ERROR", "BUILD_ERROR", "CONFIG_ERROR", "NO_APP_FILE", "PAUSED", "STOPPED"}
 
@@ -167,6 +169,8 @@ def main():
             log(f"secret not provided: {key}")
     for key in VARIABLE_KEYS:
         value = os.environ.get(key, "").strip()
+        if key == "TG_AGENT_BOTS":  # 误填了整个令牌时只留冒号前的 ID，令牌不能进公开的变量和日志
+            value = ",".join(f.split(":")[0] for f in value.replace(",", " ").split())
         if value:
             api.add_space_variable(repo_id, key, value)
             log(f"variable set: {key}={value}")

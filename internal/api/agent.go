@@ -21,6 +21,7 @@ import (
 
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
+	"github.com/langhua98/xiaoju-cloud/internal/storage"
 )
 
 // AI agent 管理网盘（设计见 README「AI 助手」一节）。
@@ -46,7 +47,7 @@ var allScopes = []string{ScopeRead, ScopeDownload, ScopeUpload, ScopeOrganize, S
 // agentPresets 是网页上的预设档位。
 var agentPresets = map[string][]string{
 	"readonly": {ScopeRead, ScopeOps},
-	"upload":   {ScopeUpload},
+	"upload":   {ScopeRead, ScopeDownload, ScopeUpload},
 	"organize": {ScopeRead, ScopeDownload, ScopeUpload, ScopeOrganize},
 	"admin":    allScopes,
 }
@@ -255,7 +256,7 @@ func (s *Server) requireAgent(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		s.touchAgent(ctx, a)
-		next(w, r.WithContext(context.WithValue(ctx, agentCtxKey{}, a)))
+		next(w, r.WithContext(storage.WithLane(context.WithValue(ctx, agentCtxKey{}, a), storage.LaneAgent)))
 	}
 }
 
@@ -564,4 +565,11 @@ func hostOnly(addr string) string {
 		return h
 	}
 	return addr
+}
+
+// agentLane 把请求标成 AI 的（存储驱动用 AI 专用的 Bot，见 telegram.Pool）。上传链接用。
+func agentLane(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r.WithContext(storage.WithLane(r.Context(), storage.LaneAgent)))
+	}
 }

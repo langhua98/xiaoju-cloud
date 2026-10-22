@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -290,7 +291,7 @@ func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (stora
 	if err != nil {
 		return nil, nil, err
 	}
-	return withExtraBots(ctx, cfg, d, t.ChannelID, t.SessionFile, t.ExtraBotTokens, log), done, nil
+	return withExtraBots(ctx, cfg, d, t.ChannelID, t.SessionFile, t.ExtraBotTokens, t.AgentBots, log), done, nil
 }
 
 // newBackupDriver 用另一个账号的 Bot 连接备份频道；未配置备份时返回 nil。
@@ -315,17 +316,28 @@ func newBackupDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 		return nil, nil, fmt.Errorf("backup: %w", err)
 	}
 	log.Info("backup channel connected")
-	return withExtraBots(ctx, cfg, d, t.BackupChannelID, t.BackupSessionFile, t.BackupExtraBotTokens, blog), done, nil
+	return withExtraBots(ctx, cfg, d, t.BackupChannelID, t.BackupSessionFile, t.BackupExtraBotTokens, nil, blog), done, nil
 }
 
 // withExtraBots 让额外的 Bot 和主 Bot 轮流用（见 telegram.Pool）；没配置时原样返回 d。
 // 额外的 Bot 在后台一个个连接，能登录、能访问频道的才加进来；连不上、不是频道管理员的只记日志，不影响服务。
-func withExtraBots(ctx context.Context, cfg *config.Config, d *telegram.Driver, channelID int64, sessionFile string, tokens []string, log *slog.Logger) storage.Driver {
+// agentIDs 里的 Bot 只给 AI agent 接口用。
+func withExtraBots(ctx context.Context, cfg *config.Config, d *telegram.Driver, channelID int64, sessionFile string, tokens, agentIDs []string, log *slog.Logger) storage.Driver {
 	if len(tokens) == 0 {
 		return d
 	}
 	pool := telegram.NewPool(d, log)
 	t := cfg.Telegram
+	forAgent := map[string]bool{}
+	for _, id := range agentIDs {
+		forAgent[id] = true
+	}
+	for _, token := range tokens {
+		delete(forAgent, botID(token))
+	}
+	for id := range forAgent {
+		log.Warn("TG_AGENT_BOTS names a bot that is not in TG_EXTRA_BOT_TOKENS; ignored", "bot", id)
+	}
 	go func() {
 		seen := map[string]bool{botID(t.BotToken): true, botID(t.BackupBotToken): true}
 		for _, token := range tokens {
@@ -343,8 +355,13 @@ func withExtraBots(ctx context.Context, cfg *config.Config, d *telegram.Driver, 
 			if err == nil {
 				var extra *telegram.Driver
 				if extra, err = telegram.New(ctx, api, channelID); err == nil {
-					pool.Add(extra)
-					blog.Info("extra bot added", "bots", pool.Bots())
+					if slices.Contains(agentIDs, id) {
+						pool.AddAgent(extra)
+						blog.Info("extra bot added for the AI agent API only", "bots", pool.Bots())
+					} else {
+						pool.Add(extra)
+						blog.Info("extra bot added", "bots", pool.Bots())
+					}
 					continue
 				}
 			}

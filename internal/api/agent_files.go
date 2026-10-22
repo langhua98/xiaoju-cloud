@@ -484,7 +484,7 @@ func (s *Server) agentLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	exp := time.Now().Add(agentLinkTTL).Unix()
-	url := fmt.Sprintf("%s/dl/%s?exp=%d&sig=%s", publicBase(r), f.ID, exp, s.linkSig(f.ID, exp))
+	url := fmt.Sprintf("%s/dl/%s?exp=%d&sig=%s&via=ai", publicBase(r), f.ID, exp, s.linkSig(f.ID, exp))
 	s.audit(r.Context(), agentFrom(r), "link", []*meta.File{f}, []string{p}, nil, "ok", "", f.Size)
 	writeJSON(w, http.StatusOK, map[string]any{"url": url, "expires_at": time.Unix(exp, 0).UTC()})
 }

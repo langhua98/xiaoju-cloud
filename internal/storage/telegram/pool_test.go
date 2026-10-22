@@ -209,16 +209,72 @@ func TestPoolPicksLeastBusy(t *testing.T) {
 	p := newPool(&fakeBot{name: "main"}, slog.New(slog.DiscardHandler))
 	p.add(&fakeBot{name: "a"})
 	p.add(&fakeBot{name: "b"})
-	k0, _, _ := p.pick()
-	k1, _, _ := p.pick()
+	k0, _, _ := p.pick(storage.LaneDefault)
+	k1, _, _ := p.pick(storage.LaneDefault)
 	p.done(k0)
 	// k0 闲下来了，k1 还忙：下一个要么是没活的第三个，要么是 k0，绝不是 k1
-	k2, _, _ := p.pick()
+	k2, _, _ := p.pick(storage.LaneDefault)
 	if k2 == k1 || k0 == k1 {
 		t.Fatalf("picked %d, %d, %d", k0, k1, k2)
 	}
-	k3, _, _ := p.pick()
+	k3, _, _ := p.pick(storage.LaneDefault)
 	if k3 == k1 || k3 == k2 {
 		t.Fatalf("picked a busy bot: %d after %d, %d", k3, k1, k2)
+	}
+}
+
+// AI 接口专用的 Bot：AI 的请求只用它（被限速就等它），别的请求不碰它；它坏了 AI 临时用普通的 Bot。
+func TestPoolAgentLane(t *testing.T) {
+	doc := newFakeDoc(4 * chunkSize)
+	doc.delay = 0
+	main, extra, ai := &fakeBot{name: "main", doc: doc}, &fakeBot{name: "extra", doc: doc}, &fakeBot{name: "ai", doc: doc}
+	p := newPool(main, slog.New(slog.DiscardHandler))
+	p.add(extra)
+	p.addLane(ai, true)
+	agentCtx := storage.WithLane(context.Background(), storage.LaneAgent)
+
+	for range 6 {
+		if _, err := p.Put(context.Background(), storage.PutRequest{Body: bytes.NewReader([]byte("abc")), Size: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 4 {
+		if _, err := p.Put(agentCtx, storage.PutRequest{Body: bytes.NewReader([]byte("abc")), Size: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ai.puts != 4 || main.puts+extra.puts != 6 {
+		t.Fatalf("puts: main %d extra %d ai %d", main.puts, extra.puts, ai.puts)
+	}
+
+	// 专用的被限速：AI 的请求不去占普通的 Bot，而是报“都在歇”（等它）
+	p.flood(2, time.Hour)
+	if k, _, wait := p.pick(storage.LaneAgent); k != -1 || wait < 59*time.Minute {
+		t.Fatalf("agent lane should wait for its own bot: k=%d wait=%s", k, wait)
+	}
+	p.mu.Lock()
+	p.flooded[2] = time.Time{}
+	p.mu.Unlock()
+
+	// 专用的坏了：AI 临时用普通的
+	ai.mu.Lock()
+	ai.broken = true
+	ai.mu.Unlock()
+	rc, err := p.ReadRange(agentCtx, storage.Location{MessageID: 1}, 0, chunkSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(rc); err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	before := main.chunks + extra.chunks
+	rc, _ = p.ReadRange(agentCtx, storage.Location{MessageID: 1}, chunkSize, chunkSize)
+	if _, err := io.ReadAll(rc); err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	if main.chunks+extra.chunks <= before {
+		t.Fatal("with its bot benched, the agent lane should use the normal bots")
 	}
 }

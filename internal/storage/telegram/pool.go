@@ -22,6 +22,10 @@ import (
 // 这一次改用主 Bot 再做，出错的 Bot 停用一段时间，所以额外的 Bot 配错了也不影响使用。
 // 被限速（FLOOD_WAIT）不算出错：那个 Bot（主 Bot 也一样）歇到 Telegram 说的时间，活马上交给别的 Bot；
 // 全都在歇时等最早歇完的那个。
+//
+// 可以把几个额外的 Bot 划给 AI agent 接口专用（TG_AGENT_BOTS）：标了 storage.LaneAgent 的请求只用这些 Bot，
+// 被限速时等它们歇完，不去占手机备份、网页用的 Bot；其他请求不碰这些 Bot。专用的 Bot 都出错停用（或还没连上）时，
+// AI 的请求临时用普通的 Bot，不至于用不了。
 type Pool struct {
 	log *slog.Logger
 
@@ -30,6 +34,7 @@ type Pool struct {
 	benched []time.Time // 每个 Bot 出错停用到什么时候（主 Bot 从不停用）
 	flooded []time.Time // 每个 Bot 被限速歇到什么时候
 	busy    []int       // 每个 Bot 手上正在做的活
+	agent   []bool      // 每个 Bot 是不是 AI 接口专用
 	next    int
 }
 
@@ -67,9 +72,15 @@ func newPool(primary bot, log *slog.Logger) *Pool {
 // Add 加入一个额外的 Bot（可以在服务运行中加入）。
 func (p *Pool) Add(d *Driver) { p.add(d) }
 
-func (p *Pool) add(d bot) {
+// AddAgent 加入一个 AI 接口专用的 Bot（见 Pool 的说明）。
+func (p *Pool) AddAgent(d *Driver) { p.addLane(d, true) }
+
+func (p *Pool) add(d bot) { p.addLane(d, false) }
+
+func (p *Pool) addLane(d bot, agent bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.agent = append(p.agent, agent)
 	p.drivers = append(p.drivers, d)
 	p.benched = append(p.benched, time.Time{})
 	p.flooded = append(p.flooded, time.Time{})
@@ -93,14 +104,27 @@ func (p *Pool) primary() bot {
 
 // pick 选一个能用的 Bot 并记上它多了一份活（用完要 done）：出错停用中、被限速歇着的跳过，
 // 剩下的挑手上活最少的，一样少的从 next 开始轮流。全都在歇时返回 k=-1 和最早歇完还要等多久。
-func (p *Pool) pick() (k int, b bot, wait time.Duration) {
+// AI 的请求（lane）只在专用的 Bot 里挑，专用的都停用了才在普通的里挑；其他请求只在普通的里挑。
+func (p *Pool) pick(lane storage.Lane) (k int, b bot, wait time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n := len(p.drivers)
 	now := time.Now()
+	agent := false
+	if lane == storage.LaneAgent {
+		for j := range n {
+			if p.agent[j] && !now.Before(p.benched[j]) {
+				agent = true // 有能用的专用 Bot（哪怕在歇着）：只等它们
+				break
+			}
+		}
+	}
 	k = -1
 	for i := range n {
 		j := (p.next + i) % n
+		if p.agent[j] != agent {
+			continue
+		}
 		if j != 0 && now.Before(p.benched[j]) {
 			continue
 		}
@@ -149,7 +173,7 @@ func (p *Pool) flood(k int, d time.Duration) {
 func (p *Pool) do(ctx context.Context, handoff time.Duration, fn func(context.Context, bot) error, retry func() bool) error {
 	hctx := withHandoff(ctx, handoff)
 	for try := 0; ; try++ {
-		k, d, wait := p.pick()
+		k, d, wait := p.pick(storage.LaneOf(ctx))
 		if k < 0 {
 			if wait > maxFloodWait {
 				return fmt.Errorf("telegram: every bot is flood-limited for at least %s", wait.Round(time.Second))
@@ -205,7 +229,7 @@ func (p *Pool) Put(ctx context.Context, req storage.PutRequest) (storage.Locatio
 }
 
 func (p *Pool) ReadRange(ctx context.Context, loc storage.Location, offset, length int64) (io.ReadCloser, error) {
-	if p.Bots() == 1 {
+	if p.Bots() == 1 { // 只有主 Bot（专用的 Bot 一定是额外加的）
 		return p.primary().ReadRange(ctx, loc, offset, length)
 	}
 	return newRangeReader(ctx, p.getChunk, loc.MessageID, offset, length), nil

@@ -23,6 +23,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/auth"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
+	"github.com/langhua98/xiaoju-cloud/internal/storage"
 )
 
 // downloadLinkTTL 是签名下载链接的有效期。
@@ -182,8 +183,8 @@ func (s *Server) Handler() http.Handler {
 	// 上传链接（给 AI agent 用）：不需要认证，只能往链接的文件夹里传，见 drops.go
 	mux.HandleFunc("GET /u/{token}", s.limited(s.dropAskLimit, s.dropPage))
 	mux.HandleFunc("GET /u/{token}/{$}", s.limited(s.dropAskLimit, s.dropPage))
-	mux.HandleFunc("POST /u/{token}", s.limited(s.dropLimit, s.tracked(s.dropPost)))
-	mux.HandleFunc("PUT /u/{token}/{name...}", s.limited(s.dropLimit, s.tracked(s.dropPut)))
+	mux.HandleFunc("POST /u/{token}", s.limited(s.dropLimit, s.tracked(agentLane(s.dropPost))))
+	mux.HandleFunc("PUT /u/{token}/{name...}", s.limited(s.dropLimit, s.tracked(agentLane(s.dropPut))))
 	mux.HandleFunc("OPTIONS /u/{token}", s.dropPreflight)
 	mux.HandleFunc("OPTIONS /u/{token}/{name...}", s.dropPreflight)
 	return mux
@@ -443,7 +444,7 @@ func (s *Server) signedPreview(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
-// GET /dl/{id}?exp=..&sig=..[&inline=1]
+// GET /dl/{id}?exp=..&sig=..[&inline=1][&via=ai]（via=ai：AI agent 要的链接，走 AI 专用的 Bot）
 func (s *Server) signedDownload(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -455,6 +456,9 @@ func (s *Server) signedDownload(w http.ResponseWriter, r *http.Request) {
 		!hmac.Equal([]byte(q.Get("sig")), []byte(s.linkSig(id, exp))) {
 		writeError(w, http.StatusForbidden, "invalid or expired link")
 		return
+	}
+	if q.Get("via") == "ai" {
+		r = r.WithContext(storage.WithLane(r.Context(), storage.LaneAgent))
 	}
 	s.serveContent(w, r, id)
 }
