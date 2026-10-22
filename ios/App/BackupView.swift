@@ -244,6 +244,8 @@ struct TransferRow: View {
 
     // 「12/490 MB」；小于 1MB 的显示百分比
     static func progressText(_ t: AutoBackup.Transfer) -> String {
+        // 手机这边发完了，服务端还要把最后一段存进 Telegram，大文件要等一两分钟才算传完
+        if t.total > 0 && t.sent >= t.total { return "发完了，服务器保存中…" }
         if t.total < 1 << 20 { return "\(t.sent * 100 / max(t.total, 1))%" }
         return "\(t.sent >> 20)/\(t.total >> 20) MB"
     }
