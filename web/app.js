@@ -3242,10 +3242,20 @@ $("#drop-copy-prompt").addEventListener("click", async () => {
 // 发令牌、批准危险操作和恢复到手机一样：当场刷脸（注册了刷脸设备时），开了格子口令再答一道题。
 
 const AGENT_PRESETS = {
-  readonly: { label: "只读", desc: "列目录、搜索、看缩略图和预览，不能下载原文件、不能改动" },
+  readonly: { label: "只读", desc: "列目录、搜索、看缩略图、看备份状态，不能下载原文件、不能改动" },
   upload: { label: "只读 + 下载 + 上传", desc: "还能下载原文件、往网盘里传文件，不能改名、移动、删除" },
   organize: { label: "整理", desc: "还能新建文件夹、改名、移动、移进回收站（都能撤销）" },
   admin: { label: "全部", desc: "还能建分享链接、看备份状态、申请永久删除（要你批准）" },
+  custom: { label: "自定义", desc: "在下面勾选要给的权限" },
+};
+const AGENT_SCOPES = {
+  "files:read": "看：列目录、搜索、缩略图、统计",
+  "files:download": "下载原文件、预览",
+  "files:upload": "上传、新建文件夹",
+  "files:organize": "改名、移动、移进回收站",
+  "shares:manage": "建分享链接（1–7 天）",
+  "ops:read": "看备份状态",
+  "danger:request": "申请永久删除等（要你批准）",
 };
 const AGENT_STATES = { active: "使用中", expired: "已过期", revoked: "已撤销", frozen: "已冻结" };
 const AGENT_ACTIONS = {
@@ -3263,7 +3273,7 @@ function presetOf(scopes) {
   for (const [k, v] of Object.entries(agentsInfo?.presets || {})) {
     if (v.length === scopes.length && v.every((s) => scopes.includes(s))) return AGENT_PRESETS[k]?.label || k;
   }
-  return scopes.join("、");
+  return scopes.map((sc) => AGENT_SCOPES[sc]?.split("：")[0].split("（")[0] || sc).join("、");
 }
 
 let agentsInfo = null; // GET /api/agents 的结果
@@ -3446,9 +3456,19 @@ function renderAgentCreate() {
   const preset = mk("select", {}, ...Object.entries(AGENT_PRESETS).map(([k, v]) => mk("option", { value: k, textContent: v.label })));
   preset.value = "organize";
   const desc = mk("small", { className: "hint" });
-  const syncDesc = () => { desc.textContent = AGENT_PRESETS[preset.value].desc; };
-  preset.addEventListener("change", syncDesc);
-  syncDesc();
+  const boxes = Object.entries(AGENT_SCOPES).map(([scope, label]) => {
+    const box = mk("input", { type: "checkbox", value: scope });
+    box.addEventListener("change", () => { preset.value = "custom"; desc.textContent = AGENT_PRESETS.custom.desc; });
+    return mk("label", { className: "opt-check" }, box, label);
+  });
+  const scopeBox = (scope) => boxes.find((l) => l.firstChild.value === scope).firstChild;
+  const syncPreset = () => {
+    desc.textContent = AGENT_PRESETS[preset.value].desc;
+    const scopes = agentsInfo?.presets?.[preset.value];
+    if (scopes) for (const scope of Object.keys(AGENT_SCOPES)) scopeBox(scope).checked = scopes.includes(scope);
+  };
+  preset.addEventListener("change", syncPreset);
+  syncPreset();
   const folder = mk("select", {}, mk("option", { value: "", textContent: "整个网盘" }));
   const here = state.chain?.[state.chain.length - 1];
   if (here) folder.append(mk("option", { value: here.id, textContent: `只限当前文件夹：${here.name}` }));
@@ -3461,10 +3481,11 @@ function renderAgentCreate() {
   const go = mk("button", { type: "button", className: "primary", textContent: "生成令牌" });
   go.addEventListener("click", () => {
     const req = {
-      name: name.value.trim(), preset: preset.value, root_folder_id: folder.value || null, allow_private: priv.checked,
-      expires_days: Number(expiry.value),
+      name: name.value.trim(), scopes: boxes.map((l) => l.firstChild).filter((b) => b.checked).map((b) => b.value),
+      root_folder_id: folder.value || null, allow_private: priv.checked, expires_days: Number(expiry.value),
     };
     if (!req.name) { err.textContent = "给它起个名字，方便以后认出是谁在操作"; err.hidden = false; name.focus(); return; }
+    if (!req.scopes.length) { err.textContent = "至少勾选一项权限"; err.hidden = false; return; }
     freshVerify(body, {
       label: "确认生成",
       intro: "生成令牌前再答对一道格子题。",
@@ -3475,6 +3496,7 @@ function renderAgentCreate() {
   body.replaceChildren(
     mk("label", { className: "field" }, "名字", name),
     mk("label", { className: "field" }, "能做什么", preset, desc),
+    mk("div", { className: "scope-list" }, ...boxes),
     mk("label", { className: "field" }, "能看到", folder),
     mk("label", { className: "opt-check" }, priv, "也能看私密文件夹（默认看不到，搜索也搜不到）"),
     mk("label", { className: "field" }, "有效期", expiry),

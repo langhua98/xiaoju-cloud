@@ -60,6 +60,9 @@ type Telegram struct {
 	// TG_EXTRA_BOT_TOKENS 给存储频道，TG_BACKUP_EXTRA_BOT_TOKENS 给备份频道；逗号、空格或换行分隔。
 	ExtraBotTokens       []string
 	BackupExtraBotTokens []string
+	// AgentBots（TG_AGENT_BOTS，可选）：TG_EXTRA_BOT_TOKENS 里哪几个 Bot 专门给 AI agent 接口用，写 Bot 的数字 ID
+	// （令牌冒号前面那段）；AI 的请求只用它们，手机备份、网页不用它们（见 telegram.Pool）。
+	AgentBots []string
 }
 
 // BackupEnabled 报告是否配置了备份频道。
@@ -84,6 +87,7 @@ func Load() (*Config, error) {
 
 			ExtraBotTokens:       strings.Fields(strings.ReplaceAll(os.Getenv("TG_EXTRA_BOT_TOKENS"), ",", " ")),
 			BackupExtraBotTokens: strings.Fields(strings.ReplaceAll(os.Getenv("TG_BACKUP_EXTRA_BOT_TOKENS"), ",", " ")),
+			AgentBots:            agentBotIDs(os.Getenv("TG_AGENT_BOTS")),
 		},
 	}
 
@@ -219,4 +223,14 @@ func envInt64(key string, def int64) (int64, error) {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return n, nil
+}
+
+// agentBotIDs 解析 TG_AGENT_BOTS：逗号、空格分隔的 Bot ID；误填了整个令牌时只取冒号前面的 ID。
+func agentBotIDs(v string) []string {
+	var ids []string
+	for _, f := range strings.Fields(strings.ReplaceAll(v, ",", " ")) {
+		id, _, _ := strings.Cut(f, ":")
+		ids = append(ids, id)
+	}
+	return ids
 }

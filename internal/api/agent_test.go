@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -19,6 +20,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/db"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
+	"github.com/langhua98/xiaoju-cloud/internal/storage"
 	"github.com/langhua98/xiaoju-cloud/internal/storage/local"
 	"github.com/langhua98/xiaoju-cloud/migrations"
 )
@@ -43,7 +45,8 @@ func TestAgentAPI(t *testing.T) {
 	defer func() { agentRate, agentBurst = 10, 30 }()
 	store := meta.NewStore(pool)
 	userID, _ := store.EnsureUser(ctx, "it-agent-"+uuid.NewString()[:8])
-	driver, _ := local.New(t.TempDir())
+	disk, _ := local.New(t.TempDir())
+	driver := &laneDriver{Driver: disk}
 	master, _ := crypto.NewKey()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := service.New(store, driver, service.Options{MasterKey: master, PartSize: 1 << 20, TempDir: t.TempDir(), Log: log})
@@ -133,6 +136,22 @@ func TestAgentAPI(t *testing.T) {
 	if me["root"].(map[string]any)["path_on_drive"] != "/工作区" || len(me["scopes"].([]any)) != 4 {
 		t.Fatalf("me: %v", me)
 	}
+	// 「只读 + 下载 + 上传」档真的能读能下载；勾选的组合（只读 + 申请危险操作）照给
+	scopesOf := func(tok string) string {
+		var sc []string
+		for _, v := range mustCall(200, tok, "GET", "/api/agent/v1/me", "")["scopes"].([]any) {
+			sc = append(sc, v.(string))
+		}
+		return strings.Join(sc, ",")
+	}
+	if got := scopesOf(newAgent(map[string]any{"name": "传文件", "preset": "upload"})); got != "files:read,files:download,files:upload" {
+		t.Fatalf("upload preset: %s", got)
+	}
+	if got := scopesOf(newAgent(map[string]any{"name": "清理", "scopes": []string{"danger:request", "files:read"}})); got != "files:read,danger:request" {
+		t.Fatalf("custom scopes: %s", got)
+	}
+	mustCall(400, "admin", "POST", "/api/agents", `{"name":"x","scopes":["files:read","files:everything"]}`)
+
 	// 列目录：根是 /工作区，私密文件夹看不到；X-Xiaoju-Agent 头也行
 	code, b := raw("", "GET", "/api/agent/v1/items?path=/", nil, "X-Xiaoju-Agent", org)
 	var root struct {
@@ -177,13 +196,32 @@ func TestAgentAPI(t *testing.T) {
 	if code, b := raw(org, "GET", "/api/agent/v1/items/"+a+"/content", nil, "Range", "bytes=6-10"); code != 206 || string(b) != "agent" {
 		t.Fatalf("range: %d %q", code, b)
 	}
-	if out := mustCall(200, org, "POST", "/api/agent/v1/items/"+a+"/link", ""); !strings.Contains(out["url"].(string), "/dl/"+a) {
+	// AI 的读写标成 LaneAgent（走 AI 专用的 Bot），网页、手机的不标
+	if driver.count(storage.LaneAgent) == 0 || driver.count(storage.LaneDefault) == 0 {
+		t.Fatalf("lanes after agent download: %v", driver.lanes)
+	}
+	out = mustCall(200, org, "POST", "/api/agent/v1/items/"+a+"/link", "")
+	link := out["url"].(string)
+	if !strings.Contains(link, "/dl/"+a) || !strings.Contains(link, "via=ai") {
 		t.Fatalf("link: %v", out)
 	}
+	before := driver.count(storage.LaneAgent)
+	if resp, err := http.Get(link); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("signed link: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+	if driver.count(storage.LaneAgent) <= before {
+		t.Fatal("download through an agent link should use the agent lane")
+	}
+	before = driver.count(storage.LaneAgent)
 	// 上传：上级文件夹自动建；同名改名；Idempotency-Key 重试不传两份
 	out = mustCall(201, org, "PUT", "/api/agent/v1/files?path="+url.QueryEscape("/报告/2026/r.md"), "# r")
 	if out["item"].(map[string]any)["path"] != "/报告/2026/r.md" {
 		t.Fatalf("upload: %v", out)
+	}
+	if driver.count(storage.LaneAgent) <= before {
+		t.Fatal("agent upload should use the agent lane")
 	}
 	out = mustCall(201, org, "PUT", "/api/agent/v1/files?path="+url.QueryEscape("/报告/2026/r.md"), "# r2", "Idempotency-Key", "k1")
 	if out["item"].(map[string]any)["name"] != "r (2).md" || out["renamed"] != true {
@@ -418,8 +456,40 @@ func TestAgentAPI(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 401 {
 		t.Fatalf("admin token changed: %v %v", err, resp.StatusCode)
 	}
-	if out := mustCall(200, "admin", "POST", "/api/agents/revoke-all", ""); out["revoked"].(float64) != 2 {
+	if out := mustCall(200, "admin", "POST", "/api/agents/revoke-all", ""); out["revoked"].(float64) != 4 {
 		t.Fatalf("revoke all: %v", out)
 	}
 	mustCall(401, org, "GET", "/api/agent/v1/me", "")
+}
+
+// laneDriver 记下每次存取请求标的来源（AI 的请求要走 AI 专用的 Bot）。
+type laneDriver struct {
+	storage.Driver
+	mu    sync.Mutex
+	lanes map[storage.Lane]int
+}
+
+func (d *laneDriver) note(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lanes == nil {
+		d.lanes = map[storage.Lane]int{}
+	}
+	d.lanes[storage.LaneOf(ctx)]++
+}
+
+func (d *laneDriver) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
+	d.note(ctx)
+	return d.Driver.Put(ctx, req)
+}
+
+func (d *laneDriver) ReadRange(ctx context.Context, loc storage.Location, offset, length int64) (io.ReadCloser, error) {
+	d.note(ctx)
+	return d.Driver.ReadRange(ctx, loc, offset, length)
+}
+
+func (d *laneDriver) count(l storage.Lane) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lanes[l]
 }

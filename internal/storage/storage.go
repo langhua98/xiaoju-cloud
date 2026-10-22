@@ -48,3 +48,24 @@ type Lister interface {
 	// 扫描出错时返回错误，调用方必须把结果当作不完整。
 	List(ctx context.Context, minMessageID int64, fn func(Object) error) error
 }
+
+// Lane 标出一个请求是谁发起的，让驱动把不同来源的流量分给不同的 Bot（见 telegram.Pool）。
+type Lane int
+
+const (
+	LaneDefault Lane = iota // 网页、手机备份、后台任务
+	LaneAgent               // AI agent 接口（/api/agent/v1、/mcp）
+)
+
+type laneKey struct{}
+
+// WithLane 给 ctx 标上来源。
+func WithLane(ctx context.Context, l Lane) context.Context {
+	return context.WithValue(ctx, laneKey{}, l)
+}
+
+// LaneOf 返回 ctx 标的来源；没标时是 LaneDefault。
+func LaneOf(ctx context.Context) Lane {
+	l, _ := ctx.Value(laneKey{}).(Lane)
+	return l
+}

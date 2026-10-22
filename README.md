@@ -211,10 +211,12 @@ Docker 镜像里装了 `vips-tools vips-heif ffmpeg`（`xiaoju thumb 输入 输�
 
 | 预设 | 权限 |
 |---|---|
-| 只读 `readonly` | `files:read`：列目录、搜索、统计、找重复、缩略图、预览 |
-| 只读 + 下载 + 上传 `upload` | 再加 `files:download`、`files:upload` |
+| 只读 `readonly` | `files:read`（列目录、搜索、统计、找重复、缩略图）、`ops:read`（备份状态） |
+| 只读 + 下载 + 上传 `upload` | `files:read`、`files:download`、`files:upload` |
 | 整理 `organize` | 再加 `files:organize`：建文件夹、改名、移动、移进回收站、放回、批量 |
 | 全部 `admin` | 再加 `shares:manage`（1–7 天的分享链接）、`ops:read`（备份状态）、`danger:request`（申请危险操作） |
+
+网页上也可以不用预设，直接勾选要给的权限（比如只读 + 申请危险操作）；接口是 `POST /api/agents {"scopes": [...]}`。
 
 **护栏**：
 - 可以限定在一个文件夹里（之外的一律 404）；私密文件夹默认看不到、搜不到，发令牌时勾选才行。
@@ -298,6 +300,12 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 活马上交给别的 Bot（日志 `handing work to another bot`）；全都在歇时等最早歇完的那个，最多等 2 分钟。
 发消息（每个分块一条）每个 Bot 在本地排队，平均 3 秒一条（`client.go` 的 `sendEvery`），Bot 越多总的发送速度越快。
 每个 Bot 的登录状态存在主 Bot 会话文件旁边的 `tg-session-bot<数字ID>.json`。
+
+**给 AI 接口专门分一个 Bot**（可选）：GitHub 仓库变量（Variables，不是 Secret）`TG_AGENT_BOTS` 填 `TG_EXTRA_BOT_TOKENS` 里某个 Bot 的数字 ID
+（令牌冒号前面那段，不要填整个令牌），可以填几个（逗号分隔），重新部署。之后 AI agent 接口（`/api/agent/v1`、`/mcp`、AI 要的下载链接、
+上传链接 `/u/…`）只用这几个 Bot，被限速时等它们歇完，不去占手机备份、网页用的 Bot；手机备份、网页也不用它们。
+专用的 Bot 都出错停用了（比如没加成频道管理员），AI 的请求临时用普通的 Bot。日志里专用的 Bot 是 `extra bot added for the AI agent API only`。
+请求是谁发的靠 `storage.WithLane`（`internal/storage/storage.go`）标在 context 上。
 两个频道都在 Telegram，防不了 Telegram 整体不可用；重要文件请另外保留原件。
 
 ## 刷脸登录（Face ID / 指纹）

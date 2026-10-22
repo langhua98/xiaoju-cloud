@@ -1410,3 +1410,5 @@ button.danger { color: var(--danger); }
 .agents-dlg .trash-list .info { flex: 1 1 180px; }
 .agents-dlg .trash-list .info b { white-space: normal; }
 .agents-dlg .trash-list .acts { margin-left: auto; }
+.agents-dlg .scope-list { margin: -4px 0 8px; padding: 6px 10px; border-radius: 10px; background: var(--hover); }
+.agents-dlg .scope-list .opt-check { margin: 6px 0; }
