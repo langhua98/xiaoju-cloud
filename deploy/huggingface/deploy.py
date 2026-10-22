@@ -31,6 +31,8 @@ SECRET_KEYS = [
     # 可选：额外的 Bot（同一个频道的管理员），和主 Bot 轮流上传、下载
     "TG_EXTRA_BOT_TOKENS",
     "TG_BACKUP_EXTRA_BOT_TOKENS",
+    # 可选：只给 AI agent 接口用的 Bot（同一个频道的管理员）
+    "TG_AGENT_BOT_TOKENS",
 ]
 VARIABLE_KEYS = [
     "TG_TRANSPORT",
