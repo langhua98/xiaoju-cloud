@@ -301,8 +301,9 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 发消息（每个分块一条）每个 Bot 在本地排队，平均 3 秒一条（`client.go` 的 `sendEvery`），Bot 越多总的发送速度越快。
 每个 Bot 的登录状态存在主 Bot 会话文件旁边的 `tg-session-bot<数字ID>.json`。
 
-**给 AI 接口专门分一个 Bot**（可选）：GitHub 仓库变量（Variables，不是 Secret）`TG_AGENT_BOTS` 填 `TG_EXTRA_BOT_TOKENS` 里某个 Bot 的数字 ID
-（令牌冒号前面那段，不要填整个令牌），可以填几个（逗号分隔），重新部署。之后 AI agent 接口（`/api/agent/v1`、`/mcp`、AI 要的下载链接、
+**给 AI 接口专门分一个 Bot**（可选）：新建一个 Bot、加成存储频道的管理员，GitHub 仓库 Secret `TG_AGENT_BOT_TOKENS` 填它的令牌
+（几个就逗号分隔），重新部署。或者从已有的额外 Bot 里划一个：仓库变量（Variables）`TG_AGENT_BOTS` 填 `TG_EXTRA_BOT_TOKENS` 里那个 Bot 的数字 ID
+（令牌冒号前面那段）。之后 AI agent 接口（`/api/agent/v1`、`/mcp`、AI 要的下载链接、
 上传链接 `/u/…`）只用这几个 Bot，被限速时等它们歇完，不去占手机备份、网页用的 Bot；手机备份、网页也不用它们。
 专用的 Bot 都出错停用了（比如没加成频道管理员），AI 的请求临时用普通的 Bot。日志里专用的 Bot 是 `extra bot added for the AI agent API only`。
 请求是谁发的靠 `storage.WithLane`（`internal/storage/storage.go`）标在 context 上。

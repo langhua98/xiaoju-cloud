@@ -80,6 +80,7 @@ jobs:
           TG_BACKUP_CHANNEL_ID: ${{ secrets.TG_BACKUP_CHANNEL_ID }}
           TG_EXTRA_BOT_TOKENS: ${{ secrets.TG_EXTRA_BOT_TOKENS }}
           TG_BACKUP_EXTRA_BOT_TOKENS: ${{ secrets.TG_BACKUP_EXTRA_BOT_TOKENS }}
+          TG_AGENT_BOT_TOKENS: ${{ secrets.TG_AGENT_BOT_TOKENS }}
           TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
           TG_AGENT_BOTS: ${{ vars.TG_AGENT_BOTS }}
           DEPLOY_MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes || '60' }}

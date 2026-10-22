@@ -61,6 +61,7 @@ type Telegram struct {
 	ExtraBotTokens       []string
 	BackupExtraBotTokens []string
 	// AgentBots（TG_AGENT_BOTS，可选）：TG_EXTRA_BOT_TOKENS 里哪几个 Bot 专门给 AI agent 接口用，写 Bot 的数字 ID
+	// （TG_AGENT_BOT_TOKENS 里的 Bot 不用写，自动算进来）
 	// （令牌冒号前面那段）；AI 的请求只用它们，手机备份、网页不用它们（见 telegram.Pool）。
 	AgentBots []string
 }
@@ -89,6 +90,12 @@ func Load() (*Config, error) {
 			BackupExtraBotTokens: strings.Fields(strings.ReplaceAll(os.Getenv("TG_BACKUP_EXTRA_BOT_TOKENS"), ",", " ")),
 			AgentBots:            agentBotIDs(os.Getenv("TG_AGENT_BOTS")),
 		},
+	}
+
+	// TG_AGENT_BOT_TOKENS：AI 接口专用 Bot 的令牌。和额外的 Bot 一样连接，只是只给 AI 用（不用改 TG_EXTRA_BOT_TOKENS）。
+	for _, tok := range strings.Fields(strings.ReplaceAll(os.Getenv("TG_AGENT_BOT_TOKENS"), ",", " ")) {
+		c.Telegram.ExtraBotTokens = append(c.Telegram.ExtraBotTokens, tok)
+		c.Telegram.AgentBots = append(c.Telegram.AgentBots, agentBotIDs(tok)...)
 	}
 
 	c.CORSOrigins = splitList(os.Getenv("XIAOJU_CORS_ORIGINS"))
