@@ -104,6 +104,8 @@ struct BackupView: View {
             .onAppear { albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count }
             // 先和云盘比对一遍（以前用快捷指令、网页传过的也算进「已备份」），再算三个数
             .task {
+                // 自动备份开着就再确认一次系统后台上传是开的（上次没开成的，这次打开页面时补上）
+                if auth == .authorized && auto.enabled { switchError = await auto.setAutomatic(true) ?? "" }
                 await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileAll() }.value
                 await refresh()
             }
@@ -216,13 +218,17 @@ struct BackupView: View {
     }
 
     private func setAutomatic(_ on: Bool) {
-        switchError = auto.setAutomatic(on) ?? ""
+        Task { switchError = await auto.setAutomatic(on) ?? "" }
     }
 
     private func requestAuth() async {
         auth = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         // 第一次允许后把系统后台上传也打开（开关默认是开的）
         if auth == .authorized && auto.enabled { setAutomatic(true) }
+        // 页面打开时还没有权限，那次核对没做：现在补上，不然三个数一直是「—」
+        if auth == .authorized {
+            await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileAll() }.value
+        }
         await refresh()
     }
 
