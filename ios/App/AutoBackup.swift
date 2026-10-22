@@ -32,6 +32,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     @Published private(set) var failures: [Failure] = [] // 这一轮没传上去的，下次备份（或点「重试」）再传
     @Published private(set) var pausedUntil = UserDefaults.standard.object(forKey: Keys.pausedUntil) as? Date
     @Published private(set) var lastFinished = UserDefaults.standard.object(forKey: Keys.lastFinished) as? Date
+    // 正在和云盘核对（核对完之前「已备份」不准，界面上先不显示新数）；checked：这次打开 App 后核对完过一遍
+    @Published private(set) var checking = false
+    @Published private(set) var checked = false
 
     struct Failure: Codable, Identifiable, Hashable {
         var id: String { name + "\t" + reason }
@@ -390,11 +393,16 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             fail("照片", "没有照片权限")
             return
         }
+        // 先把所有要备份的相册都和云盘核对完，再开始传：「已备份」一开始就是准的，传的时候也不会把云盘里有的再传一遍
+        await reconcileAll()
+        if Task.isCancelled { return }
+        // 还在传的（上一轮交出去的大视频、照片）：这一轮不再交一次。再交一次会让服务端停掉正在传的那个请求，
+        // 手机上就报「The network connection was lost」
+        let busy = await busyKeys()
         let targets = photoTargets()
         lock.withLock { scanTotal = Int64(targets.reduce(0) { $0 + $1.assets.count }) }
         for target in targets {
             let assets = target.assets
-            await reconcile(target: target.key, assets: assets, album: target.album)
             for i in 0..<assets.count {
                 if Task.isCancelled { return }
                 lock.withLock { scanned += 1 }
@@ -406,7 +414,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 let known = lock.withLock { inCloud.contains("\(target.key)|\(asset.localIdentifier)") }
                 for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
                     let key = "\(target.key)|\(asset.localIdentifier)|\(resource.type.rawValue)"
-                    if lock.withLock({ done.contains(key) }) { continue }
+                    if busy.contains(key) || lock.withLock({ done.contains(key) }) { continue }
                     if known && resource.type != .pairedVideo { continue } // 快捷指令、网页传过这张：不重传（实况照片的视频照常问）
                     do {
                         try await upload(resource, key: key, album: target.album)
@@ -436,14 +444,24 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         return targets
     }
 
-    // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
-    // （GET /api/ingest/names），在手机上比对，对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
+    // 和云盘核对：先按“名字|大小”（matchNames），再按名字 + 拍摄日期（planMatch）。
+    // 每张照片的 id、拍摄日期和要传的资源一万张取一遍要几十秒，两种比对共用一份（以前各取一遍）
+    private typealias Item = (id: String, date: Date?, resources: [PHAssetResource])
+
     func reconcile(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
-        await matchNames(target: target, assets: assets, album: album)
-        await planMatch(target: target, assets: assets, album: album)
+        var items: [Item] = []
+        items.reserveCapacity(assets.count)
+        assets.enumerateObjects { asset, _, _ in
+            let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
+            items.append((asset.localIdentifier, asset.creationDate, resources))
+        }
+        await matchNames(target: target, items: items, album: album)
+        await planMatch(target: target, items: items, album: album)
     }
 
-    private func matchNames(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+    // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
+    // （GET /api/ingest/names），在手机上比对，对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
+    private func matchNames(target: String, items: [Item], album: PhoneAlbum?) async {
         guard let url = URL(string: server + "/api/ingest/names") else { return }
         var req = URLRequest(url: url)
         if let album {
@@ -458,13 +476,13 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         let known = Set(String(decoding: reply.0, as: UTF8.self).split(separator: "\n").map(String.init))
         guard !known.isEmpty else { return }
         var found = 0
-        assets.enumerateObjects { asset, _, _ in
-            for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
-                let key = "\(target)|\(asset.localIdentifier)|\(resource.type.rawValue)"
+        for item in items {
+            for resource in item.resources {
+                let key = "\(target)|\(item.id)|\(resource.type.rawValue)"
                 guard let size = resource.value(forKey: "fileSize") as? Int64, size > 0,
                       known.contains(Self.sha("\(resource.originalFilename)|\(size)")),
-                      !self.lock.withLock({ self.done.contains(key) }) else { continue }
-                self.markDone(key)
+                      !lock.withLock({ done.contains(key) }) else { continue }
+                markDone(key)
                 found += 1
             }
         }
@@ -476,21 +494,20 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     // 和快捷指令同一套比法：名字不分大小写、不比扩展名，拍摄日期差一天以内），认出来的记进 inCloud：
     // 算进「已备份」，备份时不再重传；但「释放手机空间」只认按原件核对过的（done），不会因为这个删照片。
     // 服务端只认顶层的「相册」「隐藏相册」，勾选的相册（相册/名字）还是只按“名字|大小”认。
-    private func planMatch(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+    private func planMatch(target: String, items: [Item], album: PhoneAlbum?) async {
         guard album?.hidden ?? true, let url = URL(string: server + "/api/ingest/plan") else { return }
         let day = DateFormatter()
         day.locale = Locale(identifier: "en_US_POSIX")
         day.dateFormat = "yyyy-MM-dd"
         var ids: [String] = [], names: [String] = [], dates: [String] = []
-        assets.enumerateObjects { asset, _, _ in
-            let resources = PHAssetResource.assetResources(for: asset)
-            guard let main = resources.first(where: { $0.type == .photo || $0.type == .video }) else { return }
-            ids.append(asset.localIdentifier)
+        for item in items {
+            guard let main = item.resources.first(where: { $0.type == .photo || $0.type == .video }) else { continue }
+            ids.append(item.id)
             names.append(main.originalFilename.replacingOccurrences(of: "\n", with: " "))
-            dates.append(asset.creationDate.map(day.string(from:)) ?? "")
+            dates.append(item.date.map(day.string(from:)) ?? "")
         }
         guard !ids.isEmpty else { return }
-        var req = URLRequest(url: url)
+        var req = URLRequest(url: url, timeoutInterval: 180) // 一万张的清单服务端要比一会儿
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: String] = ["album": album == nil ? "" : "hidden",
@@ -513,21 +530,39 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         if let data = try? JSONEncoder().encode(keys) { try? data.write(to: inCloudFile, options: .atomic) }
     }
 
-    // 「备份」页打开时：把每个要备份的相册都和云盘比对一遍（同一时间只跑一个）
+    // 把每个要备份的相册都和云盘核对一遍：「备份」页打开时、每一轮备份开始传之前。
+    // 同一时间只跑一遍；已经在核对时就等它核对完（以前是直接跳过，界面马上用没核对完的数算，一会儿又跳一下）。
     func reconcileAll() async {
-        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
-              lock.withLock({ () -> Bool in
-                  if reconciling { return false }
-                  reconciling = true
-                  return true
-              }) else { return }
-        defer { lock.withLock { reconciling = false } }
-        for target in photoTargets() {
-            await reconcile(target: target.key, assets: target.assets, album: target.album)
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+        let task: Task<Void, Never> = lock.withLock {
+            if let running = reconciling { return running }
+            let task = Task.detached(priority: .userInitiated) { [self] in
+                await MainActor.run { checking = true }
+                for target in photoTargets() {
+                    await reconcile(target: target.key, assets: target.assets, album: target.album)
+                }
+                lock.withLock { reconciling = nil }
+                await MainActor.run {
+                    checking = false
+                    checked = true
+                }
+            }
+            reconciling = task
+            return task
         }
+        await task.value
     }
 
-    private var reconciling = false
+    private var reconciling: Task<Void, Never>?
+
+    // 正在传的文件（照片、大视频）的 key
+    private func busyKeys() async -> Set<String> {
+        Set(await allTasks().compactMap { task -> String? in
+            let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+            if parts.first == "chunk" { return parts.count > 1 ? parts[1] : nil }
+            return parts.first.flatMap { $0.isEmpty ? nil : $0 }
+        })
+    }
 
     // 放进哪个相册的头部：隐藏相册 X-Xiaoju-Album: hidden，其他相册 X-Xiaoju-Album-Name: 相册名
     private func albumHeaders(_ album: PhoneAlbum?) -> [String: String] {

@@ -12,6 +12,7 @@ struct BackupView: View {
     @ObservedObject private var auto = AutoBackup.shared
     @State private var auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var tally: AutoBackup.Tally?
+    @State private var hiddenTally: AutoBackup.Tally? // 隐藏相册另算（不在「全部照片」里）
     @State private var albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count
     @State private var switchError = ""
 
@@ -106,6 +107,10 @@ struct BackupView: View {
                 await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileAll() }.value
                 await refresh()
             }
+            // 核对完马上算一次
+            .onChange(of: auto.checking) { _, checking in
+                if !checking { Task { await refresh() } }
+            }
             // 备份的时候每 10 秒重算一次三个数，停了再算一次
             .task(id: auto.running) {
                 await refresh()
@@ -132,6 +137,7 @@ struct BackupView: View {
 
     private var headline: String {
         if auth != .authorized { return "需要照片权限" }
+        if tally == nil && auto.checking { return "正在和云盘核对…" }
         if auto.running { return "正在备份" }
         if auto.isPaused { return "已暂停" }
         if !auto.failures.isEmpty { return "有 \(auto.failures.count) 个没传上去" }
@@ -140,6 +146,7 @@ struct BackupView: View {
     }
 
     private var subline: String {
+        if auto.checking { return "核对完再更新下面的数" }
         if auto.isPaused, let until = auto.pausedUntil {
             return "\(until.formatted(date: .omitted, time: .shortened)) 自动恢复"
         }
@@ -173,6 +180,10 @@ struct BackupView: View {
                 stat("已备份", tally?.done)
                 stat("还剩", tally?.remaining)
             }
+            if let hiddenTally, hiddenTally.total > 0 {
+                Text("隐藏相册另算：已备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -194,9 +205,14 @@ struct BackupView: View {
             tally = nil
             return
         }
-        tally = await Task.detached(priority: .userInitiated) {
-            AutoBackup.shared.tally(target: "all", assets: AutoBackup.allPhotos())
+        // 和云盘核对完之前不算：没核对完的数不准，算出来一会儿又跳（先显示「—」或上一次核对完的数）
+        guard auto.checked && !auto.checking else { return }
+        let counted = await Task.detached(priority: .userInitiated) { () -> (AutoBackup.Tally, AutoBackup.Tally?) in
+            let all = AutoBackup.shared.tally(target: "all", assets: AutoBackup.allPhotos())
+            guard AutoBackup.flag(AutoBackup.backupHidden), let hidden = PhoneAlbum.hiddenAlbum() else { return (all, nil) }
+            return (all, AutoBackup.shared.tally(target: "hidden", assets: hidden.assets()))
         }.value
+        (tally, hiddenTally) = counted
     }
 
     private func setAutomatic(_ on: Bool) {
