@@ -2899,6 +2899,7 @@ const ACTIONS = {
   trash: () => openTrash(),
   duplicates: () => openDuplicates(),
   shares: () => openShares(),
+  drops: () => openDrops(),
   install: () => installApp(),
   security: () => openSecurity(),
   shortcuts: () => openShortcuts(),
@@ -3144,6 +3145,94 @@ async function openShares() {
       mk("div", { className: "acts" }, copy, revoke));
   }));
 }
+
+// ---------- AI 上传链接 ----------
+// 给 AI agent 一个链接（POST /api/drops）：服务端的 /u/<token>，浏览器打开是上传页面，agent 用 curl 直接传，
+// 只能往一个文件夹里传（默认根目录的“AI 上传”，也可以选当前文件夹）。这里生成、复制、撤销。
+
+const dropURL = (d) => state.api + d.path;
+const dropPrompt = (url) =>
+  `请把文件上传到这个链接（只能上传，不用登录）：${url}\n` +
+  `一个文件：curl -T 文件路径 ${url}/\n` +
+  `多个文件：curl -F file=@a.png -F file=@b.pdf ${url}\n` +
+  `打开链接能看到完整说明（${url}?format=json 是 JSON 版）。`;
+
+function dropSummary(d) {
+  const parts = [`传到“${d.folder.name}”`];
+  parts.push(d.expires_at ? (d.expired ? "已过期" : `${formatDate(d.expires_at)} 失效`) : "永久有效");
+  if (d.uploads) parts.push(`传过 ${d.uploads} 个，${formatSize(d.bytes)}`);
+  if (d.trashed) parts.push("文件夹在回收站里，传不了");
+  return parts.join(" · ");
+}
+
+async function openDrops() {
+  const dlg = $("#drops-dlg");
+  const here = state.chain?.[state.chain.length - 1];
+  const sel = $("#drop-folder");
+  sel.replaceChildren(mk("option", { value: "", textContent: "AI 上传（根目录，没有就新建）" }));
+  if (here) sel.append(mk("option", { value: here.id, textContent: `当前文件夹：${here.name}` }));
+  $("#drop-result").hidden = true;
+  $("#drop-name").value = "";
+  if (!dlg.open) dlg.showModal();
+  renderDrops();
+}
+
+async function renderDrops() {
+  const list = $("#drops-list");
+  list.replaceChildren(mk("li", { className: "hint", textContent: "正在读取…" }));
+  let items;
+  try {
+    items = (await request("GET", "/api/drops")).items || [];
+  } catch (err) {
+    list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
+    return;
+  }
+  if (!items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "还没有上传链接" })); return; }
+  list.replaceChildren(...items.map((d) => {
+    const copy = mk("button", { type: "button", className: "small" }, icon("link"), "复制");
+    const revoke = mk("button", { type: "button", className: "small danger" }, "撤销");
+    copy.addEventListener("click", async () => toast((await copyText(dropURL(d))) ? "已复制链接" : dropURL(d)));
+    revoke.addEventListener("click", async () => {
+      if (!confirm(`撤销${d.name ? `“${d.name}”` : "这个"}上传链接？之后用它传会失败（已经传上来的文件不受影响）。`)) return;
+      try {
+        await request("DELETE", `/api/drops/${d.id}`);
+        toast("已撤销");
+        renderDrops();
+      } catch (err) { fail(err); }
+    });
+    return mk("li", {}, icon("upload", "ic lead"),
+      mk("div", { className: "info" }, mk("b", { textContent: d.name || "上传链接" }), mk("small", { textContent: dropSummary(d) })),
+      mk("div", { className: "acts" }, copy, revoke));
+  }));
+}
+
+$("#drop-create").addEventListener("click", async () => {
+  const btn = $("#drop-create");
+  setButtonBusy(btn, true, "正在生成…", "生成链接");
+  try {
+    const folder = $("#drop-folder").value;
+    const d = await request("POST", "/api/drops", {
+      name: $("#drop-name").value.trim(), folder_id: folder || null, expires_days: Number($("#drop-expiry").value),
+    });
+    $("#drop-url").value = dropURL(d);
+    $("#drop-result").hidden = false;
+    $("#drop-url").select();
+    renderDrops();
+    if (!folder && !state.folderId) load(); // 根目录可能多了“AI 上传”
+  } catch (err) {
+    fail(err);
+  } finally {
+    setButtonBusy(btn, false, "正在生成…", "生成链接");
+  }
+});
+$("#drop-copy").addEventListener("click", async () => {
+  const url = $("#drop-url").value;
+  if (await copyText(url)) toast("已复制链接");
+  else { $("#drop-url").select(); toast("长按上面的链接复制"); }
+});
+$("#drop-copy-prompt").addEventListener("click", async () => {
+  toast((await copyText(dropPrompt($("#drop-url").value))) ? "已复制，粘贴给 AI 就行" : "复制不了，长按上面的链接复制");
+});
 
 // ---------- 重复文件 ----------
 // 内容完全一样的文件（GET /api/duplicates，按 SHA-256 分组）。每组默认留私密文件夹里的那份（照片多半是有意藏起来的），

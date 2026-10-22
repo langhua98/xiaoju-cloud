@@ -41,7 +41,7 @@ type Server struct {
 	loc         *time.Location
 
 	// 不需要认证的接口按 IP 限速（见 ratelimit.go）
-	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit *ipLimiter
+	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit, dropLimit, dropAskLimit *ipLimiter
 
 	act     activity // 正在进行的上传（部署前问一下，见 activity.go）
 	started time.Time
@@ -79,6 +79,7 @@ func New(svc *service.Service, opt Options) *Server {
 		// 快捷指令跳过传过的最快每秒两三个；问“传过没有”的接口一次运行只调一两次
 		ingestLimit: newIPLimiter(120, 60), ingestAskLimit: newIPLimiter(60, 30),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
+		dropLimit: newIPLimiter(120, 60), dropAskLimit: newIPLimiter(60, 30),
 		started: time.Now(),
 	}
 }
@@ -108,6 +109,9 @@ func (s *Server) Handler() http.Handler {
 	files("POST /api/shares", s.createShare)
 	files("GET /api/shares", s.listShares)
 	files("DELETE /api/shares/{id}", s.deleteShare)
+	files("POST /api/drops", s.createDrop)
+	files("GET /api/drops", s.listDrops)
+	files("DELETE /api/drops/{id}", s.deleteDrop)
 	files("POST /api/uploads", s.tracked(s.startUpload))
 	files("GET /api/uploads/{id}", s.uploadStatus)
 	files("PUT /api/uploads/{id}", s.tracked(s.writeUpload))
@@ -167,6 +171,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
 	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
 	mux.HandleFunc("GET /pv/{id}", s.signedPreview)
+	// 上传链接（给 AI agent 用）：不需要认证，只能往链接的文件夹里传，见 drops.go
+	mux.HandleFunc("GET /u/{token}", s.limited(s.dropAskLimit, s.dropPage))
+	mux.HandleFunc("GET /u/{token}/{$}", s.limited(s.dropAskLimit, s.dropPage))
+	mux.HandleFunc("POST /u/{token}", s.limited(s.dropLimit, s.tracked(s.dropPost)))
+	mux.HandleFunc("PUT /u/{token}/{name...}", s.limited(s.dropLimit, s.tracked(s.dropPut)))
+	mux.HandleFunc("OPTIONS /u/{token}", s.dropPreflight)
+	mux.HandleFunc("OPTIONS /u/{token}/{name...}", s.dropPreflight)
 	return mux
 }
 

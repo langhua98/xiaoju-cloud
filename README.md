@@ -95,6 +95,10 @@ make run
 | `GET` / `DELETE` | `/api/shares`、`/api/shares/{id}` | 列出、撤销分享链接 |
 | `GET` | `/api/s/{token}[?folder=id]` | 不需要认证（按 IP 限速）：分享的文件，或文件夹（及子文件夹）里的条目，文件带签名的 `url`、`preview`；设了密码的要带 `X-Share-Key`；没有 / 撤销了 404，过期 410 |
 | `POST` | `/api/s/{token}/unlock` | `{"password"}` → `{"key"}`（12 小时有效）；密码不对 403；每个 IP 每分钟最多 10 次 |
+| `POST` | `/api/drops` | AI 上传链接：`{"name"（备注）,"folder_id"（不填是根目录“AI 上传”）,"expires_days"（0 不过期）}` → `{"id","token","path":"/u/<token>",…}` |
+| `GET` / `DELETE` | `/api/drops`、`/api/drops/{id}` | 列出（带传过几个、多少字节）、撤销上传链接 |
+| `GET` | `/u/{token}` | 不需要认证（按 IP 限速）：浏览器打开是上传页面；`Accept: application/json` 或 `?format=json` 是 JSON 说明，curl 是纯文字说明。只能上传，不能列目录、下载、删除；没有 / 撤销了 404，过期 410 |
+| `PUT` / `POST` | `/u/{token}/{文件名}`、`/u/{token}` | 不需要认证：`curl -T 文件 https://…/u/<token>/`；`curl -F file=@a -F file=@b https://…/u/<token>`（multipart，可以多个）；或原始请求体 + `?name=` → `201 {"files":[{"name","size","mime","sha256"}]}`。同名改名“名字 (2)”，不覆盖 |
 | `GET` | `/api/maintenance/activity` | 正在进行的上传数、多久没有上传了（部署前用，见“线上部署”） |
 | `PATCH` | `/api/files/{id}` | 只放要改的：`{"name"}` 重命名、`{"parent_id"}` 移动（`null` 是根目录）、`{"private": true}` 文件夹设为私密；重名 409，文件夹移进自己里面 / 文件设私密 400 |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息）；文件夹要先在回收站里，连同里面的文件一起删 |
@@ -155,6 +159,9 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 - **分享链接**：文件夹 ⋯、大图右上角、多选（只选一项时）里“分享”，选有效期（1 / 7 / 30 天、永久）和可选的密码，生成
   `share.html#<随机串>`；头像菜单的“分享的链接”里复制、撤销。打开的人不用登录：`web/share.html` + `share.js` 是单独的页面，
   能进子文件夹、看大图（预览）、放视频、下载。私密相册里的也能分享（分享时会提醒）。
+- **AI 上传链接**（头像菜单，`api/drops.go`、迁移 `0015_drop_links`）：生成一个链接 `https://<服务端>/u/<随机串>` 发给 AI agent，
+  打开就是上传页面（服务端自己出的页面，不依赖 GitHub Pages），agent 用 curl 直接传，链接里写着用法；“复制给 AI 的说明”复制一段可以直接粘贴给 agent 的话。
+  只能往一个文件夹里传（默认根目录的“AI 上传”，也可以选当前文件夹），可以设有效期，随时撤销；列表里能看到每个链接传过多少。
 - **添加到主屏幕**（`manifest.webmanifest`、`icons/`）：Safari 分享 → 添加到主屏幕，像 App 一样全屏打开。头像菜单里有说明。
 - 回收站里的东西放满 30 天自动永久删除（`PurgeExpiredTrash`，每小时看一次）。
 

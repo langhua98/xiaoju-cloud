@@ -39,6 +39,7 @@
     <button type="button" role="menuitem" data-act="trash" data-icon="trash">回收站</button>
     <button type="button" role="menuitem" data-act="duplicates" data-icon="copy">重复文件</button>
     <button type="button" role="menuitem" data-act="shares" data-icon="link">分享的链接</button>
+    <button type="button" role="menuitem" data-act="drops" data-icon="upload">AI 上传链接</button>
     <button type="button" role="menuitem" data-act="security" data-icon="shield">登录安全</button>
     <button type="button" role="menuitem" data-act="shortcuts" data-icon="bolt">快捷指令批量备份</button>
     <button type="button" role="menuitem" data-act="restore" data-icon="download">恢复到手机</button>
@@ -290,6 +291,38 @@
   <dialog id="shares-dlg">
     <h2>分享的链接</h2>
     <ul id="shares-list" class="trash-list"></ul>
+    <div class="dialog-actions"><button type="button" class="ghost" data-close>关闭</button></div>
+  </dialog>
+
+  <!-- AI 上传链接：给 AI agent 一个链接，打开就能往一个文件夹里传文件 -->
+  <dialog id="drops-dlg">
+    <h2>AI 上传链接</h2>
+    <p class="hint">把链接发给 AI agent（或别人）：浏览器打开是上传页面，agent 用 curl 直接传，打开链接就有用法说明。只能往一个文件夹里传，看不到网盘里的其他东西；随时可以撤销。</p>
+    <label class="field">备注（可以不填）
+      <input id="drop-name" type="text" autocomplete="off" maxlength="100" placeholder="比如：给 Claude 用">
+    </label>
+    <label class="field">传到
+      <select id="drop-folder"></select>
+    </label>
+    <label class="field">有效期
+      <select id="drop-expiry">
+        <option value="1">1 天</option>
+        <option value="7" selected>7 天</option>
+        <option value="30">30 天</option>
+        <option value="0">永久有效</option>
+      </select>
+    </label>
+    <div class="dialog-actions">
+      <button id="drop-create" type="button" class="primary"><span class="spinner" aria-hidden="true"></span><span class="label">生成链接</span></button>
+    </div>
+    <div id="drop-result" hidden>
+      <input id="drop-url" class="share-url" type="text" readonly>
+      <div class="dialog-actions">
+        <button id="drop-copy-prompt" type="button">复制给 AI 的说明</button>
+        <button id="drop-copy" type="button" class="primary">复制链接</button>
+      </div>
+    </div>
+    <ul id="drops-list" class="trash-list"></ul>
     <div class="dialog-actions"><button type="button" class="ghost" data-close>关闭</button></div>
   </dialog>
 
