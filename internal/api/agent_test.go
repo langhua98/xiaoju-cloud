@@ -41,8 +41,6 @@ func TestAgentAPI(t *testing.T) {
 	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	agentRate, agentBurst = 1000, 1000
-	defer func() { agentRate, agentBurst = 10, 30 }()
 	store := meta.NewStore(pool)
 	userID, _ := store.EnsureUser(ctx, "it-agent-"+uuid.NewString()[:8])
 	disk, _ := local.New(t.TempDir())
@@ -320,7 +318,7 @@ func TestAgentAPI(t *testing.T) {
 	mustCall(200, org, "GET", "/api/agent/v1/items?path=/sub/b.txt", "")
 	mustCall(200, org, "GET", "/api/agent/v1/items?path=/many", "")
 	// 默认上传下载不限量
-	if l := mustCall(200, org, "GET", "/api/agent/v1/me", "")["limits"].(map[string]any); l["download_bytes"] != float64(0) || l["upload_bytes"] != float64(0) || l["media"] != float64(0) {
+	if l := mustCall(200, org, "GET", "/api/agent/v1/me", "")["limits"].(map[string]any); l["download_bytes"] != float64(0) || l["upload_bytes"] != float64(0) || l["media"] != float64(0) || l["requests"] != float64(0) {
 		t.Fatalf("default transfer limits: %v", l)
 	}
 

@@ -3500,7 +3500,7 @@ function renderAgentCreate() {
     mk("label", { className: "field" }, "能看到", folder),
     mk("label", { className: "opt-check" }, priv, "也能看私密文件夹（默认看不到，搜索也搜不到）"),
     mk("label", { className: "field" }, "有效期", expiry),
-    mk("p", { className: "hint", textContent: "上传下载不限量；每天请求 2 万次、移进回收站 500 个、新建分享 20 个，一次改动超过 50 个文件要先预演。连续被拒 50 次会自动冻结。" }),
+    mk("p", { className: "hint", textContent: "不限速，请求数和上传下载不限量；每天移进回收站 500 个、新建分享 20 个，一次改动超过 50 个文件要先预演。连续被拒 50 次会自动冻结。" }),
     err,
     mk("div", { className: "dialog-actions" }, cancel, go));
   name.focus();
