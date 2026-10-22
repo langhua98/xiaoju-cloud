@@ -43,6 +43,8 @@ type Server struct {
 	// 不需要认证的接口按 IP 限速（见 ratelimit.go）
 	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit, dropLimit, dropAskLimit *ipLimiter
 
+	agents *agentState // AI agent：每把令牌的限速、被拒次数、批量预演（见 agent.go）
+
 	act     activity // 正在进行的上传（部署前问一下，见 activity.go）
 	started time.Time
 }
@@ -80,6 +82,7 @@ func New(svc *service.Service, opt Options) *Server {
 		ingestLimit: newIPLimiter(120, 60), ingestAskLimit: newIPLimiter(60, 30),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
 		dropLimit: newIPLimiter(120, 60), dropAskLimit: newIPLimiter(60, 30),
+		agents:  newAgentState(),
 		started: time.Now(),
 	}
 }
@@ -132,6 +135,9 @@ func (s *Server) Handler() http.Handler {
 	files("POST /api/auth/grid/challenge", s.gridChallenge)
 	files("POST /api/auth/grid/verify", s.gridVerify)
 	files("POST /api/restore/grant", s.restoreGrant)
+	// AI 助手：网页上管理 agent 令牌（agent_admin.go）；agent 自己用的接口（agent_files.go）带 agent 令牌，不走会话
+	s.agentAdminRoutes(files)
+	s.agentRoutes(api)
 
 	ops("GET /api/backup/status", s.backupStatus)
 	ops("GET /api/stats", s.stats)
@@ -167,6 +173,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/s/{token}/unlock", s.limited(s.shareUnlockLimit, s.unlockShare))
 
 	mux.Handle("/api/", s.cors(api))
+	// MCP（Streamable HTTP）：Claude 等 AI 直接当连接器接上，用 agent 令牌认证（见 mcp.go）
+	mux.Handle("/mcp", s.cors(s.requireAgent(s.mcp)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
 	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
 	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
@@ -190,13 +198,13 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Add("Vary", "Origin")
-			h.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Range")
+			h.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Range, Mcp-Session-Id")
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if allowed {
 				h := w.Header()
 				h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE")
-				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, X-Share-Key, Content-Type, Range")
+				h.Set("Access-Control-Allow-Headers", "Authorization, X-Xiaoju-Token, X-Xiaoju-Session, X-Xiaoju-Agent, X-Share-Key, Content-Type, Range, If-Match, Idempotency-Key, Mcp-Session-Id, Mcp-Protocol-Version")
 				h.Set("Access-Control-Max-Age", "86400")
 			}
 			w.WriteHeader(http.StatusNoContent)

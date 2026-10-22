@@ -348,8 +348,22 @@ type dropResult struct {
 	SHA256 string `json:"sha256"`
 }
 
-// dropStore 把一个文件存进链接的文件夹：名字整理一下（没有就按时间起一个），同名的改名“名字 (2)”。
+// dropStore 把一个文件存进链接的文件夹（见 storeInto），记一次上传。
 func (s *Server) dropStore(ctx context.Context, d *meta.DropLink, name, contentType string, body io.Reader) (dropResult, error) {
+	f, err := s.storeInto(ctx, d.FolderID, name, contentType, body)
+	if err != nil {
+		return dropResult{}, err
+	}
+	if err := s.svc.Store().CountDropUpload(context.WithoutCancel(ctx), d.ID, f.Size); err != nil {
+		s.log.Warn("drop: count upload", "err", err)
+	}
+	s.log.Info("drop link upload", "link", d.ID, "folder", d.Folder.Name, "name", f.Name, "size", f.Size)
+	return dropResult{Name: f.Name, Size: f.Size, Mime: f.Mime, SHA256: hex.EncodeToString(f.SHA256)}, nil
+}
+
+// storeInto 把一个文件存进文件夹（上传链接和 agent 接口共用）：名字整理一下（没有就按时间起一个，没有扩展名时按内容补上），
+// 类型不可信时按内容和扩展名猜；同名的改名“名字 (2)”，不覆盖。
+func (s *Server) storeInto(ctx context.Context, folderID uuid.UUID, name, contentType string, body io.Reader) (*meta.File, error) {
 	br := bufio.NewReaderSize(body, 64<<10)
 	head, _ := br.Peek(64)
 	cr := &countingReader{r: br}
@@ -385,19 +399,12 @@ func (s *Server) dropStore(ctx context.Context, d *meta.DropLink, name, contentT
 		if i > 1 {
 			n = withCopySuffix(name, i)
 		}
-		f, err := s.svc.Upload(ctx, service.UploadRequest{UserID: s.userID, ParentID: &d.FolderID, Name: n, Mime: mimeType, Body: cr})
+		f, err := s.svc.Upload(ctx, service.UploadRequest{UserID: s.userID, ParentID: &folderID, Name: n, Mime: mimeType, Body: cr})
 		// 重名在读请求体之前就会发现，可以换个名字重试
 		if errors.Is(err, meta.ErrConflict) && cr.n == 0 && i < 100 {
 			continue
 		}
-		if err != nil {
-			return dropResult{}, err
-		}
-		if err := s.svc.Store().CountDropUpload(context.WithoutCancel(ctx), d.ID, f.Size); err != nil {
-			s.log.Warn("drop: count upload", "err", err)
-		}
-		s.log.Info("drop link upload", "link", d.ID, "folder", d.Folder.Name, "name", f.Name, "size", f.Size)
-		return dropResult{Name: f.Name, Size: f.Size, Mime: f.Mime, SHA256: hex.EncodeToString(f.SHA256)}, nil
+		return f, err
 	}
 }
 

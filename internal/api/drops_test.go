@@ -196,7 +196,7 @@ func TestDropLinks(t *testing.T) {
 		t.Fatalf("trashed folder: %d", code)
 	}
 	// 过期
-	if _, err := pool.Exec(ctx, `UPDATE drop_links SET expires_at = now() - interval '1 minute' WHERE id = $1`, d2["id"]); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE agent_tokens SET expires_at = now() - interval '1 minute' WHERE id = $1`, d2["id"]); err != nil {
 		t.Fatal(err)
 	}
 	if code, out = call(false, "GET", d2["path"].(string)+"?format=json", ""); code != http.StatusGone || out["code"] != "link_expired" {

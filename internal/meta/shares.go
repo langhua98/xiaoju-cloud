@@ -21,6 +21,7 @@ type Share struct {
 	Views        int64      `json:"views"`
 	CreatedAt    time.Time  `json:"created_at"`
 	File         *File      `json:"file,omitempty"`
+	AgentTokenID *uuid.UUID `json:"agent_token_id,omitempty"` // 哪把 agent 令牌建的（只在创建时写）
 }
 
 // HasPassword 报告这个分享要不要密码。
@@ -54,9 +55,9 @@ func (s *Store) CreateShare(ctx context.Context, sh *Share) (*Share, error) {
 	}
 	var id uuid.UUID
 	if err := s.db.QueryRow(ctx, `
-		INSERT INTO shares (user_id, file_id, token, password_hash, password_salt, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		sh.UserID, sh.FileID, sh.Token, sh.PasswordHash, sh.PasswordSalt, sh.ExpiresAt).Scan(&id); err != nil {
+		INSERT INTO shares (user_id, file_id, token, password_hash, password_salt, expires_at, agent_token_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		sh.UserID, sh.FileID, sh.Token, sh.PasswordHash, sh.PasswordSalt, sh.ExpiresAt, sh.AgentTokenID).Scan(&id); err != nil {
 		return nil, err
 	}
 	return s.getShare(ctx, `s.id = $1`, id)
