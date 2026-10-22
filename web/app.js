@@ -364,6 +364,7 @@ function enterApp() {
   $("#fab").hidden = false;
   startBackupPolling();
   load();
+  refreshAgentsBadge();
 }
 
 // ---------- 刷脸 / 指纹（通行密钥）----------
@@ -1319,6 +1320,7 @@ function renderStats(el, st) {
 
 const ICONS = {
   phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
+  bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4.5M9 13.5v1M15 13.5v1M2 13v3M22 13v3"/><circle cx="12" cy="3.5" r="1"/>',
   share: '<path d="M12 14.5V3.5M8 7.5l4-4 4 4M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1"/>',
   link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/>',
@@ -2883,7 +2885,7 @@ const menu = $("#menu");
 function toggleMenu(open = menu.hidden) {
   menu.hidden = !open;
   $("#menu-btn").setAttribute("aria-expanded", String(open));
-  if (open) playClass(menu, "pop", 200);
+  if (open) { playClass(menu, "pop", 200); refreshAgentsBadge(); }
 }
 $("#menu-btn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
 // 菜单开着时点别处：只关菜单，不触发底下的东西
@@ -2899,6 +2901,8 @@ const ACTIONS = {
   trash: () => openTrash(),
   duplicates: () => openDuplicates(),
   shares: () => openShares(),
+  drops: () => openDrops(),
+  agents: () => openAgents(),
   install: () => installApp(),
   security: () => openSecurity(),
   shortcuts: () => openShortcuts(),
@@ -3143,6 +3147,431 @@ async function openShares() {
       mk("div", { className: "info" }, mk("b", { textContent: sh.file.name }), mk("small", { textContent: shareSummary(sh) })),
       mk("div", { className: "acts" }, copy, revoke));
   }));
+}
+
+// ---------- AI 上传链接 ----------
+// 给 AI agent 一个链接（POST /api/drops）：服务端的 /u/<token>，浏览器打开是上传页面，agent 用 curl 直接传，
+// 只能往一个文件夹里传（默认根目录的“AI 上传”，也可以选当前文件夹）。这里生成、复制、撤销。
+
+const dropURL = (d) => state.api + d.path;
+const dropPrompt = (url) =>
+  `请把文件上传到这个链接（只能上传，不用登录）：${url}\n` +
+  `一个文件：curl -T 文件路径 ${url}/\n` +
+  `多个文件：curl -F file=@a.png -F file=@b.pdf ${url}\n` +
+  `打开链接能看到完整说明（${url}?format=json 是 JSON 版）。`;
+
+function dropSummary(d) {
+  const parts = [`传到“${d.folder.name}”`];
+  parts.push(d.expires_at ? (d.expired ? "已过期" : `${formatDate(d.expires_at)} 失效`) : "永久有效");
+  if (d.uploads) parts.push(`传过 ${d.uploads} 个，${formatSize(d.bytes)}`);
+  if (d.trashed) parts.push("文件夹在回收站里，传不了");
+  return parts.join(" · ");
+}
+
+async function openDrops() {
+  const dlg = $("#drops-dlg");
+  const here = state.chain?.[state.chain.length - 1];
+  const sel = $("#drop-folder");
+  sel.replaceChildren(mk("option", { value: "", textContent: "AI 上传（根目录，没有就新建）" }));
+  if (here) sel.append(mk("option", { value: here.id, textContent: `当前文件夹：${here.name}` }));
+  $("#drop-result").hidden = true;
+  $("#drop-name").value = "";
+  if (!dlg.open) dlg.showModal();
+  renderDrops();
+}
+
+async function renderDrops() {
+  const list = $("#drops-list");
+  list.replaceChildren(mk("li", { className: "hint", textContent: "正在读取…" }));
+  let items;
+  try {
+    items = (await request("GET", "/api/drops")).items || [];
+  } catch (err) {
+    list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
+    return;
+  }
+  if (!items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "还没有上传链接" })); return; }
+  list.replaceChildren(...items.map((d) => {
+    const copy = mk("button", { type: "button", className: "small" }, icon("link"), "复制");
+    const revoke = mk("button", { type: "button", className: "small danger" }, "撤销");
+    copy.addEventListener("click", async () => toast((await copyText(dropURL(d))) ? "已复制链接" : dropURL(d)));
+    revoke.addEventListener("click", async () => {
+      if (!confirm(`撤销${d.name ? `“${d.name}”` : "这个"}上传链接？之后用它传会失败（已经传上来的文件不受影响）。`)) return;
+      try {
+        await request("DELETE", `/api/drops/${d.id}`);
+        toast("已撤销");
+        renderDrops();
+      } catch (err) { fail(err); }
+    });
+    return mk("li", {}, icon("upload", "ic lead"),
+      mk("div", { className: "info" }, mk("b", { textContent: d.name || "上传链接" }), mk("small", { textContent: dropSummary(d) })),
+      mk("div", { className: "acts" }, copy, revoke));
+  }));
+}
+
+$("#drop-create").addEventListener("click", async () => {
+  const btn = $("#drop-create");
+  setButtonBusy(btn, true, "正在生成…", "生成链接");
+  try {
+    const folder = $("#drop-folder").value;
+    const d = await request("POST", "/api/drops", {
+      name: $("#drop-name").value.trim(), folder_id: folder || null, expires_days: Number($("#drop-expiry").value),
+    });
+    $("#drop-url").value = dropURL(d);
+    $("#drop-result").hidden = false;
+    $("#drop-url").select();
+    renderDrops();
+    if (!folder && !state.folderId) load(); // 根目录可能多了“AI 上传”
+  } catch (err) {
+    fail(err);
+  } finally {
+    setButtonBusy(btn, false, "正在生成…", "生成链接");
+  }
+});
+$("#drop-copy").addEventListener("click", async () => {
+  const url = $("#drop-url").value;
+  if (await copyText(url)) toast("已复制链接");
+  else { $("#drop-url").select(); toast("长按上面的链接复制"); }
+});
+$("#drop-copy-prompt").addEventListener("click", async () => {
+  toast((await copyText(dropPrompt($("#drop-url").value))) ? "已复制，粘贴给 AI 就行" : "复制不了，长按上面的链接复制");
+});
+
+// ---------- AI 助手 ----------
+// 给 AI agent 发令牌（REST 接口和 MCP 共用），批准它申请的危险操作，看它做过什么、一键撤销。
+// 发令牌、批准危险操作和恢复到手机一样：当场刷脸（注册了刷脸设备时），开了格子口令再答一道题。
+
+const AGENT_PRESETS = {
+  readonly: { label: "只读", desc: "列目录、搜索、看缩略图和预览，不能下载原文件、不能改动" },
+  upload: { label: "只读 + 下载 + 上传", desc: "还能下载原文件、往网盘里传文件，不能改名、移动、删除" },
+  organize: { label: "整理", desc: "还能新建文件夹、改名、移动、移进回收站（都能撤销）" },
+  admin: { label: "全部", desc: "还能建分享链接、看备份状态、申请永久删除（要你批准）" },
+};
+const AGENT_STATES = { active: "使用中", expired: "已过期", revoked: "已撤销", frozen: "已冻结" };
+const AGENT_ACTIONS = {
+  read: "查看", search: "搜索", stats: "统计", duplicates: "找重复", thumbnail: "缩略图", preview: "预览", trash_list: "看回收站",
+  download: "下载", link: "下载链接", upload: "上传", upload_start: "开始上传", mkdir: "新建文件夹", rename: "改名", move: "移动",
+  trash: "移进回收站", restore: "从回收站放回", share: "分享", unshare: "撤销分享", batch_plan: "批量预演", frozen: "被冻结",
+  new_ip: "新的 IP 地址",
+  request_purge: "申请永久删除", request_empty_trash: "申请清空回收站", request_unprivate: "申请取消私密", request_reconcile: "申请清理",
+};
+const AUDIT_RESULTS = { denied: "被拒绝", error: "出错", pending: "等你批准" };
+const AGENT_UNDOABLE = new Set(["rename", "move", "trash", "restore", "upload", "mkdir"]);
+const REQUEST_LABELS = { purge: "永久删除", empty_trash: "清空回收站", unprivate: "取消私密", reconcile: "清理丢失的文件" };
+
+function presetOf(scopes) {
+  for (const [k, v] of Object.entries(agentsInfo?.presets || {})) {
+    if (v.length === scopes.length && v.every((s) => scopes.includes(s))) return AGENT_PRESETS[k]?.label || k;
+  }
+  return scopes.join("、");
+}
+
+let agentsInfo = null; // GET /api/agents 的结果
+
+// 菜单里「AI 助手」旁边的数字：等你批准的申请
+async function refreshAgentsBadge() {
+  try {
+    const n = ((await request("GET", "/api/agents/requests?status=pending")).items || []).length;
+    const b = $("#agents-badge");
+    b.textContent = String(n);
+    b.hidden = !n;
+    $("#menu-btn").classList.toggle("has-badge", n > 0);
+  } catch { /* 旧服务端没有这个接口 */ }
+}
+
+// 当场验证（刷脸 + 格子题），通过后调 run(payload)；取消返回 false
+async function freshVerify(body, { label, intro, run, back }) {
+  let status = { passkey_required: false, enabled: false };
+  try { status = await request("GET", "/api/auth/grid"); } catch { /* 没有格子口令功能 */ }
+  let ticket = "";
+  if (status.passkey_required) {
+    ticket = await reverifyFace(body);
+    if (!ticket) { back(); return; }
+  }
+  const onError = (err) => {
+    if (err.code === "passkey_required") { toast("刷脸验证已超时，请重新操作"); back(); return true; }
+    if (err.status === 401) { fail(err); return true; }
+    return false;
+  };
+  if (!status.enabled) {
+    body.replaceChildren(mk("p", { className: "hint", textContent: "正在处理…" }));
+    try { await run({ ticket }); } catch (err) { if (!onError(err)) fail(err); back(); }
+    return;
+  }
+  const quiz = mk("div");
+  const cancel = mk("button", { type: "button", className: "ghost", textContent: "取消" });
+  cancel.addEventListener("click", back);
+  body.replaceChildren(mk("p", { className: "hint", textContent: intro || "再答对一道格子题。" }), quiz,
+    mk("div", { className: "dialog-actions" }, cancel));
+  mountGridQuiz(quiz, {
+    label,
+    timed: true,
+    load: () => request("POST", "/api/auth/grid/challenge"),
+    submit: (payload) => run({ ticket, ...payload }),
+    onError,
+  });
+}
+
+async function openAgents() {
+  const dlg = $("#agents-dlg");
+  if (!dlg.open) dlg.showModal();
+  renderAgents();
+}
+
+function agentCloseBtn() {
+  const b = mk("button", { type: "button", className: "ghost", textContent: "关闭" });
+  b.setAttribute("data-close", "");
+  return b;
+}
+
+function agentSection(title, ...children) {
+  return mk("section", { className: "agents-sec" }, mk("h3", { textContent: title }), ...children);
+}
+
+async function renderAgents() {
+  const body = $("#agents-body");
+  body.replaceChildren(mk("p", { className: "hint", textContent: "正在读取…" }));
+  let reqs;
+  try {
+    [agentsInfo, reqs] = await Promise.all([request("GET", "/api/agents"), request("GET", "/api/agents/requests?status=pending")]);
+  } catch (err) {
+    body.replaceChildren(mk("p", { className: "error", textContent: err.message }),
+      mk("div", { className: "dialog-actions" }, agentCloseBtn()));
+    return;
+  }
+  const pending = reqs.items || [];
+  $("#agents-badge").textContent = String(pending.length);
+  $("#agents-badge").hidden = !pending.length;
+  $("#menu-btn").classList.toggle("has-badge", pending.length > 0);
+
+  const parts = [mk("p", { className: "hint", textContent: "给 AI（Claude、ChatGPT 等）一把令牌，它就能通过接口或 MCP 帮你找文件、整理、上传。删除只进回收站，永久删除要你在这里批准；它做的每一步都有记录，可以撤销。" })];
+
+  if (pending.length) {
+    parts.push(agentSection(`等你批准（${pending.length}）`, mk("ul", { className: "trash-list" }, ...pending.map((q) => {
+      const ok = mk("button", { type: "button", className: "small danger", textContent: "批准" });
+      const no = mk("button", { type: "button", className: "small", textContent: "拒绝" });
+      no.addEventListener("click", async () => {
+        try { await request("POST", `/api/agents/requests/${q.id}/reject`); toast("已拒绝"); renderAgents(); } catch (err) { fail(err); }
+      });
+      ok.addEventListener("click", () => approveAgentRequest(q));
+      const what = REQUEST_LABELS[q.action] || q.action;
+      const paths = (q.paths || []).slice(0, 3).join("、") + ((q.paths || []).length > 3 ? ` 等 ${q.paths.length} 项` : "");
+      return mk("li", {}, icon("shield", "ic lead"),
+        mk("div", { className: "info" }, mk("b", { textContent: `${q.token_name || "AI"} 想${what}${paths ? `：${paths}` : ""}` }),
+          mk("small", { textContent: `${q.reason ? `理由：${q.reason} · ` : ""}${formatDate(q.created_at)} 申请，24 小时内不批准自动作废` })),
+        mk("div", { className: "acts" }, no, ok));
+    }))));
+  }
+
+  const toks = (agentsInfo.items || []).filter((t) => t.kind !== "link");
+  const live = toks.filter((t) => t.state !== "revoked");
+  const list = mk("ul", { className: "trash-list" });
+  if (!live.length) list.append(mk("li", { className: "empty", textContent: "还没有 AI 令牌" }));
+  for (const t of live) list.append(agentRow(t));
+  const add = mk("button", { type: "button", className: "primary" }, icon("plus"), "新建令牌");
+  add.addEventListener("click", () => renderAgentCreate());
+  const acts = [add];
+  if (live.some((t) => t.state === "active" || t.state === "frozen")) {
+    const all = mk("button", { type: "button", className: "danger", textContent: "全部停用" });
+    all.addEventListener("click", async () => {
+      if (!confirm("撤销所有 AI 令牌和上传链接？所有 agent 马上就用不了了。")) return;
+      try { const r = await request("POST", "/api/agents/revoke-all"); toast(`已撤销 ${r.revoked} 个`); renderAgents(); } catch (err) { fail(err); }
+    });
+    acts.unshift(all);
+  }
+  parts.push(agentSection("AI 令牌", list, mk("div", { className: "dialog-actions wrap" }, ...acts)));
+
+  const log = mk("button", { type: "button" }, icon("restore"), "操作记录");
+  log.addEventListener("click", () => renderAgentAudit());
+  const drops = mk("button", { type: "button" }, icon("upload"), "上传链接");
+  drops.addEventListener("click", async () => { await closeDialog($("#agents-dlg")); openDrops(); });
+  const close = agentCloseBtn();
+  parts.push(mk("div", { className: "dialog-actions wrap" }, log, drops, close));
+  body.replaceChildren(...parts);
+}
+
+function agentRow(t) {
+  const info = [AGENT_STATES[t.state] || t.state, presetOf(t.scopes), `范围 ${t.root_path}${t.allow_private ? "（含私密）" : ""}`];
+  if (t.state === "active" && t.expires_at) info.push(`${formatDate(t.expires_at)} 到期`);
+  info.push(t.last_used_at ? `最近 ${formatDate(t.last_used_at)}${t.last_ip ? ` · ${t.last_ip}` : ""}` : "还没用过");
+  const used = t.used_today || {};
+  if (used.requests) info.push(`今天 ${used.requests} 次请求`);
+  const btns = [];
+  if (t.state === "frozen") {
+    const b = mk("button", { type: "button", className: "small", textContent: "解冻" });
+    b.addEventListener("click", () => patchAgent(t, { unfreeze: true }, "已解冻"));
+    btns.push(b);
+  }
+  if (t.state === "active" || t.state === "expired") {
+    const b = mk("button", { type: "button", className: "small", textContent: "续期 30 天" });
+    b.addEventListener("click", () => patchAgent(t, { expires_days: 30 }, "已续期"));
+    btns.push(b);
+  }
+  const revoke = mk("button", { type: "button", className: "small danger", textContent: "撤销" });
+  revoke.addEventListener("click", async () => {
+    if (!confirm(`撤销“${t.name}”？用这把令牌的 agent 马上就用不了了。`)) return;
+    try { await request("DELETE", `/api/agents/${t.id}`); toast("已撤销"); renderAgents(); } catch (err) { fail(err); }
+  });
+  btns.push(revoke);
+  return mk("li", { className: t.state === "active" ? "" : "dim" }, icon("bot", "ic lead"),
+    mk("div", { className: "info" }, mk("b", { textContent: `${t.name} · …${t.last4}` }), mk("small", { textContent: info.join(" · ") })),
+    mk("div", { className: "acts" }, ...btns));
+}
+
+async function patchAgent(t, body, msg) {
+  try { await request("PATCH", `/api/agents/${t.id}`, body); toast(msg); renderAgents(); } catch (err) { fail(err); }
+}
+
+function approveAgentRequest(q) {
+  const body = $("#agents-body");
+  const what = REQUEST_LABELS[q.action] || q.action;
+  const n = (q.file_ids || []).length;
+  if (!confirm(`批准“${q.token_name || "AI"}”${what}${n ? `（${n} 项）` : ""}？${q.action === "purge" || q.action === "empty_trash" ? "永久删除后找不回来。" : ""}`)) return;
+  freshVerify(body, {
+    label: `确认${what}`,
+    intro: `批准前再答对一道格子题：${what}${n ? ` ${n} 项` : ""}。`,
+    back: () => renderAgents(),
+    async run(payload) {
+      const r = await request("POST", `/api/agents/requests/${q.id}/approve`, payload);
+      toast(r.request.status === "failed" ? `执行失败：${r.request.result}` : `已${what}`);
+      renderAgents();
+      if (q.action !== "reconcile") load();
+    },
+  });
+}
+
+function renderAgentCreate() {
+  const body = $("#agents-body");
+  const name = mk("input", { type: "text", autocomplete: "off", maxLength: 100, placeholder: "比如：Claude 整理照片" });
+  const preset = mk("select", {}, ...Object.entries(AGENT_PRESETS).map(([k, v]) => mk("option", { value: k, textContent: v.label })));
+  preset.value = "organize";
+  const desc = mk("small", { className: "hint" });
+  const syncDesc = () => { desc.textContent = AGENT_PRESETS[preset.value].desc; };
+  preset.addEventListener("change", syncDesc);
+  syncDesc();
+  const folder = mk("select", {}, mk("option", { value: "", textContent: "整个网盘" }));
+  const here = state.chain?.[state.chain.length - 1];
+  if (here) folder.append(mk("option", { value: here.id, textContent: `只限当前文件夹：${here.name}` }));
+  const priv = mk("input", { type: "checkbox" });
+  const expiry = mk("select", {}, ...(agentsInfo?.expiry_days || [1, 7, 30, 90]).map((d) => mk("option", { value: String(d), textContent: `${d} 天` })));
+  expiry.value = "30";
+  const err = mk("p", { className: "error", hidden: true });
+  const cancel = mk("button", { type: "button", className: "ghost", textContent: "返回" });
+  cancel.addEventListener("click", () => renderAgents());
+  const go = mk("button", { type: "button", className: "primary", textContent: "生成令牌" });
+  go.addEventListener("click", () => {
+    const req = {
+      name: name.value.trim(), preset: preset.value, root_folder_id: folder.value || null, allow_private: priv.checked,
+      expires_days: Number(expiry.value),
+    };
+    if (!req.name) { err.textContent = "给它起个名字，方便以后认出是谁在操作"; err.hidden = false; name.focus(); return; }
+    freshVerify(body, {
+      label: "确认生成",
+      intro: "生成令牌前再答对一道格子题。",
+      back: () => renderAgents(),
+      async run(payload) { renderAgentIssued(await request("POST", "/api/agents", { ...req, ...payload })); },
+    });
+  });
+  body.replaceChildren(
+    mk("label", { className: "field" }, "名字", name),
+    mk("label", { className: "field" }, "能做什么", preset, desc),
+    mk("label", { className: "field" }, "能看到", folder),
+    mk("label", { className: "opt-check" }, priv, "也能看私密文件夹（默认看不到，搜索也搜不到）"),
+    mk("label", { className: "field" }, "有效期", expiry),
+    mk("p", { className: "hint", textContent: "每天有额度（默认请求 2 万次、下载 5 GB、移进回收站 500 个），一次改动超过 50 个文件要先预演。连续被拒 50 次会自动冻结。" }),
+    err,
+    mk("div", { className: "dialog-actions" }, cancel, go));
+  name.focus();
+}
+
+function renderAgentIssued(res) {
+  const body = $("#agents-body");
+  const tok = mk("input", { type: "text", readOnly: true, className: "share-url", value: res.token });
+  const mcpCmd = `claude mcp add --transport http xiaoju ${res.mcp_url} --header "Authorization: Bearer ${res.token}"`;
+  const copier = (label, text, msg) => {
+    const b = mk("button", { type: "button" }, icon("copy"), label);
+    b.addEventListener("click", async () => toast((await copyText(text)) ? msg : "复制不了，长按上面的令牌复制"));
+    return b;
+  };
+  const done = mk("button", { type: "button", className: "primary", textContent: "完成" });
+  done.addEventListener("click", () => renderAgents());
+  body.replaceChildren(
+    mk("p", { className: "hint", textContent: `“${res.agent.name}”的令牌生成好了。它只显示这一次，关掉就看不到了（丢了就撤销再发一个）。` }),
+    tok,
+    mk("div", { className: "dialog-actions wrap" },
+      copier("复制令牌", res.token, "已复制令牌"),
+      copier("复制 MCP 命令", mcpCmd, "已复制，在终端里粘贴运行"),
+      copier("复制给 AI 的说明", res.instructions, "已复制，粘贴给 AI 就行")),
+    mk("p", { className: "hint", textContent: `MCP 地址：${res.mcp_url}（Claude 等支持 MCP 的客户端加一个 HTTP 服务器，请求头 Authorization: Bearer 令牌）` }),
+    mk("div", { className: "dialog-actions" }, done));
+  tok.select();
+}
+
+async function renderAgentAudit(before = 0, list = null) {
+  const body = $("#agents-body");
+  if (!list) {
+    list = mk("ul", { className: "trash-list" }, mk("li", { className: "hint", textContent: "正在读取…" }));
+    const back = mk("button", { type: "button", className: "ghost", textContent: "返回" });
+    back.addEventListener("click", () => renderAgents());
+    body.replaceChildren(mk("p", { className: "hint", textContent: "AI 做过的改动、下载和被拒绝的请求（列目录、搜索这类只读请求不列）。改名、移动、删除、上传都能撤销；之后又被改过的不会动。" }),
+      list, mk("div", { className: "dialog-actions" }, back));
+  }
+  let items;
+  try {
+    items = (await request("GET", `/api/agents/audit?quiet=1&limit=50${before ? `&before=${before}` : ""}`)).items || [];
+  } catch (err) {
+    list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
+    return;
+  }
+  list.querySelector("li.hint, li.more")?.remove();
+  if (!before && !items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "还没有记录" })); return; }
+  const seenBatch = new Set([...list.querySelectorAll("[data-batch]")].map((el) => el.dataset.batch));
+  for (const e of items) {
+    const btns = [];
+    if (e.result === "ok" && !e.undone_at && AGENT_UNDOABLE.has(e.action)) {
+      const u = mk("button", { type: "button", className: "small", textContent: "撤销" });
+      u.addEventListener("click", async () => {
+        try {
+          await request("POST", `/api/agents/audit/${e.id}/undo`);
+          toast("已撤销");
+          u.replaceWith(mk("small", { className: "hint", textContent: "已撤销" }));
+          load();
+        } catch (err) { toast(err.code === "changed_since" ? "之后又被改过了，没有动它" : err.message); }
+      });
+      btns.push(u);
+      if (e.batch_id && !seenBatch.has(e.batch_id)) {
+        seenBatch.add(e.batch_id);
+        const ub = mk("button", { type: "button", className: "small", textContent: "撤销整批" });
+        ub.dataset.batch = e.batch_id;
+        ub.addEventListener("click", async () => {
+          if (!confirm("撤销这一整次批量操作？之后又被改过的会跳过。")) return;
+          try {
+            const r = await request("POST", `/api/agents/batches/${e.batch_id}/undo`);
+            toast(`撤销了 ${r.undone} 项${r.skipped.length ? `，${r.skipped.length} 项之后又被改过，跳过了` : ""}`);
+            renderAgentAudit();
+            load();
+          } catch (err) { fail(err); }
+        });
+        btns.push(ub);
+      }
+    } else if (e.undone_at) {
+      btns.push(mk("small", { className: "hint", textContent: "已撤销" }));
+    }
+    const what = AGENT_ACTIONS[e.action] || e.action;
+    const paths = (e.paths || []).slice(0, 2).join(" → ");
+    const meta = [formatDate(e.at), e.token_name || "AI"];
+    if (e.result !== "ok") meta.push(`${AUDIT_RESULTS[e.result] || e.result}${e.code ? `（${e.code}）` : ""}`);
+    if (e.bytes) meta.push(formatSize(e.bytes));
+    if (e.ip) meta.push(e.ip);
+    list.append(mk("li", { className: e.result === "ok" ? "" : "dim" }, icon(e.result === "ok" ? "bot" : "shield", "ic lead"),
+      mk("div", { className: "info" }, mk("b", { textContent: `${what}${paths ? ` ${paths}` : ""}` }), mk("small", { textContent: meta.join(" · ") })),
+      mk("div", { className: "acts" }, ...btns)));
+  }
+  if (items.length === 50) {
+    const more = mk("button", { type: "button", className: "small", textContent: "更早的" });
+    more.addEventListener("click", () => renderAgentAudit(items[items.length - 1].id, list));
+    list.append(mk("li", { className: "more" }, more));
+  }
 }
 
 // ---------- 重复文件 ----------

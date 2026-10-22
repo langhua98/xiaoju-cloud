@@ -1386,3 +1386,27 @@ button.danger { color: var(--danger); }
 .sh-nav.prev { left: 12px; }
 .sh-nav.next { right: 12px; }
 @media (hover: none) { .sh-nav { display: none; } }
+
+/* AI 助手 */
+.agents-dlg { width: min(560px, calc(100vw - 32px)); }
+.agents-sec h3 { margin: 16px 0 4px; font-size: 14px; font-weight: 600; }
+.agents-dlg .trash-list li.dim { opacity: 0.6; }
+.agents-dlg .trash-list li.more { justify-content: center; border: 0; }
+.agents-dlg .trash-list .info small { white-space: normal; }
+.agents-dlg .field small.hint { margin: 2px 0 0; font-size: 12px; }
+.agents-dlg .share-url { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.opt-check { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; font-size: 13px; color: var(--muted); }
+.opt-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+.count-badge {
+  margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 10px;
+  background: var(--danger); color: #fff; font-size: 12px; font-weight: 600; text-align: center;
+}
+.avatar.has-badge { position: relative; }
+.avatar.has-badge::after {
+  content: ""; position: absolute; top: 1px; right: 1px; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--danger); border: 2px solid var(--surface);
+}
+.agents-dlg .trash-list li { flex-wrap: wrap; }
+.agents-dlg .trash-list .info { flex: 1 1 180px; }
+.agents-dlg .trash-list .info b { white-space: normal; }
+.agents-dlg .trash-list .acts { margin-left: auto; }

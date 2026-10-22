@@ -95,6 +95,10 @@ make run
 | `GET` / `DELETE` | `/api/shares`、`/api/shares/{id}` | 列出、撤销分享链接 |
 | `GET` | `/api/s/{token}[?folder=id]` | 不需要认证（按 IP 限速）：分享的文件，或文件夹（及子文件夹）里的条目，文件带签名的 `url`、`preview`；设了密码的要带 `X-Share-Key`；没有 / 撤销了 404，过期 410 |
 | `POST` | `/api/s/{token}/unlock` | `{"password"}` → `{"key"}`（12 小时有效）；密码不对 403；每个 IP 每分钟最多 10 次 |
+| `POST` | `/api/drops` | AI 上传链接：`{"name"（备注）,"folder_id"（不填是根目录“AI 上传”）,"expires_days"（0 不过期）}` → `{"id","token","path":"/u/<token>",…}` |
+| `GET` / `DELETE` | `/api/drops`、`/api/drops/{id}` | 列出（带传过几个、多少字节）、撤销上传链接 |
+| `GET` | `/u/{token}` | 不需要认证（按 IP 限速）：浏览器打开是上传页面；`Accept: application/json` 或 `?format=json` 是 JSON 说明，curl 是纯文字说明。只能上传，不能列目录、下载、删除；没有 / 撤销了 404，过期 410 |
+| `PUT` / `POST` | `/u/{token}/{文件名}`、`/u/{token}` | 不需要认证：`curl -T 文件 https://…/u/<token>/`；`curl -F file=@a -F file=@b https://…/u/<token>`（multipart，可以多个）；或原始请求体 + `?name=` → `201 {"files":[{"name","size","mime","sha256"}]}`。同名改名“名字 (2)”，不覆盖 |
 | `GET` | `/api/maintenance/activity` | 正在进行的上传数、多久没有上传了（部署前用，见“线上部署”） |
 | `PATCH` | `/api/files/{id}` | 只放要改的：`{"name"}` 重命名、`{"parent_id"}` 移动（`null` 是根目录）、`{"private": true}` 文件夹设为私密；重名 409，文件夹移进自己里面 / 文件设私密 400 |
 | `DELETE` | `/api/files/{id}[?permanent=1]` | 移入回收站；`permanent=1` 永久删除文件（同时删除频道消息）；文件夹要先在回收站里，连同里面的文件一起删 |
@@ -155,6 +159,10 @@ curl -H "$T" -H "Range: bytes=0-1048575" "http://localhost:8080/api/files/<id>/c
 - **分享链接**：文件夹 ⋯、大图右上角、多选（只选一项时）里“分享”，选有效期（1 / 7 / 30 天、永久）和可选的密码，生成
   `share.html#<随机串>`；头像菜单的“分享的链接”里复制、撤销。打开的人不用登录：`web/share.html` + `share.js` 是单独的页面，
   能进子文件夹、看大图（预览）、放视频、下载。私密相册里的也能分享（分享时会提醒）。
+- **AI 助手**（头像菜单，有待批准的申请时头像上有红点）：发 AI 令牌、批准危险操作、看操作记录和撤销，见下面「AI agent 接口」。
+- **AI 上传链接**（「AI 助手」里的“上传链接”，`api/drops.go`；迁移 `0016_agents` 起和 AI 令牌存在同一张 `agent_tokens` 表）：生成一个链接 `https://<服务端>/u/<随机串>` 发给 AI agent，
+  打开就是上传页面（服务端自己出的页面，不依赖 GitHub Pages），agent 用 curl 直接传，链接里写着用法；“复制给 AI 的说明”复制一段可以直接粘贴给 agent 的话。
+  只能往一个文件夹里传（默认根目录的“AI 上传”，也可以选当前文件夹），可以设有效期，随时撤销；列表里能看到每个链接传过多少。
 - **添加到主屏幕**（`manifest.webmanifest`、`icons/`）：Safari 分享 → 添加到主屏幕，像 App 一样全屏打开。头像菜单里有说明。
 - 回收站里的东西放满 30 天自动永久删除（`PurgeExpiredTrash`，每小时看一次）。
 
@@ -192,6 +200,61 @@ Docker 镜像里装了 `vips-tools vips-heif ffmpeg`（`xiaoju thumb 输入 输�
 没登录时自动换成新版；已登录时顶部提示“网页有新版本”（令牌和会话只在内存里，刷新后要重新登录）。
 
 本地预览：`python3 -m http.server -d web 8090`，服务端设置 `XIAOJU_CORS_ORIGINS=http://localhost:8090`。
+
+## AI agent 接口（REST + MCP）
+
+让 AI（Claude、ChatGPT、自己写的脚本）管理网盘：找文件、看缩略图、下载、上传、建文件夹、改名、移动、移进回收站、分享。
+代码在 `internal/api/agent*.go`、`mcp.go`，数据层 `internal/meta/agents.go`，迁移 `0016_agents`，测试 `TestAgentAPI`。
+
+**令牌**：网页「AI 助手」→ 新建令牌（当场刷脸 + 格子题），只显示一次。`xa_` 开头，库里只存 SHA-256。
+请求头 `Authorization: Bearer xa_…`（或 `X-Xiaoju-Agent`）。换管理员令牌（`XIAOJU_ADMIN_TOKEN`）后所有 AI 令牌一起失效。
+
+| 预设 | 权限 |
+|---|---|
+| 只读 `readonly` | `files:read`：列目录、搜索、统计、找重复、缩略图、预览 |
+| 只读 + 下载 + 上传 `upload` | 再加 `files:download`、`files:upload` |
+| 整理 `organize` | 再加 `files:organize`：建文件夹、改名、移动、移进回收站、放回、批量 |
+| 全部 `admin` | 再加 `shares:manage`（1–7 天的分享链接）、`ops:read`（备份状态）、`danger:request`（申请危险操作） |
+
+**护栏**：
+- 可以限定在一个文件夹里（之外的一律 404）；私密文件夹默认看不到、搜不到，发令牌时勾选才行。
+- 删除只进回收站。永久删除、清空回收站、取消私密、清理残块只能 `POST /requests` 申请，你在网页上批准（刷脸 + 格子题）才执行，24 小时不批自动作废。
+- 每天额度（可按令牌改）：请求 2 万次、移进回收站 500 个、下载 5 GB、上传 20 GB、分享 20 个；开了格子口令时下载照片视频原图每天 50 个。
+  每个令牌每秒 10 次（突发 30）。连续被拒 50 次自动冻结，网页上解冻。
+- 一次改动超过 50 个文件要先 `dry_run` 预演拿 `plan_id`（10 分钟内有效，文件中间被改过就作废）。
+- 改名、移动可以带 `If-Match: <etag>`，文件被别人改过返回 412；上传可以带 `Idempotency-Key`，重试不会传两份。
+- 每个请求（包括被拒绝的）都记进 `agent_audit`。网页「操作记录」里改名、移动、移进回收站、放回、上传、新建文件夹都能撤销（批量的可以整批撤），
+  之后又被改过的不动。审计日志留 180 天。
+
+**REST**（`/api/agent/v1`，错误统一是 `{"error","code","hint"}`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/me` | 这把令牌能做什么、范围、今天的额度 |
+| `GET` | `/items?path=/a/b`、`/items/{id}` | 条目信息；文件夹带 `children`（`?limit=&cursor=` 分页） |
+| `GET` | `/search?q=&type=&mime=&taken_from=&taken_to=&in=` | 在范围内递归搜索（`in` 是起点路径） |
+| `GET` | `/stats?path=`、`/duplicates`、`/trash` | 统计、重复文件、回收站 |
+| `GET` | `/items/{id}/thumb`、`/preview`、`/content`（支持 Range）；`POST /items/{id}/link`（15 分钟下载链接） | 看和下载 |
+| `POST` | `/folders` `{"path"}` | 像 `mkdir -p` |
+| `PUT` | `/files?path=/a/b/名字.ext` | 请求体是文件；缺的文件夹自动建，重名自动改名“名字 (2)” |
+| `POST` | `/uploads` → `PUT /uploads/{id}?offset=`、`GET /uploads/{id}` | 大文件断点续传 |
+| `PATCH` | `/items/{id}` `{"name"}` / `{"to":"/目标"}` / `{"parent_id"}` | 改名、移动 |
+| `DELETE` | `/items/{id}`；`POST /items/{id}/restore` | 移进回收站、放回 |
+| `POST` | `/batch` `{"ops":[{"op":"move","id","to"},…],"dry_run":true}`，再 `{"plan_id"}` | 批量（最多 500 条） |
+| `GET` / `POST` / `DELETE` | `/shares`、`/shares/{id}` | 这把令牌建的分享 |
+| `POST` / `GET` | `/requests`、`/requests/{id}` | 申请危险操作 `{"action":"purge","ids":[…],"reason"}`、查结果 |
+| `GET` | `/audit`、`/ops/backup`、`/ops/activity` | 自己的操作记录、备份状态 |
+
+**MCP**（Streamable HTTP，`POST /mcp`，同一个令牌）：工具和上面一一对应（`list_folder`、`search_files`、`view_thumbnail`、`read_file`、
+`upload_file`、`move`、`move_to_trash`、`batch_changes`、`request_dangerous_action`…），只列出令牌有权限的。
+
+```bash
+claude mcp add --transport http xiaoju https://<服务端>/mcp --header "Authorization: Bearer xa_…"
+```
+
+**网页用的管理接口**（要登录会话）：`POST/GET /api/agents`、`PATCH/DELETE /api/agents/{id}`、`POST /api/agents/revoke-all`、
+`GET /api/agents/audit[?quiet=1]`、`POST /api/agents/audit/{id}/undo`、`POST /api/agents/batches/{id}/undo`、
+`GET /api/agents/requests`、`POST /api/agents/requests/{id}/approve|reject`。
 
 ## 测试
 
@@ -483,6 +546,11 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
     `TestSpoolWritesWhileReceiving`、`TestScrubAndTrashExpiry`、`TestIPLimiter`、`TestActivity`，`TestContentDedupe` 里加了重复文件。
     Playwright 走过：预览 1600px、放大换 3200px 原图、实况标记和播放按钮、重复文件清理、回收站提示、分享（错密码、对密码、
     分享页大图、撤销后失效）、主屏幕配置。快捷指令改了以后要在网页上重新安装才生效。
+
+12. **AI agent 接口**（2026-10-22）：令牌 + 权限 + 文件夹范围 + 额度 + 审计撤销 + 危险操作审批 + MCP，网页「AI 助手」，
+    见上面「AI agent 接口」。和 AI 上传链接（#35）合并成一张 `agent_tokens` 表（迁移 `0016` 把 `drop_links` 搬过去），
+    上传共用 `storeInto`。Go 测试 `TestAgentAPI`、`TestDropLinks`；网页用 Playwright 在手机尺寸走过：发令牌、令牌列表、
+    操作记录撤销、待批准红点、拒绝、批准永久删除。
 
 ### 正在进行（交接时的状态）
 
