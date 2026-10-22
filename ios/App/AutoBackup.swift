@@ -279,15 +279,22 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     }
 
     // 「自动备份」开关：充电时的后台任务 + 系统的后台上传扩展一起开关。扩展没开成返回原因。
-    func setAutomatic(_ on: Bool) -> String? {
-        enabled = on
+    // 刚允许照片权限、刚装好 App 的那一下，系统常常还没准备好，开扩展会报错（PHPhotosErrorDomain 3202），
+    // 过一会儿再开就好了：所以失败了隔 2 秒再试，最多试 4 次，都不行才显示原因。
+    func setAutomatic(_ on: Bool) async -> String? {
+        await MainActor.run { enabled = on }
         if on && PHPhotoLibrary.authorizationStatus(for: .readWrite) != .authorized { return nil }
-        do {
-            try PHPhotoLibrary.shared().setUploadJobExtensionEnabled(on)
-            return nil
-        } catch {
-            return "系统后台上传没打开：\(error.localizedDescription)"
+        var last: Error?
+        for attempt in 0..<4 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+            do {
+                try PHPhotoLibrary.shared().setUploadJobExtensionEnabled(on)
+                return nil
+            } catch {
+                last = error
+            }
         }
+        return "系统后台上传没打开：\(last?.localizedDescription ?? "")（关掉「自动备份」再打开试试）"
     }
 
     // fromApp：在 App 里（或快捷指令打开 App）开始的，申请「继续在后台运行」；系统的后台任务不用。
