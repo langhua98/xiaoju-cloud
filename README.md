@@ -208,6 +208,8 @@ Docker 镜像里装了 `vips-tools vips-heif ffmpeg`（`xiaoju thumb 输入 输�
 
 **令牌**：网页「AI 助手」→ 新建令牌（当场刷脸 + 格子题），只显示一次。`xa_` 开头，库里只存 SHA-256。
 请求头 `Authorization: Bearer xa_…`（或 `X-Xiaoju-Agent`）。换管理员令牌（`XIAOJU_ADMIN_TOKEN`）后所有 AI 令牌一起失效。
+默认永久有效（也可以选 1 / 7 / 30 / 90 天，网页上能「设为永久」，`PATCH /api/agents/{id} {"never_expires": true}`）；不用了在网页上撤销。
+AI 拿到的下载链接（`POST /items/{id}/link`）也不过期，令牌被撤销、过期、冻结或去掉下载权限时链接跟着失效。
 
 | 预设 | 权限 |
 |---|---|
@@ -236,7 +238,7 @@ Docker 镜像里装了 `vips-tools vips-heif ffmpeg`（`xiaoju thumb 输入 输�
 | `GET` | `/items?path=/a/b`、`/items/{id}` | 条目信息；文件夹带 `children`（`?limit=&cursor=` 分页） |
 | `GET` | `/search?q=&type=&mime=&taken_from=&taken_to=&in=` | 在范围内递归搜索（`in` 是起点路径） |
 | `GET` | `/stats?path=`、`/duplicates`、`/trash` | 统计、重复文件、回收站 |
-| `GET` | `/items/{id}/thumb`、`/preview`、`/content`（支持 Range）；`POST /items/{id}/link`（15 分钟下载链接） | 看和下载 |
+| `GET` | `/items/{id}/thumb`、`/preview`、`/content`（支持 Range）；`POST /items/{id}/link`（下载链接，不过期，令牌撤销就失效） | 看和下载 |
 | `POST` | `/folders` `{"path"}` | 像 `mkdir -p` |
 | `PUT` | `/files?path=/a/b/名字.ext` | 请求体是文件；缺的文件夹自动建，重名自动改名“名字 (2)” |
 | `POST` | `/uploads` → `PUT /uploads/{id}?offset=`、`GET /uploads/{id}` | 大文件断点续传 |

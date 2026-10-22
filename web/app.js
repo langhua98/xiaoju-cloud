@@ -3402,7 +3402,7 @@ async function renderAgents() {
 
 function agentRow(t) {
   const info = [AGENT_STATES[t.state] || t.state, presetOf(t.scopes), `范围 ${t.root_path}${t.allow_private ? "（含私密）" : ""}`];
-  if (t.state === "active" && t.expires_at) info.push(`${formatDate(t.expires_at)} 到期`);
+  if (t.state === "active") info.push(t.expires_at ? `${formatDate(t.expires_at)} 到期` : "永久有效");
   info.push(t.last_used_at ? `最近 ${formatDate(t.last_used_at)}${t.last_ip ? ` · ${t.last_ip}` : ""}` : "还没用过");
   const used = t.used_today || {};
   if (used.requests) info.push(`今天 ${used.requests} 次请求`);
@@ -3413,9 +3413,11 @@ function agentRow(t) {
     btns.push(b);
   }
   if (t.state === "active" || t.state === "expired") {
-    const b = mk("button", { type: "button", className: "small", textContent: "续期 30 天" });
-    b.addEventListener("click", () => patchAgent(t, { expires_days: 30 }, "已续期"));
-    btns.push(b);
+    if (t.expires_at) {
+      const b = mk("button", { type: "button", className: "small", textContent: "设为永久" });
+      b.addEventListener("click", () => patchAgent(t, { never_expires: true }, "已设为永久"));
+      btns.push(b);
+    }
   }
   const revoke = mk("button", { type: "button", className: "small danger", textContent: "撤销" });
   revoke.addEventListener("click", async () => {
@@ -3473,8 +3475,8 @@ function renderAgentCreate() {
   const here = state.chain?.[state.chain.length - 1];
   if (here) folder.append(mk("option", { value: here.id, textContent: `只限当前文件夹：${here.name}` }));
   const priv = mk("input", { type: "checkbox" });
-  const expiry = mk("select", {}, ...(agentsInfo?.expiry_days || [1, 7, 30, 90]).map((d) => mk("option", { value: String(d), textContent: `${d} 天` })));
-  expiry.value = "30";
+  const expiry = mk("select", {}, ...(agentsInfo?.expiry_days || [0, 1, 7, 30, 90]).map((d) => mk("option", { value: String(d), textContent: d ? `${d} 天` : "永久" })));
+  expiry.value = "0";
   const err = mk("p", { className: "error", hidden: true });
   const cancel = mk("button", { type: "button", className: "ghost", textContent: "返回" });
   cancel.addEventListener("click", () => renderAgents());

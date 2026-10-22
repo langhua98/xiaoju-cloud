@@ -120,6 +120,12 @@ func TestAgentAPI(t *testing.T) {
 	}
 	mustCall(400, "admin", "POST", "/api/agents", `{"name":"x","scopes":["files:everything"]}`)
 	mustCall(400, "admin", "POST", "/api/agents", `{"name":"x","preset":"admin","expires_days":365}`)
+	// 有效期：默认永久；选了天数的可以改成永久
+	if out := mustCall(201, "admin", "POST", "/api/agents", `{"name":"七天","preset":"readonly","expires_days":7}`); out["agent"].(map[string]any)["expires_at"] == nil {
+		t.Fatalf("7 days: %v", out)
+	} else if p := mustCall(200, "admin", "PATCH", "/api/agents/"+out["agent"].(map[string]any)["id"].(string), `{"never_expires":true}`); p["expires_at"] != nil {
+		t.Fatalf("never_expires: %v", p)
+	}
 	mustCall(400, "admin", "POST", "/api/agents", `{"name":"x","preset":"admin","root_folder_id":"`+secret+`"}`)
 
 	// 整理档，限定在 /工作区
@@ -131,7 +137,7 @@ func TestAgentAPI(t *testing.T) {
 		t.Fatalf("bad token: %d", code)
 	}
 	me := mustCall(200, org, "GET", "/api/agent/v1/me", "")
-	if me["root"].(map[string]any)["path_on_drive"] != "/工作区" || len(me["scopes"].([]any)) != 4 {
+	if me["root"].(map[string]any)["path_on_drive"] != "/工作区" || len(me["scopes"].([]any)) != 4 || me["expires_at"] != nil {
 		t.Fatalf("me: %v", me)
 	}
 	// 「只读 + 下载 + 上传」档真的能读能下载；勾选的组合（只读 + 申请危险操作）照给
@@ -200,8 +206,18 @@ func TestAgentAPI(t *testing.T) {
 	}
 	out = mustCall(200, org, "POST", "/api/agent/v1/items/"+a+"/link", "")
 	link := out["url"].(string)
-	if !strings.Contains(link, "/dl/"+a) || !strings.Contains(link, "via=ai") {
+	if !strings.Contains(link, "/dl/"+a) || !strings.Contains(link, "via=ai") || out["expires_at"] != nil {
 		t.Fatalf("link: %v", out)
+	}
+	if resp, err := http.Get(strings.Replace(link, "sig=", "sig=0", 1)); err != nil || resp.StatusCode != 403 { // 签名不对
+		t.Fatalf("tampered link: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+	if resp, err := http.Get(strings.Replace(link, "/dl/"+a, "/dl/"+uuid.NewString(), 1)); err != nil || resp.StatusCode != 403 { // 换了文件
+		t.Fatalf("link for another file: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
 	}
 	before := driver.count(storage.LaneAgent)
 	if resp, err := http.Get(link); err != nil || resp.StatusCode != 200 {
@@ -458,10 +474,15 @@ func TestAgentAPI(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 401 {
 		t.Fatalf("admin token changed: %v %v", err, resp.StatusCode)
 	}
-	if out := mustCall(200, "admin", "POST", "/api/agents/revoke-all", ""); out["revoked"].(float64) != 4 {
+	if out := mustCall(200, "admin", "POST", "/api/agents/revoke-all", ""); out["revoked"].(float64) != 5 {
 		t.Fatalf("revoke all: %v", out)
 	}
 	mustCall(401, org, "GET", "/api/agent/v1/me", "")
+	if resp, err := http.Get(link); err != nil || resp.StatusCode != 403 { // 令牌撤销了，下载链接跟着失效
+		t.Fatalf("link after revoke: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
 }
 
 // laneDriver 记下每次存取请求标的来源（AI 的请求要走 AI 专用的 Bot）。

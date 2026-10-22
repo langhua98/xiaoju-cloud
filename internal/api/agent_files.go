@@ -474,7 +474,7 @@ func (s *Server) agentPreview(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
-// POST /items/{id}/link：15 分钟有效的签名下载链接（整个文件的大小当场计入下载额度）。
+// POST /items/{id}/link：签名下载链接，不过期；令牌被撤销、过期、冻结或没了下载权限，链接跟着失效。
 func (s *Server) agentLink(w http.ResponseWriter, r *http.Request) {
 	if !s.need(w, r, ScopeDownload) {
 		return
@@ -483,10 +483,11 @@ func (s *Server) agentLink(w http.ResponseWriter, r *http.Request) {
 	if !ok || !s.mediaQuota(w, r, f) || !s.quota(w, r, quotaDownloadBytes, f.Size) {
 		return
 	}
-	exp := time.Now().Add(agentLinkTTL).Unix()
-	url := fmt.Sprintf("%s/dl/%s?exp=%d&sig=%s&via=ai", publicBase(r), f.ID, exp, s.linkSig(f.ID, exp))
-	s.audit(r.Context(), agentFrom(r), "link", []*meta.File{f}, []string{p}, nil, "ok", "", f.Size)
-	writeJSON(w, http.StatusOK, map[string]any{"url": url, "expires_at": time.Unix(exp, 0).UTC()})
+	a := agentFrom(r)
+	url := fmt.Sprintf("%s/dl/%s?agent=%s&sig=%s&via=ai", publicBase(r), f.ID, a.tok.ID, s.agentLinkSig(f.ID, a.tok.ID))
+	s.audit(r.Context(), a, "link", []*meta.File{f}, []string{p}, nil, "ok", "", f.Size)
+	writeJSON(w, http.StatusOK, map[string]any{"url": url, "expires_at": nil,
+		"about": "This link does not expire. It stops working if the owner revokes this token."})
 }
 
 // ensureFolder 按路径段一层层找文件夹，没有就建（mkdir -p）。返回最后一层（nil 是网盘根目录）和新建了哪些。

@@ -194,7 +194,7 @@ var mcpTools = []mcpTool{
 	{Name: "read_file", Title: "Read a file", Description: "Read a file's content: text files as text (first max_bytes, default 1 MB), images up to 4 MB as an image. For anything else use get_download_link.",
 		InputSchema: obj(map[string]any{"id": str("File id"), "max_bytes": num("For text: how many bytes from the start (default 1048576)")}, "id"),
 		Annotations: readOnly, scope: ScopeDownload, call: mcpReadFile},
-	{Name: "get_download_link", Title: "Download link", Description: "A signed link valid for 15 minutes that downloads the original file without any token.",
+	{Name: "get_download_link", Title: "Download link", Description: "A signed link that downloads the original file without any token. It does not expire; it stops working if the owner revokes this token.",
 		InputSchema: obj(map[string]any{"id": str("File id")}, "id"), Annotations: readOnly, scope: ScopeDownload,
 		call: func(s *Server, r *http.Request, args map[string]any) mcpResult {
 			return idArg(s.agentLink, "POST", "/link")(s, r, args)
