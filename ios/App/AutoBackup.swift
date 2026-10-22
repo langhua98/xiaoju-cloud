@@ -110,6 +110,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private var scanned: Int64 = 0
     private var queuedBytes: Int64 = 0
     private var movedBytes: Int64 = 0
+    private var checkTotal: Int64 = 0 // 和云盘核对：要过一遍的照片数、已经过了几张
+    private var checkedItems: Int64 = 0
     private var lastReport = Date.distantPast
 
     private var server: String { Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? "" }
@@ -228,8 +230,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         let snap: (BGContinuedProcessingTask, Int64, Int64)? = lock.withLock {
             guard let task = continued, force || Date().timeIntervalSince(lastReport) > 1 else { return nil }
             lastReport = Date()
-            let total = max(scanTotal + (queuedBytes >> 20), 1)
-            return (task, total, min(scanned + (movedBytes >> 20), total))
+            let total = max(checkTotal + scanTotal + (queuedBytes >> 20), 1)
+            return (task, total, min(checkedItems + scanned + (movedBytes >> 20), total))
         }
         guard let snap else { return }
         snap.0.progress.totalUnitCount = snap.1
@@ -281,22 +283,28 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     }
 
     // 「自动备份」开关：充电时的后台任务 + 系统的后台上传扩展一起开关。扩展没开成返回原因。
-    // 刚允许照片权限、刚装好 App 的那一下，系统常常还没准备好，开扩展会报错（PHPhotosErrorDomain 3202），
-    // 过一会儿再开就好了：所以失败了隔 2 秒再试，最多试 4 次，都不行才显示原因。
+    // 系统里已经是这个状态就不再设：以前每次打开「备份」页都再开一遍，已经开着时再开可能报错（截图里的
+    // PHPhotosErrorDomain 3202），页面上就显示「系统后台上传没打开」，其实系统里是开着的。
+    // 刚允许照片权限、刚装好 App 的那一下，系统也可能还没准备好：失败了隔 2 秒再试，最多试 4 次；
+    // 报错但系统里已经是要的状态也算成功，都不行才显示原因。
     func setAutomatic(_ on: Bool) async -> String? {
         await MainActor.run { enabled = on }
         if on && PHPhotoLibrary.authorizationStatus(for: .readWrite) != .authorized { return nil }
+        let library = PHPhotoLibrary.shared()
         var last: Error?
         for attempt in 0..<4 {
+            if library.uploadJobExtensionEnabled == on { return nil }
             if attempt > 0 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
             do {
-                try PHPhotoLibrary.shared().setUploadJobExtensionEnabled(on)
+                try library.setUploadJobExtensionEnabled(on)
                 return nil
             } catch {
                 last = error
             }
         }
-        return "系统后台上传没打开：\(last?.localizedDescription ?? "")（关掉「自动备份」再打开试试）"
+        if library.uploadJobExtensionEnabled == on { return nil }
+        let code = (last as NSError?).map { "\($0.domain) \($0.code)" } ?? ""
+        return "系统后台上传没打开（\(code)）：\(last?.localizedDescription ?? "")（关掉「自动备份」再打开试试）"
     }
 
     // fromApp：在 App 里（或快捷指令打开 App）开始的，申请「继续在后台运行」；系统的后台任务不用。
@@ -316,7 +324,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         counts = (0, 0, 0)
         lastError = ""
         failed = [] // 这一轮会把上次没传上去的再传一遍
-        (scanTotal, scanned, queuedBytes, movedBytes) = (0, 0, 0, 0)
+        (scanTotal, scanned, queuedBytes, movedBytes, checkTotal, checkedItems) = (0, 0, 0, 0, 0, 0)
         job = Task.detached(priority: .utility) { [self] in
             await run(reason: reason)
             lock.withLock { job = nil }
@@ -482,9 +490,19 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     func reconcile(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
         var items: [Item] = []
         items.reserveCapacity(assets.count)
-        assets.enumerateObjects { asset, _, _ in
+        // 核对也算进「继续在后台运行」的进度：一万张取一遍要几十秒，以前这段时间进度不动，锁屏后容易被系统收回
+        let backingUp = lock.withLock { () -> Bool in
+            guard job != nil else { return false }
+            checkTotal += Int64(assets.count)
+            return true
+        }
+        assets.enumerateObjects { asset, i, _ in
             let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
             items.append((asset.localIdentifier, asset.creationDate, resources))
+            if backingUp {
+                self.lock.withLock { self.checkedItems += 1 }
+                if i % 50 == 0 { self.reportContinued() }
+            }
         }
         await matchNames(target: target, items: items, album: album)
         await planMatch(target: target, items: items, album: album)
@@ -605,6 +623,23 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         let opts = PHAssetResourceRequestOptions()
         opts.isNetworkAccessAllowed = true // 原图在 iCloud 上时先下载
         let size = resource.value(forKey: "fileSize") as? Int64 ?? 0
+        // 从 iCloud 下载原图、大视频可能要好几分钟：下载进度也报给「继续在后台运行」。
+        // 系统资源紧张时先收回进度不动的任务，以前这段时间进度一直不动，锁屏后容易被收回。
+        final class Fetched { var bytes: Int64 = -1 } // -1：还没算进总数
+        let fetched = Fetched()
+        opts.progressHandler = { [weak self] fraction in
+            guard let self, size > 0 else { return }
+            let now = Int64(Double(size) * fraction)
+            lock.withLock {
+                if fetched.bytes < 0 {
+                    queuedBytes += size
+                    fetched.bytes = 0
+                }
+                movedBytes += max(now - fetched.bytes, 0)
+                fetched.bytes = max(now, fetched.bytes)
+            }
+            reportContinued()
+        }
         try await send(name: resource.originalFilename, size: size, key: key, extra: albumHeaders(album)) { dest in
             try await PHAssetResourceManager.default().writeData(for: resource, toFile: dest, options: opts)
         }
