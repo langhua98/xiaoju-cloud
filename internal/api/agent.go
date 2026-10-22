@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/time/rate"
 
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
@@ -63,7 +62,7 @@ const (
 )
 
 var defaultAgentLimits = map[string]int64{
-	quotaRequests:      20000,
+	quotaRequests:      0,
 	quotaTrash:         500,
 	quotaDownloadBytes: 0, // 上传下载默认不限量（2026-10-22 William 要求）；想限的话网页或 PATCH 单独设
 	quotaMedia:         0,
@@ -81,12 +80,6 @@ const (
 )
 
 var agentExpiryDays = []int{1, 7, 30, 90}
-
-// 每把令牌每秒最多 10 个请求，最多连着 30 个（测试里调大）。
-var (
-	agentRate  = rate.Limit(10)
-	agentBurst = 30
-)
 
 // agentCall 是一个通过了令牌校验的请求。
 type agentCall struct {
@@ -120,10 +113,9 @@ func (a *agentCall) limit(counter string) int64 {
 	return defaultAgentLimits[counter]
 }
 
-// agentState 是 agent 相关的内存状态：每把令牌的限速、连续被拒次数、最近记过的 IP、批量预演、幂等上传。
+// agentState 是 agent 相关的内存状态：连续被拒次数、最近记过的 IP、批量预演、幂等上传。
 type agentState struct {
 	mu      sync.Mutex
-	limits  map[uuid.UUID]*rate.Limiter
 	denied  map[uuid.UUID]int
 	touched map[uuid.UUID]touchMark
 	plans   map[string]*batchPlan
@@ -141,19 +133,8 @@ type idemEntry struct {
 }
 
 func newAgentState() *agentState {
-	return &agentState{limits: map[uuid.UUID]*rate.Limiter{}, denied: map[uuid.UUID]int{}, touched: map[uuid.UUID]touchMark{},
+	return &agentState{denied: map[uuid.UUID]int{}, touched: map[uuid.UUID]touchMark{},
 		plans: map[string]*batchPlan{}, idem: map[string]idemEntry{}}
-}
-
-func (st *agentState) allow(id uuid.UUID) bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	l := st.limits[id]
-	if l == nil {
-		l = rate.NewLimiter(agentRate, agentBurst)
-		st.limits[id] = l
-	}
-	return l.Allow()
 }
 
 // agentFingerprint：令牌签发时的管理员令牌指纹。换了管理员令牌，所有 agent 令牌一起作废。
@@ -243,11 +224,7 @@ func (s *Server) requireAgent(next http.HandlerFunc) http.HandlerFunc {
 			a.root = chain[0]
 			a.rootPath = chainPath(chain, nil)
 		}
-		if !s.agents.allow(tok.ID) {
-			w.Header().Set("Retry-After", "1")
-			agentError(w, http.StatusTooManyRequests, "rate_limited", "too many requests", "Slow down to at most 10 requests per second.")
-			return
-		}
+		// 不限速（2026-10-22 William 要求）；请求数照样记，令牌单独设了每天请求数才会拦。
 		if n, err := store.AddAgentUsage(ctx, tok.ID, quotaRequests, 1); err != nil {
 			s.fail(w, err)
 			return
