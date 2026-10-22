@@ -396,7 +396,7 @@ func (s *Server) agentThumb(w http.ResponseWriter, r *http.Request) {
 	w.Write(jpeg)
 }
 
-// mediaQuota：开了格子口令时，照片、视频原图每天有张数额度（agent 答不了格子题，用额度代替抽查）。
+// mediaQuota：开了格子口令时，照片、视频原图可以按令牌设每天张数额度（默认不限）。
 func (s *Server) mediaQuota(w http.ResponseWriter, r *http.Request, f *meta.File) bool {
 	if !s.gridRequired() || !isMedia(f) {
 		return true

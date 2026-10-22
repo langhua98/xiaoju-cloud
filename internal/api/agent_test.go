@@ -319,6 +319,10 @@ func TestAgentAPI(t *testing.T) {
 	}
 	mustCall(200, org, "GET", "/api/agent/v1/items?path=/sub/b.txt", "")
 	mustCall(200, org, "GET", "/api/agent/v1/items?path=/many", "")
+	// 默认上传下载不限量
+	if l := mustCall(200, org, "GET", "/api/agent/v1/me", "")["limits"].(map[string]any); l["download_bytes"] != float64(0) || l["upload_bytes"] != float64(0) || l["media"] != float64(0) {
+		t.Fatalf("default transfer limits: %v", l)
+	}
 
 	// 管理员档（整个网盘）：分享（私密的不行、最长 7 天）、危险操作申请
 	adm := newAgent(map[string]any{"name": "管家", "preset": "admin", "limits": map[string]int64{"download_bytes": 15}})
@@ -329,7 +333,7 @@ func TestAgentAPI(t *testing.T) {
 	}
 	mustCall(404, adm, "POST", "/api/agent/v1/shares", `{"id":"`+hidden+`"}`) // 看不到私密的
 	mustCall(204, adm, "DELETE", "/api/agent/v1/shares/"+sh["id"].(string), "")
-	// 额度：下载 15 字节，第三次超了
+	// 额度：单独给这把令牌设了下载 15 字节，第三次超了
 	mustCall(200, adm, "GET", "/api/agent/v1/items/"+c+"/content", "")
 	mustCall(200, adm, "GET", "/api/agent/v1/items/"+c+"/content", "")
 	if code, out := call(adm, "GET", "/api/agent/v1/items/"+a+"/content", ""); code != 429 || out["code"] != "quota_exceeded" {
