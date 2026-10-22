@@ -115,6 +115,8 @@ type AgentTokenUpdate struct {
 	ExpiresAt *time.Time
 	Limits    map[string]int64
 	Unfreeze  bool
+	// NeverExpires 把有效期改成永久（优先于 ExpiresAt）。
+	NeverExpires bool
 }
 
 // UpdateAgentToken 改名字、续期、改额度、解冻。撤销了的不能改。
@@ -127,10 +129,10 @@ func (s *Store) UpdateAgentToken(ctx context.Context, userID, id uuid.UUID, u Ag
 		}
 	}
 	return scanAgent(s.db.QueryRow(ctx, `
-		UPDATE agent_tokens SET name = COALESCE($3, name), expires_at = COALESCE($4, expires_at),
+		UPDATE agent_tokens SET name = COALESCE($3, name), expires_at = CASE WHEN $7 THEN NULL ELSE COALESCE($4, expires_at) END,
 		       limits = COALESCE($5::jsonb, limits), frozen_at = CASE WHEN $6 THEN NULL ELSE frozen_at END
 		WHERE id = $1 AND user_id = $2 AND kind = 'agent' AND revoked_at IS NULL
-		RETURNING `+agentColumns, id, userID, u.Name, u.ExpiresAt, limits, u.Unfreeze))
+		RETURNING `+agentColumns, id, userID, u.Name, u.ExpiresAt, limits, u.Unfreeze, u.NeverExpires))
 }
 
 // RevokeAgentToken 撤销一把 agent 令牌（立即失效；记录留着，审计日志里还看得到名字）。

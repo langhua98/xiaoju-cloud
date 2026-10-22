@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -72,14 +73,14 @@ var defaultAgentLimits = map[string]int64{
 
 const (
 	agentTokenPrefix  = "xa_"
-	agentPlanFiles    = 50               // 一次改动超过这么多文件要先预演
-	agentFreezeAfter  = 50               // 连续被拒这么多次自动冻结
-	agentLinkTTL      = 15 * time.Minute // agent 拿到的下载链接的有效期
+	agentPlanFiles    = 50 // 一次改动超过这么多文件要先预演
+	agentFreezeAfter  = 50 // 连续被拒这么多次自动冻结
 	agentMaxShareDays = 7
 	agentAuditKeep    = 180 * 24 * time.Hour
 )
 
-var agentExpiryDays = []int{1, 7, 30, 90}
+// 令牌的有效期可选几天；0 是永久（默认）。
+var agentExpiryDays = []int{0, 1, 7, 30, 90}
 
 // agentCall 是一个通过了令牌校验的请求。
 type agentCall struct {
@@ -550,4 +551,25 @@ func agentLane(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		next(w, r.WithContext(storage.WithLane(r.Context(), storage.LaneAgent)))
 	}
+}
+
+// agentLinkSig 给 agent 的永久下载链接签名：绑定文件和令牌，用管理员令牌签（换了管理员令牌全部失效）。
+func (s *Server) agentLinkSig(file, tok uuid.UUID) string {
+	m := hmac.New(sha256.New, []byte("xiaoju agent link\x00"+s.token))
+	fmt.Fprintf(m, "%s\n%s", file, tok)
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// agentLinkValid：签名对，而且签发链接的令牌现在还能下载（没撤销、没过期、没冻结、还有下载权限）。
+func (s *Server) agentLinkValid(ctx context.Context, file uuid.UUID, tokID, sig string) bool {
+	id, err := uuid.Parse(tokID)
+	if err != nil || !hmac.Equal([]byte(sig), []byte(s.agentLinkSig(file, id))) {
+		return false
+	}
+	tok, err := s.svc.Store().GetAgentToken(ctx, s.userID, id)
+	if err != nil || tok.RevokedAt != nil || tok.IssuedUnder != s.agentFingerprint() || tok.FrozenAt != nil ||
+		(tok.ExpiresAt != nil && time.Now().After(*tok.ExpiresAt)) {
+		return false
+	}
+	return slices.Contains(tok.Scopes, ScopeDownload)
 }

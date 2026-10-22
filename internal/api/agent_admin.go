@@ -87,7 +87,7 @@ func validLimits(l map[string]int64) bool {
 }
 
 // POST /api/agents {"name", "preset": "readonly|upload|organize|admin" 或 "scopes": [...], "root_folder_id", "allow_private",
-// "expires_days": 1|7|30|90, "limits": {...}, 以及 "ticket"、格子题的 "id"、"answer"}
+// "expires_days": 0（永久，默认）|1|7|30|90, "limits": {...}, 以及 "ticket"、格子题的 "id"、"answer"}
 // → 201 {"token": "xa_…"（只显示这一次）, "agent", "api_base", "mcp_url", "instructions"}
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -130,11 +130,8 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "unknown permission")
 		return
 	}
-	if req.ExpiresDays == 0 {
-		req.ExpiresDays = 30
-	}
 	if !slices.Contains(agentExpiryDays, req.ExpiresDays) {
-		writeError(w, http.StatusBadRequest, "expires_days must be 1, 7, 30 or 90")
+		writeError(w, http.StatusBadRequest, "expires_days must be 0 (never), 1, 7, 30 or 90")
 		return
 	}
 	if !validLimits(req.Limits) {
@@ -167,10 +164,14 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret := newAgentSecret()
-	exp := time.Now().Add(time.Duration(req.ExpiresDays) * 24 * time.Hour)
+	var exp *time.Time
+	if req.ExpiresDays > 0 {
+		t := time.Now().Add(time.Duration(req.ExpiresDays) * 24 * time.Hour)
+		exp = &t
+	}
 	t, err := s.svc.Store().CreateAgentToken(ctx, &meta.AgentToken{UserID: s.userID, Name: req.Name, Last4: secret[len(secret)-4:],
 		Scopes: clean, RootFolderID: req.RootFolderID, AllowPrivate: req.AllowPrivate, Limits: req.Limits,
-		IssuedUnder: s.agentFingerprint(), ExpiresAt: &exp}, hashAgentToken(secret))
+		IssuedUnder: s.agentFingerprint(), ExpiresAt: exp}, hashAgentToken(secret))
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -223,22 +224,23 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 		"mcp_url": publicBase(r) + "/mcp", "api_base": publicBase(r) + "/api/agent/v1"})
 }
 
-// PATCH /api/agents/{id} {"name", "expires_days"（从现在起续期）, "limits", "unfreeze": true}
+// PATCH /api/agents/{id} {"name", "expires_days"（从现在起续期）, "never_expires": true（改成永久）, "limits", "unfreeze": true}
 func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
 	}
 	var req struct {
-		Name        *string          `json:"name"`
-		ExpiresDays int              `json:"expires_days"`
-		Limits      map[string]int64 `json:"limits"`
-		Unfreeze    bool             `json:"unfreeze"`
+		Name         *string          `json:"name"`
+		ExpiresDays  int              `json:"expires_days"`
+		NeverExpires bool             `json:"never_expires"`
+		Limits       map[string]int64 `json:"limits"`
+		Unfreeze     bool             `json:"unfreeze"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	u := meta.AgentTokenUpdate{Limits: req.Limits, Unfreeze: req.Unfreeze}
+	u := meta.AgentTokenUpdate{Limits: req.Limits, Unfreeze: req.Unfreeze, NeverExpires: req.NeverExpires}
 	if req.Name != nil {
 		n := strings.TrimSpace(*req.Name)
 		if n == "" || len([]rune(n)) > 100 {
@@ -247,7 +249,7 @@ func (s *Server) patchAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		u.Name = &n
 	}
-	if req.ExpiresDays != 0 {
+	if req.ExpiresDays != 0 && !req.NeverExpires {
 		if !slices.Contains(agentExpiryDays, req.ExpiresDays) {
 			writeError(w, http.StatusBadRequest, "expires_days must be 1, 7, 30 or 90")
 			return

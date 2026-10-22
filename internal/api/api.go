@@ -451,6 +451,14 @@ func (s *Server) signedDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	if q.Has("agent") { // AI 令牌给的永久链接：令牌还有效就能用
+		if !s.agentLinkValid(r.Context(), id, q.Get("agent"), q.Get("sig")) {
+			writeError(w, http.StatusForbidden, "invalid link, or the agent token behind it was revoked")
+			return
+		}
+		s.serveContent(w, r.WithContext(storage.WithLane(r.Context(), storage.LaneAgent)), id)
+		return
+	}
 	exp, err := strconv.ParseInt(q.Get("exp"), 10, 64)
 	if err != nil || time.Now().Unix() > exp ||
 		!hmac.Equal([]byte(q.Get("sig")), []byte(s.linkSig(id, exp))) {
