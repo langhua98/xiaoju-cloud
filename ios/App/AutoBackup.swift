@@ -93,6 +93,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: "com.langhua98.xiaoju.backup.auto")
         config.isDiscretionary = false
+        // 默认 60 秒没动静就算超时：几个大视频一起传时，小文件可能排队一两分钟才轮到，放宽到 5 分钟
+        config.timeoutIntervalForRequest = 300
         config.httpMaximumConnectionsPerHost = 8 // 默认只有 4 个；服务端有多个 Telegram 机器人轮流存，可以多传几个
         config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
@@ -128,7 +130,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         super.init()
         let config = URLSessionConfiguration.default
         config.httpMaximumConnectionsPerHost = 8
-        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForRequest = 300
         direct = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         if let data = try? Data(contentsOf: doneFile), let keys = try? JSONDecoder().decode([String].self, from: data) {
             done = Set(keys)
@@ -676,19 +678,44 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             return
         }
         let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
-        untrack(parts[0])
-        defer { lock.withLock { lastNames[parts[0]] = nil } }
-        if parts.count == 2 { try? FileManager.default.removeItem(atPath: parts[1]) }
         let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         // 服务端先回了 200（收文件时一直发心跳），存的时候才出错：回复里是 {"result":"error"}，不能当成传好了
         let result = ((try? JSONSerialization.jsonObject(with: reply)) as? [String: Any])?["result"] as? String
-        if error == nil, (200..<300).contains(code), result != "error", let key = parts.first {
+        let ok = error == nil && (200..<300).contains(code) && result != "error"
+        if !ok && retrySmall(task, parts: parts, code: code) { return }
+        untrack(parts[0])
+        defer { lock.withLock { lastNames[parts[0]] = nil } }
+        if parts.count == 2 { try? FileManager.default.removeItem(atPath: parts[1]) }
+        lock.withLock { retries[parts[0]] = nil }
+        if ok, let key = parts.first {
             markDone(key)
             saveDone(force: false)
         } else {
             let name = lock.withLock { lastNames[parts[0]] } ?? "照片"
             fail(name, error?.localizedDescription ?? (result == "error" ? "服务端保存失败（下次再传）" : "服务器返回 \(code)"))
         }
+    }
+
+    // 照片、小视频没传上去（超时、网断了一下、服务端一时出错）：导出的文件还在，过 5、10、15 秒用同一个请求再传，
+    // 连着 3 次都不行才算失败。以前一次超时就进了「没传上去的」，要等下一轮或手动重试。
+    private func retrySmall(_ task: URLSessionTask, parts: [String], code: Int) -> Bool {
+        let transient: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .notConnectedToInternet,
+                                             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed]
+        let retryable = (task.error as? URLError).map { transient.contains($0.code) } ?? (code >= 500 || code == 429)
+        guard retryable, parts.count == 2, let req = task.originalRequest,
+              FileManager.default.fileExists(atPath: parts[1]) else { return false }
+        let key = parts[0]
+        let tries = lock.withLock { () -> Int in
+            retries[key, default: 0] += 1
+            return retries[key]!
+        }
+        guard tries <= 3 else { return false }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(tries * 5)) { [self] in
+            let again = uploadSession().uploadTask(with: req, fromFile: URL(fileURLWithPath: parts[1]))
+            again.taskDescription = task.taskDescription
+            again.resume()
+        }
+        return true
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
