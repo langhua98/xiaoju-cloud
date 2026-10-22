@@ -155,7 +155,12 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { _ in
-            self.lock.withLock { self.appActive = true }
+            let again = self.lock.withLock { () -> Bool in
+                self.appActive = true
+                defer { self.resumeWhenActive = false }
+                return self.resumeWhenActive
+            }
+            if again && self.enabled { self.restartWhenStopped() }
         }
         center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: nil) { _ in
             self.lock.withLock { self.appActive = false }
@@ -185,10 +190,27 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         task.expirationHandler = { [weak self] in
             guard let self else { return }
-            if !lock.withLock({ self.appActive }) { stop() } // 系统收回了：在后台就停下这一轮，下次接着传
+            // 系统收回了：在后台就停下这一轮，回到 App 时自动接着备份（以前要自己再点一次，看着像传失败就停了）
+            let inBackground = lock.withLock { () -> Bool in
+                if !self.appActive { self.resumeWhenActive = true }
+                return !self.appActive
+            }
+            if inBackground { stop() }
             finishContinued(success: false)
         }
         reportContinued(force: true)
+    }
+
+    private var resumeWhenActive = false
+
+    // 等上一轮停稳了再开始新的一轮
+    private func restartWhenStopped() {
+        Task.detached { [self] in
+            for _ in 0..<60 where lock.withLock({ job != nil }) {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            start(reason: "回到 App，接着备份")
+        }
     }
 
     private func finishContinued(success: Bool) {
@@ -651,12 +673,14 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         defer { lock.withLock { lastNames[parts[0]] = nil } }
         if parts.count == 2 { try? FileManager.default.removeItem(atPath: parts[1]) }
         let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
-        if error == nil, (200..<300).contains(code), let key = parts.first {
+        // 服务端先回了 200（收文件时一直发心跳），存的时候才出错：回复里是 {"result":"error"}，不能当成传好了
+        let result = ((try? JSONSerialization.jsonObject(with: reply)) as? [String: Any])?["result"] as? String
+        if error == nil, (200..<300).contains(code), result != "error", let key = parts.first {
             markDone(key)
             saveDone(force: false)
         } else {
             let name = lock.withLock { lastNames[parts[0]] } ?? "照片"
-            fail(name, error?.localizedDescription ?? "服务器返回 \(code)")
+            fail(name, error?.localizedDescription ?? (result == "error" ? "服务端保存失败（下次再传）" : "服务器返回 \(code)"))
         }
     }
 
@@ -843,14 +867,36 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                     error?.localizedDescription ?? "HTTP \(code) \(String(decoding: reply, as: UTF8.self))"])
             }
         } catch {
-            // 断了：留着这个任务，下次备份时问服务端收到多少接着传
+            // 断了（网络断了、服务端说找不到这个上传）：过几秒自己问服务端收到多少，接着传；连着断 5 次才算失败
             untrack(job.key)
+            let tries = lock.withLock { () -> Int in
+                retries[job.key, default: 0] += 1
+                return retries[job.key]!
+            }
+            if tries <= 5 {
+                setStatus("\(Self.time()) \(job.name) 断了，\(tries * 5) 秒后接着传")
+                Task.detached { [self] in
+                    try? await Task.sleep(nanoseconds: UInt64(tries) * 5_000_000_000)
+                    // 这期间新的一轮已经接着传了：不再交一次（会打断它）
+                    if await busyKeys().contains(job.key) { return }
+                    do {
+                        _ = try await startBig(job)
+                    } catch {
+                        fail(job.name, "\(error.localizedDescription)（下次接着传）")
+                    }
+                }
+                return
+            }
+            // 留着这个任务，下次备份时问服务端收到多少接着传
             fail(job.name, "\(error.localizedDescription)（下次接着传）")
             setStatus("\(Self.time()) \(lastError)")
         }
     }
 
+    private var retries: [String: Int] = [:] // 大文件断了自己接着传的次数
+
     private func finishBig(_ job: BigJob) {
+        lock.withLock { retries[job.key] = nil }
         untrack(job.key)
         try? FileManager.default.removeItem(atPath: job.file)
         saveJob(nil, key: job.key)

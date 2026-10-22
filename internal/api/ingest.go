@@ -169,6 +169,14 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 				s.fail(w, err)
 				return
 			}
+			// 同名同大小的文件刚被另一个请求存好（手机上两张照片名字、大小都一样，同时传）：当作传过了
+			if errors.Is(err, meta.ErrConflict) && r.ContentLength > 0 {
+				if f, ferr := s.uploadedBefore(ctx, album.ID, name, r.ContentLength); ferr == nil && f != nil {
+					s.log.Info("ingest skipped: same name and size stored meanwhile", "folder", folder, "name", name)
+					json.NewEncoder(w).Encode(map[string]any{"result": "skipped", "name": f.Name})
+					return
+				}
+			}
 			s.log.Error("ingest failed after the body was received", "name", n, "err", err)
 			json.NewEncoder(w).Encode(map[string]any{"result": "error", "error": "服务端写入失败，请稍后再运行一次（传过的会自动跳过）"})
 			return
