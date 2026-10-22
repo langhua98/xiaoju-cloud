@@ -65,9 +65,9 @@ const (
 var defaultAgentLimits = map[string]int64{
 	quotaRequests:      20000,
 	quotaTrash:         500,
-	quotaDownloadBytes: 5 << 30,
-	quotaMedia:         50,
-	quotaUploadBytes:   20 << 30,
+	quotaDownloadBytes: 0, // 上传下载默认不限量（2026-10-22 William 要求）；想限的话网页或 PATCH 单独设
+	quotaMedia:         0,
+	quotaUploadBytes:   0,
 	quotaShares:        20,
 }
 
@@ -348,15 +348,16 @@ func (s *Server) audit(ctx context.Context, a *agentCall, action string, files [
 func (s *Server) quota(w http.ResponseWriter, r *http.Request, counter string, n int64) bool {
 	a := agentFrom(r)
 	l := a.limit(counter)
-	if l <= 0 || n <= 0 {
+	if n <= 0 {
 		return true
 	}
+	// 不限量也照样记用量，网页和 /me 上能看到今天传了多少。
 	total, err := s.svc.Store().AddAgentUsage(r.Context(), a.tok.ID, counter, n)
 	if err != nil {
 		s.fail(w, err)
 		return false
 	}
-	if total > l {
+	if l > 0 && total > l {
 		s.audit(r.Context(), a, r.Method+" "+r.URL.Path, nil, nil, map[string]any{"counter": counter, "limit": l}, "denied", "quota_exceeded", 0)
 		agentError(w, http.StatusTooManyRequests, "quota_exceeded", "daily "+counter+" quota used up", quotaHint(counter))
 		return false
