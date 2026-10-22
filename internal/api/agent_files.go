@@ -90,7 +90,7 @@ func (s *Server) agentMe(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": a.tok.ID, "name": a.tok.Name, "scopes": a.tok.Scopes, "expires_at": a.tok.ExpiresAt,
-		"root": map[string]any{"id": a.rootID(), "path_on_drive": a.rootPath, "about": "This token can only see " + scope + "."},
+		"root":          map[string]any{"id": a.rootID(), "path_on_drive": a.rootPath, "about": "This token can only see " + scope + "."},
 		"allow_private": a.tok.AllowPrivate,
 		"limits":        limits, "used_today": used,
 		"media_quota_applies": s.gridRequired(),

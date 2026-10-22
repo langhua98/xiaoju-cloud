@@ -297,10 +297,10 @@ func (s *Server) revokeAllAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"revoked": n})
 }
 
-// GET /api/agents/audit?token=&action=&result=&before=&limit=
+// GET /api/agents/audit?token=&action=&result=&before=&limit=&quiet=1（quiet：不列成功的只读请求）
 func (s *Server) listAgentAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	f := meta.AuditFilter{Action: q.Get("action"), Result: q.Get("result")}
+	f := meta.AuditFilter{Action: q.Get("action"), Result: q.Get("result"), Quiet: q.Get("quiet") == "1"}
 	if t := q.Get("token"); t != "" {
 		id, err := uuid.Parse(t)
 		if err != nil {

@@ -356,7 +356,9 @@ type place struct {
 	ParentID *uuid.UUID `json:"parent_id"`
 }
 
-func sameParent(a, b *uuid.UUID) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+func sameParent(a, b *uuid.UUID) bool {
+	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
+}
 
 var errChangedSince = errors.New("the item was changed again after this operation, so it was left alone")
 

@@ -260,7 +260,11 @@ type AuditFilter struct {
 	Result  string
 	Before  int64
 	Limit   int
+	Quiet   bool // 去掉成功的只读请求（列目录、搜索、缩略图…），只看改动、下载、被拒绝的
 }
+
+// quietActions 是 Quiet 时隐藏的只读动作（成功时）。
+var quietActions = []string{"read", "search", "stats", "duplicates", "thumbnail", "preview", "trash_list", "batch_plan"}
 
 // ListAudit 列出审计日志，最新的在前。
 func (s *Store) ListAudit(ctx context.Context, userID uuid.UUID, f AuditFilter) ([]*AuditEntry, error) {
@@ -271,7 +275,8 @@ func (s *Store) ListAudit(ctx context.Context, userID uuid.UUID, f AuditFilter) 
 		SELECT `+auditColumns+` FROM agent_audit
 		WHERE user_id = $1 AND ($2::uuid IS NULL OR token_id = $2) AND ($3 = '' OR action = $3)
 		  AND ($4 = '' OR result = $4) AND ($5 = 0 OR id < $5)
-		ORDER BY id DESC LIMIT $6`, userID, f.TokenID, f.Action, f.Result, f.Before, f.Limit)
+		  AND (NOT $7 OR result <> 'ok' OR action <> ALL($8))
+		ORDER BY id DESC LIMIT $6`, userID, f.TokenID, f.Action, f.Result, f.Before, f.Limit, f.Quiet, quietActions)
 	if err != nil {
 		return nil, err
 	}

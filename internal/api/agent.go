@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -222,7 +223,7 @@ func (s *Server) requireAgent(next http.HandlerFunc) http.HandlerFunc {
 				"Ask the owner to unfreeze it on the web page.")
 			return
 		}
-		a := &agentCall{tok: tok, ip: clientIP(r), ua: r.UserAgent()}
+		a := &agentCall{tok: tok, ip: hostOnly(clientIP(r)), ua: r.UserAgent()}
 		if len(a.ua) > 200 {
 			a.ua = a.ua[:200]
 		}
@@ -496,7 +497,7 @@ type agentView struct {
 	TakenAt   *time.Time `json:"taken_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
-	Etag      string     `json:"etag"`              // 改名、移动时放进 If-Match，文件中间被改过就不会覆盖
+	Etag      string     `json:"etag"` // 改名、移动时放进 If-Match，文件中间被改过就不会覆盖
 	TrashedAt *time.Time `json:"trashed_at,omitempty"`
 	Private   bool       `json:"private,omitempty"`
 	Thumb     bool       `json:"has_thumbnail,omitempty"`
@@ -555,4 +556,12 @@ func (s *Server) RunAgentMaintenance(ctx context.Context, every time.Duration) {
 		case <-t.C:
 		}
 	}
+}
+
+// hostOnly 去掉端口（直连时 RemoteAddr 带端口，每个连接都不一样，“新 IP”提醒会乱报）。
+func hostOnly(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
 }

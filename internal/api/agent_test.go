@@ -213,7 +213,7 @@ func TestAgentAPI(t *testing.T) {
 	}
 	moveAudit := int64(out["audit_id"].(float64))
 	mustCall(404, org, "PATCH", "/api/agent/v1/items/"+a, `{"parent_id":"`+other+`"}`) // 目标在范围外
-	mustCall(403, org, "DELETE", "/api/agent/v1/items/"+work, "")                     // 根文件夹不能删
+	mustCall(403, org, "DELETE", "/api/agent/v1/items/"+work, "")                      // 根文件夹不能删
 	out = mustCall(200, org, "DELETE", "/api/agent/v1/items/"+a, "")
 	trashAudit := int64(out["audit_id"].(float64))
 	mustCall(404, org, "GET", "/api/agent/v1/items/"+a, "")
@@ -222,6 +222,20 @@ func TestAgentAPI(t *testing.T) {
 	}
 	mustCall(200, org, "POST", "/api/agent/v1/items/"+a+"/restore", "")
 	trashAudit = int64(mustCall(200, org, "DELETE", "/api/agent/v1/items/"+a, "")["audit_id"].(float64))
+
+	// 网页上的操作记录：quiet=1 不列成功的只读请求
+	quiet := mustCall(200, "admin", "GET", "/api/agents/audit?quiet=1&limit=500", "")["items"].([]any)
+	seen := map[string]bool{}
+	for _, it := range quiet {
+		e := it.(map[string]any)
+		if e["result"] == "ok" && (e["action"] == "read" || e["action"] == "search") {
+			t.Fatalf("quiet audit lists read-only entry: %v", e)
+		}
+		seen[e["action"].(string)] = true
+	}
+	if !seen["rename"] || !seen["move"] || !seen["trash"] {
+		t.Fatalf("quiet audit misses changes: %v", seen)
+	}
 
 	// 网页上撤销：回收站的放回去，移动的放回原处，改名的改回去；之后又被改过名字、位置的不动
 	mustCall(200, "admin", "POST", fmt.Sprintf("/api/agents/audit/%d/undo", trashAudit), "") // 最后那次移入回收站
