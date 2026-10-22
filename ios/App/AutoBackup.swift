@@ -630,15 +630,15 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         opts.progressHandler = { [weak self] fraction in
             guard let self, size > 0 else { return }
             let now = Int64(Double(size) * fraction)
-            lock.withLock {
+            self.lock.withLock {
                 if fetched.bytes < 0 {
-                    queuedBytes += size
+                    self.queuedBytes += size
                     fetched.bytes = 0
                 }
-                movedBytes += max(now - fetched.bytes, 0)
+                self.movedBytes += max(now - fetched.bytes, 0)
                 fetched.bytes = max(now, fetched.bytes)
             }
-            reportContinued()
+            self.reportContinued()
         }
         try await send(name: resource.originalFilename, size: size, key: key, extra: albumHeaders(album)) { dest in
             try await PHAssetResourceManager.default().writeData(for: resource, toFile: dest, options: opts)
