@@ -14,7 +14,7 @@ import UIKit
 // 什么时候跑：
 //   1. 系统的后台任务（BGProcessingTask，要求接着电源、有网络），一般是夜里充电时；
 //   2. 快捷指令自动化「连接充电器时」运行「备份到小桔云盘」（会打开 App，跑完自动锁屏照常）；
-//   3. App 里点「现在备份」。
+//   3. App 里点「开始备份」。
 // 导出的原图交给系统的后台 URLSession 上传，App 被挂起、锁屏了也会传完；传过的记在本地，下次跳过，服务端也按名字 + 大小跳过。
 // 大视频从断点到结尾整个交给一个后台任务（以前 8MB 一段、传完一段叫醒 App 再交下一段：App 在后台时系统叫醒得越来越慢，
 // 后台建的任务还会被系统推迟，切出 App 后大视频就停在那里不动了）；断了下次问服务端收到多少，从那里接着传。
@@ -280,7 +280,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     var isPaused: Bool { (pausedUntil ?? .distantPast) > Date() }
 
-    // 暂停：停掉正在跑的这一轮，到时间之前后台任务、快捷指令都不跑（点「现在备份」会先恢复）。
+    // 暂停：停掉正在跑的这一轮，到时间之前后台任务、快捷指令都不跑（点「开始备份」会先恢复）。
     func pause(hours: Double) {
         let until = Date().addingTimeInterval(hours * 3600)
         defaults.set(until, forKey: Keys.pausedUntil)

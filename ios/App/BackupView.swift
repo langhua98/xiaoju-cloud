@@ -21,6 +21,9 @@ struct BackupView: View {
             List {
                 Section { summary }
                 if auth == .authorized {
+                    Section { controls }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                     Section { SpeedView() }
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
@@ -73,25 +76,6 @@ struct BackupView: View {
                     Text(switchError.isEmpty
                         ? "打开后，新拍的照片由系统在后台传；插着电、连着网的时候（一般是夜里）再把没传的补齐。"
                         : switchError)
-                }
-                Section {
-                    if auto.running {
-                        Button("停止这一轮", role: .destructive) { auto.stop() }
-                    } else {
-                        Button("现在备份") {
-                            auto.resume()
-                            auto.start(reason: "手动")
-                        }
-                        .disabled(auth != .authorized)
-                    }
-                    if auto.isPaused {
-                        Button("继续自动备份") { auto.resume() }
-                    } else {
-                        Menu("暂停") {
-                            Button("暂停 1 小时") { auto.pause(hours: 1) }
-                            Button("暂停到明天") { auto.pause(hours: 24) }
-                        }
-                    }
                 }
             }
             .navigationTitle("备份")
@@ -212,6 +196,48 @@ struct BackupView: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: 按钮
+
+    // 进度卡片下面一排真正的按钮（以前是列表里的一行字，点了要等列表的按下效果，有点滞后）：
+    // 左边「开始备份 / 停止这一轮」，右边「暂停备份 / 继续备份」
+    private var controls: some View {
+        HStack(spacing: 10) {
+            if auto.running {
+                Button(role: .destructive) { auto.stop() } label: {
+                    Label("停止这一轮", systemImage: "stop.fill").frame(maxWidth: .infinity)
+                }
+                .tint(SpeedView.downColor)
+            } else {
+                Button {
+                    auto.resume()
+                    auto.start(reason: "手动")
+                } label: {
+                    Label("开始备份", systemImage: "play.fill").frame(maxWidth: .infinity)
+                }
+                .tint(.orange)
+            }
+            if auto.isPaused {
+                Button { auto.resume() } label: {
+                    Label("继续备份", systemImage: "play.fill").frame(maxWidth: .infinity)
+                }
+                .tint(.orange)
+            } else {
+                Menu {
+                    Button("暂停 1 小时") { auto.pause(hours: 1) }
+                    Button("暂停到明天") { auto.pause(hours: 24) }
+                } label: {
+                    Label("暂停备份", systemImage: "pause.fill").frame(maxWidth: .infinity)
+                }
+                .tint(.secondary)
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .font(.subheadline.weight(.semibold))
+        .disabled(auth != .authorized)
     }
 
     // MARK: 动作
