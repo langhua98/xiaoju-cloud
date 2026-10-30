@@ -3,9 +3,12 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -166,7 +169,7 @@ func TestResumableWritesWhileReceiving(t *testing.T) {
 	}
 	start := time.Now()
 	body := &slowBody{r: bytes.NewReader(data), step: 1000, delay: 120 * time.Millisecond}
-	done, err := svc.WriteUpload(ctx, userID, p.ID, 0, body, func() {})
+	done, err := svc.WriteUpload(ctx, userID, p.ID, 0, false, body, func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +195,29 @@ func TestResumableWritesWhileReceiving(t *testing.T) {
 	}
 }
 
-// 后台写的分块没写成：这次请求出错，进度退回写好的分块；从那里重传，传完内容不变。
+// failPart 写某个分块（文件名 .part0001 这样）时失败 times 次。
+type failPart struct {
+	storage.Driver
+	suffix string
+	mu     sync.Mutex
+	times  int
+}
+
+func (d *failPart) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
+	d.mu.Lock()
+	fail := strings.HasSuffix(req.Name, d.suffix) && d.times > 0
+	if fail {
+		d.times--
+	}
+	d.mu.Unlock()
+	if fail {
+		io.Copy(io.Discard, req.Body)
+		return storage.Location{}, errors.New("primary storage unavailable")
+	}
+	return d.Driver.Put(ctx, req)
+}
+
+// 后台写的分块没写成：传完时进度里又缺这一块（offset 退回它的起点）；从那里重传，传完内容不变。
 func TestResumableBackgroundWriteFails(t *testing.T) {
 	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
 	if url == "" {
@@ -209,7 +234,7 @@ func TestResumableBackgroundWriteFails(t *testing.T) {
 	store := meta.NewStore(pool)
 	userID, _ := store.EnsureUser(ctx, "resumable-fail-test")
 	base, _ := local.New(t.TempDir())
-	driver := &failingDriver{Driver: base, failAt: 2, failFor: 1} // 第 2 块写不进去
+	driver := &failPart{Driver: base, suffix: ".part0001", times: 1} // 第 2 块第一次写不进去
 	master, _ := crypto.NewKey()
 	svc := New(store, driver, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)})
 
@@ -218,14 +243,14 @@ func TestResumableBackgroundWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.WriteUpload(ctx, userID, p.ID, 0, bytes.NewReader(data), func() {}); err == nil {
-		t.Fatal("upload succeeded although part 2 was not stored")
+	st, err := svc.WriteUpload(ctx, userID, p.ID, 0, false, bytes.NewReader(data), func() {})
+	if err != nil || st.File != nil || st.Offset != 1000 || len(st.Missing) != 1 || st.Missing[0] != [2]int64{1000, 2000} {
+		t.Fatalf("progress %+v, %v: want part 2 missing", st, err)
 	}
-	st, err := svc.UploadStatus(ctx, userID, p.ID)
-	if err != nil || st.Offset != 1000 {
-		t.Fatalf("status %+v, %v: want offset 1000 (the stored part)", st, err)
+	if st, err := svc.UploadStatus(ctx, userID, p.ID); err != nil || st.Offset != 1000 {
+		t.Fatalf("status %+v, %v: want offset 1000", st, err)
 	}
-	done, err := svc.WriteUpload(ctx, userID, p.ID, 1000, bytes.NewReader(data[1000:]), func() {})
+	done, err := svc.WriteUpload(ctx, userID, p.ID, 1000, false, bytes.NewReader(data[1000:]), func() {})
 	if err != nil || done.File == nil {
 		t.Fatalf("resend: %+v, %v", done, err)
 	}
@@ -233,7 +258,116 @@ func TestResumableBackgroundWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := io.ReadAll(rd); !bytes.Equal(got, data) {
-		t.Fatalf("content differs: %d bytes", len(got))
+	if got, _ := io.ReadAll(rd); !bytes.Equal(got, data) || !bytes.Equal(done.File.SHA256, sha(data)) {
+		t.Fatalf("content or sha256 differs: %d bytes", len(got))
+	}
+}
+
+func sha(b []byte) []byte {
+	s := sha256.Sum256(b)
+	return s[:]
+}
+
+// 分段同时传：几条连接从后往前、乱序传不同的段，中间服务重启一次（临时文件没了，写好的分块从存储端读回来算摘要），
+// 内容和整个文件的 SHA-256 都对；已经收到的位置返回 409 和下一个缺的位置。
+func TestResumableParallel(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, _ := store.EnsureUser(ctx, "resumable-parallel-test")
+	base, _ := local.New(t.TempDir())
+	driver := &slowPut{Driver: base, delay: 50 * time.Millisecond}
+	master, _ := crypto.NewKey()
+	opts := Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)}
+	svc := New(store, driver, opts)
+
+	data := randBytes(4300) // 5 块
+	p, err := svc.StartUpload(ctx, ResumableRequest{UserID: userID, Name: "v.mov", Mime: "video/quicktime", Size: int64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Lanes < 2 || p.Part != 1000 || len(p.Missing) != 1 || p.Missing[0] != [2]int64{0, 4300} {
+		t.Fatalf("start: %+v", p)
+	}
+	put := func(svc *Service, from, to int64) (*UploadProgress, error) {
+		return svc.WriteUpload(ctx, userID, p.ID, from, true, bytes.NewReader(data[from:to]), func() {})
+	}
+	// 后面几块先到（第 4、5 块收齐、写好），第 1 块只收了一半
+	var wg sync.WaitGroup
+	for _, r := range [][2]int64{{3000, 3500}, {3500, 4300}, {4000, 4300}, {0, 400}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := put(svc, r[0], r[1]); err != nil {
+				var off *OffsetError
+				if !errors.As(err, &off) { // {4000,4300} 可能已经收到了
+					t.Errorf("put %v: %v", r, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if _, err := put(svc, 100, 200); !errors.As(err, new(*OffsetError)) || err.(*OffsetError).Offset != 400 {
+		t.Fatalf("already received: %v, want 409 continue at 400", err)
+	}
+	st, _ := svc.UploadStatus(ctx, userID, p.ID)
+	if st.Offset != 400 || len(st.Missing) != 1 || st.Missing[0] != [2]int64{400, 3000} {
+		t.Fatalf("progress %+v", st)
+	}
+	// 等后台把第 4、5 块写好，然后“重启”：第 1 块收到的那一半没了
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		parts, _ := store.ListParts(ctx, p.ID)
+		if len(parts) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d parts stored, want 2", len(parts))
+		}
+	}
+	opts.TempDir = t.TempDir() // 重启后临时目录是空的
+	svc = New(store, driver, opts)
+	st, _ = svc.UploadStatus(ctx, userID, p.ID)
+	if st.Offset != 0 || len(st.Missing) != 1 || st.Missing[0] != [2]int64{0, 3000} {
+		t.Fatalf("progress after restart %+v", st)
+	}
+	var last *UploadProgress
+	var mu sync.Mutex
+	for _, r := range [][2]int64{{2000, 3000}, {1000, 2000}, {0, 1000}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := put(svc, r[0], r[1])
+			if err != nil {
+				t.Errorf("put %v: %v", r, err)
+				return
+			}
+			mu.Lock()
+			if got.File != nil {
+				last = got
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if last == nil {
+		t.Fatal("no request finished the upload")
+	}
+	_, rd, err := svc.Open(ctx, userID, last.File.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := io.ReadAll(rd); !bytes.Equal(got, data) || !bytes.Equal(last.File.SHA256, sha(data)) {
+		t.Fatalf("content or sha256 differs: %d bytes", len(got))
+	}
+	entries, _ := os.ReadDir(opts.TempDir)
+	if len(entries) != 0 {
+		t.Fatalf("%d temp files left", len(entries))
 	}
 }

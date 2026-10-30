@@ -1,16 +1,20 @@
 package service
 
-// 断点续传：网页把大文件分成几 MB 一段，一段一个请求传上来（PUT /api/uploads/{id}?offset=…）。
-// 收到的数据加密后先攒在临时文件里，攒满一个分块（partSize）就写进存储端，同时把进度和整个文件 SHA-256 的
-// 中间状态记进数据库。网络断了：网页问一下服务端收到了多少，从那里接着传（攒在临时文件里的也算）。
-// 服务重启了：临时文件没了，从最后一个写好的分块接着传。
+// 断点续传：网页、App 把大文件分成一段段传上来（PUT /api/uploads/{id}?offset=…）。
+// 文件按 partSize 分成几个分块，每个分块单独加密（自己的 IV），收到的数据按位置加密后写进这个分块的临时文件；
+// 一个分块收齐了就交给后台写进存储端，接着收别的。整个文件的 SHA-256 按分块顺序算：前面的分块都写好了，
+// 才把这一块算进去，并把中间状态记进数据库（committed 是已经算进摘要的字节数）。
 //
-// 攒满的分块交给后台写（见 inflight），接着收下一块：以前收满一块要停下来等它写完 Telegram（256MB 要半分钟左右），
-// 这段时间手机那边也停着。最多一块在写、一块在攒，下一块又攒满了而上一块还没写完时，才等它。
+// 两种传法：
+//   - 按顺序传（老的 App、网页）：每次从“已经收到的连续部分”的末尾接着传，起点对不上返回 409 和该从哪接着传。
+//   - 分段同时传（parallel=1）：几条连接各传文件里的一段，起点可以是任何还没收到的位置；进度里的 missing
+//     列出还缺哪些字节。跨境网络一条连接跑不满带宽，几条一起传快得多。
+//
+// 网络断了：问一下服务端收到了多少（攒在临时文件里的也算），从那里接着传。
+// 服务重启了：临时文件没了，没写好的分块重传。
 
 import (
 	"context"
-	"crypto/cipher"
 	"crypto/sha256"
 	"encoding"
 	"encoding/hex"
@@ -19,6 +23,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +37,9 @@ import (
 
 // ResumableChunk 是建议网页每个请求传多少：断网时最多重传这么多。
 const ResumableChunk = 8 << 20
+
+// ResumableLanes 是建议分段同时传时开几条连接。
+const ResumableLanes = 4
 
 // speedLogBytes：一次请求收到这么多（或传完了）才记一条速度日志。网页每 8MB 一个请求，每个都记太多了。
 const speedLogBytes = 64 << 20
@@ -53,14 +61,18 @@ type ResumableRequest struct {
 
 // UploadProgress 是断点续传的进度。
 type UploadProgress struct {
-	ID     uuid.UUID  `json:"id"`
-	Size   int64      `json:"size"`
-	Offset int64      `json:"offset"`         // 已经收到的字节数：下一段从这里开始
-	Chunk  int64      `json:"chunk"`          // 建议每段多大
-	File   *meta.File `json:"file,omitempty"` // 传完了
+	ID     uuid.UUID `json:"id"`
+	Size   int64     `json:"size"`
+	Offset int64     `json:"offset"` // 从头开始连续收到的字节数：按顺序传的下一段从这里开始
+	Chunk  int64     `json:"chunk"`  // 建议每段多大
+	// 分段同时传用：还缺的字节 [起点, 终点)，建议开几条连接，分块多大（一段别跨过分块边界）
+	Missing [][2]int64 `json:"missing"`
+	Lanes   int        `json:"lanes"`
+	Part    int64      `json:"part"`
+	File    *meta.File `json:"file,omitempty"` // 传完了
 }
 
-// OffsetError：请求的起点和服务端已经收到的对不上（比如上一段其实收到了、只是回复丢了），从 Offset 接着传。
+// OffsetError：请求的起点已经收到了（比如上一段其实收到了、只是回复丢了），从 Offset 接着传。
 type OffsetError struct{ Offset int64 }
 
 func (e *OffsetError) Error() string {
@@ -74,104 +86,101 @@ var (
 	errUploadClosed = errors.New("upload was cleaned up")
 )
 
-// resumable 是一个正在传的文件在内存里的状态。同一时间只处理一个请求：新请求来了，让旧请求马上停止读数据。
+// resumable 是一个正在传的文件在内存里的状态。可以同时处理几个请求（各写文件的不同位置）。
 type resumable struct {
-	lock chan struct{} // 容量 1：放进去才能处理
-
-	interruptMu sync.Mutex
-	interrupt   func() // 正在处理的请求：调用它让那个请求停止读数据
-
-	offset     atomic.Int64 // 已经收到的字节数（写进存储端的 + 攒在 pending 里的），查进度不用等锁
+	mu         sync.Mutex
 	lastActive atomic.Int64 // 最后一次处理请求的时间（Unix 秒）
 
-	// 以下只在拿到 lock 时访问
-	loaded   bool
-	closed   bool
-	file     *meta.File
-	sess     *meta.UploadSession
-	dek      []byte
-	nextPart int       // 下一个攒满的分块的编号（在后台写的那块已经占了号）
-	hash     hash.Hash // 整个文件明文的 SHA-256，读到 offset 为止
-	pending  *pendingPart
-	inflight chan error    // 在后台写的那块：写完（成功是 nil）后送来结果；nil 表示没有在写的
-	waited   time.Duration // 这次请求里等后台写分块等了多久（看慢在手机那边还是 Telegram 这边）
-	// failed：后台那块没写成，收到的进度作废（查进度时看数据库）。后台 goroutine 设置，拿着 lock 时清掉
-	failed atomic.Bool
+	// 以下拿着 mu 时访问
+	loaded  bool
+	closed  bool
+	file    *meta.File
+	sess    *meta.UploadSession
+	dek     []byte
+	parts   []*uploadPart // 每个分块一个
+	writers map[*partWriterReq]bool
+	// 整个文件明文的 SHA-256：算到第 hashed 块之前（hashedBytes 字节）
+	hash        hash.Hash
+	hashed      int
+	hashedBytes int64
+	hashing     bool           // 正在往后算（同一时间只有一个）
+	storing     sync.WaitGroup // 在后台写的分块
+	finishing   chan struct{}  // 正在收尾（等分块写完、算摘要、激活文件）；结束后关掉
+	result      *finishResult
 }
 
-// pendingPart 是正在攒的分块：密文写在临时文件里。
-type pendingPart struct {
-	tmp    *os.File
-	size   int64
-	iv     []byte
-	stream cipher.Stream
-	sum    hash.Hash // 密文的 SHA-256
+type finishResult struct {
+	file *meta.File
+	err  error
 }
 
-func (p *pendingPart) remove() {
-	p.tmp.Close()
-	os.Remove(p.tmp.Name())
+// uploadPart 是一个分块：还在收（tmp、got），在后台写，或者已经写好（stored）。
+type uploadPart struct {
+	no    int
+	start int64 // 在文件里的起点
+	size  int64
+	tmp   *os.File
+	iv    []byte
+	got   spans // 收到了分块里的哪些字节
+	busy  bool  // 在后台写
+	part  *meta.Part
 }
 
-func (u *resumable) acquire(ctx context.Context) error {
-	u.interruptMu.Lock()
-	if u.interrupt != nil {
-		u.interrupt()
+func (p *uploadPart) complete() bool { return p.part != nil || p.got.covers(0, p.size) }
+
+// drop 丢掉还没写好的数据（拿着 mu 时调用）。
+func (p *uploadPart) drop() {
+	if p.tmp != nil {
+		p.tmp.Close()
+		os.Remove(p.tmp.Name())
+		p.tmp = nil
 	}
-	u.interruptMu.Unlock()
-	select {
-	case u.lock <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	p.got = nil
 }
 
-func (u *resumable) release() { <-u.lock }
-
-// wait 等在后台写的分块写完，返回它的结果（拿着 lock 时调用）。
-func (u *resumable) wait() error {
-	if u.inflight == nil {
-		return nil
-	}
-	start := time.Now()
-	err := <-u.inflight
-	u.waited += time.Since(start)
-	u.inflight = nil
-	return err
+// partWriterReq 是一个正在写数据的请求：从 start 写到了 pos。stop 让它马上停止读数据。
+type partWriterReq struct {
+	start, pos int64
+	stop       func()
 }
 
-// settled 看后台的分块写没写完：没写完返回 nil，写完了返回结果（拿着 lock 时调用）。
-func (u *resumable) settled() error {
-	if u.inflight == nil {
-		return nil
+// spans 是排好序、互不相连的 [起点, 终点) 区间。
+type spans [][2]int64
+
+func (s *spans) add(a, b int64) {
+	if a >= b {
+		return
 	}
-	select {
-	case err := <-u.inflight:
-		u.inflight = nil
-		return err
-	default:
-		return nil
+	out := (*s)[:0:0]
+	for _, x := range *s {
+		if x[1] < a || x[0] > b {
+			out = append(out, x)
+			continue
+		}
+		a, b = min(a, x[0]), max(b, x[1])
 	}
+	out = append(out, [2]int64{a, b})
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	*s = out
 }
 
-func (u *resumable) setInterrupt(f func()) {
-	u.interruptMu.Lock()
-	u.interrupt = f
-	u.interruptMu.Unlock()
+func (s spans) covers(a, b int64) bool {
+	for _, x := range s {
+		if x[0] <= a && b <= x[1] {
+			return true
+		}
+	}
+	return a >= b
 }
 
-// reset 丢掉攒着的分块和内存里的进度，下次从数据库里写好的分块接着传（拿着 lock 时调用）。
-// 有在后台写的分块就先等它写完：它会记进数据库，下次从数据库读进度时要算上。
-func (u *resumable) reset() {
-	u.wait()
-	u.failed.Store(false)
-	if u.pending != nil {
-		u.pending.remove()
-		u.pending = nil
+// next 返回 off 之后第一个没收到的位置（都收到了是 end）。
+func (s spans) next(off, end int64) int64 {
+	for _, x := range s {
+		if x[0] <= off && off < x[1] {
+			off = x[1]
+		}
 	}
-	u.loaded = false
-	u.offset.Store(-1) // 不知道：查进度时看数据库
+	return min(off, end)
 }
 
 func (s *Service) resumableFor(id uuid.UUID) *resumable {
@@ -179,14 +188,25 @@ func (s *Service) resumableFor(id uuid.UUID) *resumable {
 	defer s.uploadsMu.Unlock()
 	u := s.uploads[id]
 	if u == nil {
-		u = &resumable{lock: make(chan struct{}, 1)}
-		u.offset.Store(-1)
+		u = &resumable{writers: map[*partWriterReq]bool{}}
 		s.uploads[id] = u
 	}
 	return u
 }
 
-// forgetResumable 丢掉一个上传在内存里的状态（拿着它的 lock 时调用）。
+// reset 丢掉攒着的分块和内存里的进度，下次从数据库里写好的分块接着传（拿着 mu 时调用，中间会放开等后台写完）。
+func (u *resumable) reset() {
+	u.mu.Unlock()
+	u.storing.Wait() // 在后台写的分块写好了会记进数据库，下次读进度时要算上
+	u.mu.Lock()
+	for _, p := range u.parts {
+		p.drop()
+	}
+	u.parts = nil
+	u.loaded = false
+}
+
+// forgetResumable 丢掉一个上传在内存里的状态（拿着 mu 时调用）。
 func (s *Service) forgetResumable(id uuid.UUID, u *resumable) {
 	u.reset()
 	u.closed = true
@@ -210,12 +230,11 @@ func (s *Service) evictIdleResumables(idle time.Duration, only map[uuid.UUID]boo
 	s.uploadsMu.Unlock()
 	for _, id := range victims {
 		u := s.resumableFor(id)
-		select {
-		case u.lock <- struct{}{}:
+		u.mu.Lock()
+		if len(u.writers) == 0 && u.finishing == nil {
 			s.forgetResumable(id, u)
-			u.release()
-		default:
 		}
+		u.mu.Unlock()
 	}
 }
 
@@ -260,45 +279,94 @@ func (s *Service) StartUpload(ctx context.Context, req ResumableRequest) (*Uploa
 		return nil, err
 	}
 	s.log.Info("resumable upload started", "file", f.ID, "name", f.Name, "size", req.Size)
-	return &UploadProgress{ID: f.ID, Size: req.Size, Chunk: ResumableChunk}, nil
+	return s.progress(f.ID, req.Size, nil, nil), nil
+}
+
+// progress 算进度。u 为 nil 时只看数据库里写好的分块（stored，按分块编号）。
+func (s *Service) progress(id uuid.UUID, size int64, u *resumable, stored map[int]bool) *UploadProgress {
+	p := &UploadProgress{ID: id, Size: size, Chunk: ResumableChunk, Lanes: ResumableLanes, Part: s.partSize, Missing: [][2]int64{}}
+	contiguous := true
+	for no, start := 0, int64(0); start < size; no, start = no+1, start+s.partSize {
+		end := min(start+s.partSize, size)
+		var got spans
+		switch {
+		case u != nil && u.parts[no].part != nil, u == nil && stored[no]:
+			got = spans{{0, end - start}}
+		case u != nil:
+			got = u.parts[no].got
+		}
+		for off := start; off < end; {
+			from := got.next(off-start, end-start) + start
+			if from > off && contiguous {
+				p.Offset = from
+			}
+			if from >= end {
+				break
+			}
+			contiguous = false
+			to := end
+			for _, x := range got {
+				if x[0]+start > from {
+					to = x[0] + start
+					break
+				}
+			}
+			if n := len(p.Missing); n > 0 && p.Missing[n-1][1] == from { // 接着上一段（跨过分块边界）
+				p.Missing[n-1][1] = to
+			} else {
+				p.Missing = append(p.Missing, [2]int64{from, to})
+			}
+			off = to
+		}
+	}
+	return p
 }
 
 // UploadStatus 返回一个未完成上传的进度。
 func (s *Service) UploadStatus(ctx context.Context, userID, id uuid.UUID) (*UploadProgress, error) {
-	sess, _, err := s.store.GetUploadSession(ctx, userID, id)
+	sess, f, err := s.store.GetUploadSession(ctx, userID, id)
 	if err != nil {
 		return nil, err
 	}
-	offset := sess.Committed
 	s.uploadsMu.Lock()
-	if u := s.uploads[id]; u != nil && u.offset.Load() >= 0 && !u.failed.Load() {
-		offset = u.offset.Load()
-	}
+	u := s.uploads[id]
 	s.uploadsMu.Unlock()
-	return &UploadProgress{ID: id, Size: sess.Size, Offset: offset, Chunk: ResumableChunk}, nil
+	if u != nil {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		if u.loaded && !u.closed && u.file.UserID == f.UserID {
+			return s.progress(id, sess.Size, u, nil), nil
+		}
+	}
+	parts, err := s.store.ListParts(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	stored := map[int]bool{}
+	for _, p := range parts {
+		stored[p.PartNo] = true
+	}
+	return s.progress(id, sess.Size, nil, stored), nil
 }
 
 // WriteUpload 收一段数据：body 是文件里从 offset 开始的字节（最多到文件末尾）。interrupt 让这个请求马上停止读数据，
-// 同一个上传的新请求来了时调用（旧请求可能还挂着：手机网络断了，服务端要等一会儿才知道）。
+// 同一段的新请求来了时调用（旧请求可能还挂着：手机网络断了，服务端要等一会儿才知道）。
+// parallel 为 false 时 offset 必须是从头连续收到的末尾（按顺序传）；为 true 时可以是任何还没收到的位置。
 //
-// 返回收完这段后的进度；文件传完了 File 不为 nil。offset 对不上返回 *OffsetError；传完时网盘里已经有
+// 返回收完这段后的进度；文件传完了 File 不为 nil。offset 已经收到了返回 *OffsetError；传完时网盘里已经有
 // 内容一样的文件返回 *SameContentError（这个上传删掉）；客户端中途断开不算错，进度里是实际收到的。
-func (s *Service) WriteUpload(ctx context.Context, userID, id uuid.UUID, offset int64, body io.Reader, interrupt func()) (*UploadProgress, error) {
+func (s *Service) WriteUpload(ctx context.Context, userID, id uuid.UUID, offset int64, parallel bool, body io.Reader, interrupt func()) (*UploadProgress, error) {
 	u := s.resumableFor(id)
-	if err := u.acquire(ctx); err != nil {
-		return nil, err
-	}
-	defer u.release()
-	u.setInterrupt(interrupt)
-	defer u.setInterrupt(nil)
+	u.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			u.mu.Unlock()
+		}
+	}()
 	u.lastActive.Store(time.Now().Unix())
 	if u.closed {
 		return nil, meta.ErrNotFound
-	}
-	if err := u.settled(); err != nil {
-		// 上次请求收满的那块在后台没写成：退回写好的分块，告诉客户端从那里重传
-		s.log.Warn("resumable upload: background write failed; client will resend from the last stored part", "file", id, "err", err)
-		u.reset()
 	}
 	if !u.loaded {
 		if err := s.loadResumable(ctx, userID, id, u); err != nil {
@@ -309,51 +377,94 @@ func (s *Service) WriteUpload(ctx context.Context, userID, id uuid.UUID, offset 
 	if u.file.UserID != userID {
 		return nil, meta.ErrNotFound
 	}
-	if offset != u.offset.Load() {
-		return nil, &OffsetError{Offset: u.offset.Load()}
+	size := u.sess.Size
+	cur := s.progress(id, size, u, nil)
+	if !parallel && offset != cur.Offset || offset > size || offset < size && s.received(u, offset) {
+		next := cur.Offset
+		if parallel {
+			next = s.nextMissing(u, offset)
+		}
+		return nil, &OffsetError{Offset: next}
 	}
 	if err := s.store.TouchUploadSession(ctx, id); err != nil {
 		return nil, err
 	}
-	began, from := time.Now(), offset
-	u.waited = 0
-	err := s.receive(ctx, u, body)
-	if got := u.offset.Load() - from; got >= speedLogBytes || u.offset.Load() == u.sess.Size {
-		// receive：这次请求收了多少、多快；waited：其中等 Telegram 写上一块等了多久
-		took := time.Since(began)
-		s.log.Info("resumable upload received", "file", id, "bytes", got, "took", took.Round(100*time.Millisecond),
-			"mb_per_s", fmt.Sprintf("%.2f", float64(got)/(1<<20)/max(took.Seconds(), 0.001)),
-			"waited", u.waited.Round(100*time.Millisecond))
+	// 同一段的旧请求（按顺序传时是所有旧请求）：让它停下，这个请求接手
+	for w := range u.writers {
+		if !parallel || w.start <= offset && offset <= w.pos {
+			w.stop()
+			delete(u.writers, w)
+		}
 	}
-	switch {
-	case errors.Is(err, errBodyStopped), errors.Is(err, ErrBodyTooLong):
-	case err != nil:
-		// 写存储端、数据库出错：攒着的这块不要了，退回写好的分块（网页会从那里重传）
+	w := &partWriterReq{start: offset, pos: offset, stop: interrupt}
+	u.writers[w] = true
+	u.mu.Unlock()
+	locked = false
+
+	began := time.Now()
+	err := s.receive(ctx, u, w, body)
+
+	u.mu.Lock()
+	locked = true
+	delete(u.writers, w)
+	got := w.pos - offset
+	if u.closed { // 别的请求传完了（或上传被清理了）：这段多余
+		return nil, meta.ErrNotFound
+	}
+	if err != nil && !errors.Is(err, errBodyStopped) && !errors.Is(err, ErrBodyTooLong) {
+		// 写临时文件、数据库出错：攒着的不要了，退回写好的分块（客户端会从那里重传）
 		s.log.Warn("resumable upload: write failed; client will resend from the last stored part", "file", id, "err", err)
 		u.reset()
 		return nil, err
 	}
-	p := &UploadProgress{ID: id, Size: u.sess.Size, Offset: u.offset.Load(), Chunk: ResumableChunk}
+	p := s.progress(id, size, u, nil)
 	if errors.Is(err, ErrBodyTooLong) {
 		return p, err
 	}
-	if p.Offset < p.Size {
-		return p, nil
+	var waited time.Duration
+	if len(p.Missing) == 0 {
+		// 都收到了：等分块写完、算完摘要、激活文件（几个请求同时到这里时一起等同一个结果）
+		wait := time.Now()
+		f, ferr := s.finish(ctx, id, u)
+		waited = time.Since(wait)
+		if ferr == nil {
+			p.File = f
+		}
+		err = ferr
+		if f == nil && ferr == nil { // 有分块没写成：重传缺的
+			p = s.progress(id, size, u, nil)
+		}
 	}
-	f, err := s.finishResumable(context.WithoutCancel(ctx), u)
-	var same *SameContentError
-	if err != nil && !errors.As(err, &same) {
-		return nil, err // 比如同名文件刚刚出现了（ErrConflict）：留着，下次再试
+	if got >= speedLogBytes || len(p.Missing) == 0 {
+		// 这次请求收了多少、多快；waited：传完后等写 Telegram、收尾等了多久
+		took := time.Since(began) - waited
+		s.log.Info("resumable upload received", "file", id, "bytes", got, "took", took.Round(100*time.Millisecond),
+			"mb_per_s", fmt.Sprintf("%.2f", float64(got)/(1<<20)/max(took.Seconds(), 0.001)),
+			"waited", waited.Round(100*time.Millisecond), "parallel", parallel)
 	}
-	s.forgetResumable(id, u)
 	if err != nil {
 		return nil, err
 	}
-	p.File = f
 	return p, nil
 }
 
-// loadResumable 从数据库读出上传的进度（服务重启后、或丢掉了内存里的状态后）。
+// received：offset 这个字节收到了没有（拿着 mu 时调用）。
+func (s *Service) received(u *resumable, offset int64) bool {
+	p := u.parts[offset/s.partSize]
+	return p.part != nil || p.got.covers(offset-p.start, offset-p.start+1)
+}
+
+// nextMissing 返回 offset 之后第一个没收到的位置（拿着 mu 时调用）。
+func (s *Service) nextMissing(u *resumable, offset int64) int64 {
+	for _, m := range s.progress(u.file.ID, u.sess.Size, u, nil).Missing {
+		if m[1] > offset {
+			return max(m[0], offset)
+		}
+	}
+	return u.sess.Size
+}
+
+// loadResumable 从数据库读出上传的进度（服务重启后、或丢掉了内存里的状态后；拿着 mu 时调用）。
 func (s *Service) loadResumable(ctx context.Context, userID, id uuid.UUID, u *resumable) error {
 	sess, f, err := s.store.GetUploadSession(ctx, userID, id)
 	if err != nil {
@@ -363,16 +474,29 @@ func (s *Service) loadResumable(ctx context.Context, userID, id uuid.UUID, u *re
 	if err != nil {
 		return fmt.Errorf("unwrap file key: %w", err)
 	}
-	parts, err := s.store.ListParts(ctx, id)
+	stored, err := s.store.ListParts(ctx, id)
 	if err != nil {
 		return err
 	}
-	var stored int64
-	for _, p := range parts {
-		stored += p.Size
+	var parts []*uploadPart
+	for no, start := 0, int64(0); start < sess.Size; no, start = no+1, start+s.partSize {
+		parts = append(parts, &uploadPart{no: no, start: start, size: min(s.partSize, sess.Size-start)})
 	}
-	if stored != sess.Committed {
-		return fmt.Errorf("upload %s: parts add up to %d bytes, session says %d", id, stored, sess.Committed)
+	for i := range stored {
+		p := &stored[i]
+		if p.PartNo >= len(parts) || p.Size != parts[p.PartNo].size {
+			return fmt.Errorf("upload %s: stored part %d has %d bytes, does not fit a %d-byte file", id, p.PartNo, p.Size, sess.Size)
+		}
+		parts[p.PartNo].part = p
+	}
+	// 算进摘要的是前面连续写好的几块
+	hashed, hashedBytes := 0, int64(0)
+	for hashed < len(parts) && hashedBytes < sess.Committed && parts[hashed].part != nil {
+		hashedBytes += parts[hashed].size
+		hashed++
+	}
+	if hashedBytes != sess.Committed {
+		return fmt.Errorf("upload %s: stored parts add up to %d bytes, session says %d were hashed", id, hashedBytes, sess.Committed)
 	}
 	h := sha256.New()
 	if sess.Committed > 0 {
@@ -380,50 +504,38 @@ func (s *Service) loadResumable(ctx context.Context, userID, id uuid.UUID, u *re
 			return fmt.Errorf("restore hash state: %w", err)
 		}
 	}
-	u.file, u.sess, u.dek, u.nextPart, u.hash = f, sess, dek, len(parts), h
-	u.offset.Store(sess.Committed)
+	u.file, u.sess, u.dek, u.parts = f, sess, dek, parts
+	u.hash, u.hashed, u.hashedBytes = h, hashed, hashedBytes
 	u.loaded = true
 	return nil
 }
 
-// receive 把 body 加密写进攒着的分块，攒满就交给后台写存储端（最后一块等它写完）。
-// body 读出错（客户端断开等）返回 errBodyStopped，收到的都算数。
-func (s *Service) receive(ctx context.Context, u *resumable, body io.Reader) error {
+// receive 把 body 从 w.pos 开始按位置加密写进分块的临时文件，一个分块收齐了就交给后台写存储端。
+// 已经收到的字节跳过（几条连接传到了一起）。body 读出错（客户端断开等）返回 errBodyStopped，收到的都算数。
+func (s *Service) receive(ctx context.Context, u *resumable, w *partWriterReq, body io.Reader) error {
 	buf := make([]byte, 256<<10)
-	size := u.sess.Size
-	for u.offset.Load() < size {
-		if err := u.settled(); err != nil {
-			return err
+	u.mu.Lock()
+	size, dek := u.sess.Size, u.dek
+	u.mu.Unlock()
+	for w.pos < size {
+		no := int(w.pos / s.partSize)
+		u.mu.Lock()
+		if !u.loaded || no >= len(u.parts) {
+			u.mu.Unlock()
+			return errUploadClosed
 		}
-		if u.pending == nil {
-			if err := s.newPending(u); err != nil {
-				return err
-			}
-		}
-		want := min(int64(len(buf)), size-u.offset.Load(), s.partSize-u.pending.size)
+		p := u.parts[no]
+		want := min(int64(len(buf)), p.start+p.size-w.pos)
+		u.mu.Unlock()
+
 		n, rerr := body.Read(buf[:want])
 		if n > 0 {
-			u.hash.Write(buf[:n])
-			u.pending.stream.XORKeyStream(buf[:n], buf[:n])
-			if _, err := u.pending.tmp.Write(buf[:n]); err != nil {
+			if err := s.writeAt(ctx, u, p, dek, w.pos, buf[:n]); err != nil {
 				return err
 			}
-			u.pending.sum.Write(buf[:n])
-			u.pending.size += int64(n)
-			u.offset.Add(int64(n))
-		}
-		if u.pending.size == s.partSize || u.offset.Load() == size {
-			// 客户端走了也要写完：数据已经收到了。上一块还在写就等它（同时最多一块在写）
-			if err := u.wait(); err != nil {
-				return err
-			}
-			last := u.offset.Load() == size
-			s.commitPending(context.WithoutCancel(ctx), u)
-			if last { // 最后一块：写完才算传完
-				if err := u.wait(); err != nil {
-					return err
-				}
-			}
+			u.mu.Lock()
+			w.pos += int64(n)
+			u.mu.Unlock()
 		}
 		if rerr == io.EOF {
 			return nil
@@ -438,71 +550,239 @@ func (s *Service) receive(ctx context.Context, u *resumable, body io.Reader) err
 	return nil
 }
 
-func (s *Service) newPending(u *resumable) error {
-	tmp, err := os.CreateTemp(s.tempDir, "xiaoju-resume-*")
+// writeAt 把文件里 [off, off+len(data)) 的明文加密写进分块 p 的临时文件，收齐了交给后台写。
+func (s *Service) writeAt(ctx context.Context, u *resumable, p *uploadPart, dek []byte, off int64, data []byte) error {
+	rel := off - p.start
+	u.mu.Lock()
+	if !u.loaded || p.no >= len(u.parts) || u.parts[p.no] != p { // 进度被丢掉、重新加载了
+		u.mu.Unlock()
+		return errUploadClosed
+	}
+	if p.part != nil || p.busy || p.got.covers(rel, rel+int64(len(data))) {
+		u.mu.Unlock()
+		return nil // 已经收到了
+	}
+	if p.tmp == nil {
+		tmp, err := os.CreateTemp(s.tempDir, "xiaoju-resume-*")
+		if err != nil {
+			u.mu.Unlock()
+			return err
+		}
+		iv, err := crypto.NewIV()
+		if err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			u.mu.Unlock()
+			return err
+		}
+		p.tmp, p.iv = tmp, iv
+	}
+	tmp, iv := p.tmp, p.iv
+	u.mu.Unlock()
+
+	stream, err := crypto.NewCTRAt(dek, iv, rel)
 	if err != nil {
 		return err
 	}
-	iv, err := crypto.NewIV()
-	if err == nil {
-		var stream cipher.Stream
-		if stream, err = crypto.NewCTRAt(u.dek, iv, 0); err == nil {
-			u.pending = &pendingPart{tmp: tmp, iv: iv, stream: stream, sum: sha256.New()}
-			return nil
-		}
+	enc := make([]byte, len(data))
+	stream.XORKeyStream(enc, data)
+	_, werr := tmp.WriteAt(enc, rel)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if p.tmp != tmp { // 这期间分块被丢掉、重来了：这段不算
+		return nil
 	}
-	tmp.Close()
-	os.Remove(tmp.Name())
-	return err
+	if werr != nil {
+		return werr
+	}
+	p.got.add(rel, rel+int64(len(data)))
+	if p.got.covers(0, p.size) && !p.busy {
+		p.busy = true
+		u.storing.Add(1)
+		go s.storeResumablePart(context.WithoutCancel(ctx), u, p)
+	}
+	return nil
 }
 
-// commitPending 把攒好的分块交给后台写进存储端、记下分块和进度，结果送到 u.inflight（拿着 lock、
-// 没有在后台写的分块时调用）。整个文件摘要的中间状态、收到的字节数在这里先记下：后台写的时候还在接着收。
-func (s *Service) commitPending(ctx context.Context, u *resumable) {
-	p := u.pending
-	sp := &sealedPart{no: u.nextPart, tmp: p.tmp, size: p.size, iv: p.iv, sum: p.sum.Sum(nil)}
-	offset := u.offset.Load()
-	state, stateErr := u.hash.(encoding.BinaryMarshaler).MarshalBinary()
-	fileID := u.file.ID
-	u.pending = nil
-	u.nextPart++
-	done := make(chan error, 1)
-	u.inflight = done
-	go func() {
-		err := stateErr
-		if err == nil {
-			err = s.storeResumablePart(ctx, fileID, sp, offset, state)
-		}
-		p.remove()
-		if err != nil {
-			u.failed.Store(true)
-		}
-		done <- err
-	}()
+// storeResumablePart 在后台把收齐的分块写进存储端、记进数据库，然后接着算整个文件的摘要。
+// 没写成：这块收到的都丢掉，客户端重传（进度里又缺这一块了）。
+func (s *Service) storeResumablePart(ctx context.Context, u *resumable, p *uploadPart) {
+	defer u.storing.Done()
+	u.mu.Lock()
+	fileID, tmp, iv := u.file.ID, p.tmp, p.iv
+	u.mu.Unlock()
+
+	part, err := s.storeTemp(ctx, fileID, p.no, tmp, iv, p.size)
+	u.mu.Lock()
+	p.busy = false
+	if err != nil {
+		s.log.Warn("resumable upload: part not stored; client will resend it", "file", fileID, "part", p.no, "err", err)
+		p.drop()
+		u.mu.Unlock()
+		return
+	}
+	p.part = part
+	u.mu.Unlock()
+	s.advanceHash(ctx, u)
 }
 
-func (s *Service) storeResumablePart(ctx context.Context, fileID uuid.UUID, sp *sealedPart, offset int64, state []byte) error {
+// storeTemp 把临时文件里加密好的分块写进存储端（主、备份），记进数据库。
+func (s *Service) storeTemp(ctx context.Context, fileID uuid.UUID, no int, tmp *os.File, iv []byte, size int64) (*meta.Part, error) {
+	sum := sha256.New()
+	if _, err := io.Copy(sum, io.NewSectionReader(tmp, 0, size)); err != nil {
+		return nil, err
+	}
+	sp := &sealedPart{no: no, tmp: tmp, size: size, iv: iv, sum: sum.Sum(nil)}
 	part, loc, err := s.storePart(ctx, fileID, sp)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := s.store.CommitUploadPart(ctx, part, offset, state); err != nil {
+	if err := s.store.AddUploadPart(ctx, part); err != nil {
 		// 记不下来：刚写上去的分块删掉，免得成了没人认领的残块
 		s.driver.Delete(ctx, []storage.Location{loc})
 		if part.HasBackup() {
 			s.backup.Delete(ctx, []storage.Location{backupLocation(part)})
 		}
 		if errors.Is(err, meta.ErrNotFound) {
-			return errUploadClosed
+			return nil, errUploadClosed
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return part, nil
 }
 
-// finishResumable 传完了：按内容去重（要求了的话），激活文件。
-func (s *Service) finishResumable(ctx context.Context, u *resumable) (*meta.File, error) {
-	sum := u.hash.Sum(nil)
+// advanceHash 把前面连续写好的分块按顺序算进整个文件的摘要，记下中间状态，删掉它们的临时文件。
+// 临时文件没了的（服务重启前写好、还没算的）从存储端读回来算。同一时间只有一个在算。
+func (s *Service) advanceHash(ctx context.Context, u *resumable) error {
+	u.mu.Lock()
+	if u.hashing || !u.loaded {
+		u.mu.Unlock()
+		return nil
+	}
+	u.hashing = true
+	stop := func(err error) error { // 拿着 mu 时调用
+		u.hashing = false
+		u.mu.Unlock()
+		return err
+	}
+	for {
+		if u.hash == nil {
+			return stop(errors.New("whole-file hash was lost"))
+		}
+		if u.hashed >= len(u.parts) || u.parts[u.hashed].part == nil {
+			return stop(nil)
+		}
+		p, h, dek, fileID := u.parts[u.hashed], u.hash, u.dek, u.file.ID
+		tmp := p.tmp
+		u.mu.Unlock()
+
+		var src io.Reader
+		if tmp != nil {
+			stream, err := crypto.NewCTRAt(dek, p.iv, 0)
+			if err != nil {
+				u.mu.Lock()
+				return stop(err)
+			}
+			src = &cipherReader{r: io.NewSectionReader(tmp, 0, p.size), s: stream}
+		} else {
+			r := NewFileReader(ctx, s.driver, dek, []meta.Part{*p.part})
+			r.backup, r.log = s.backup, s.log
+			src = r
+		}
+		n, err := io.Copy(h, src)
+		if err == nil && n != p.size {
+			err = fmt.Errorf("part %d: hashed %d bytes, want %d", p.no, n, p.size)
+		}
+		if err != nil {
+			// 摘要算坏了：从数据库里的中间状态重来（下次加载时）
+			s.log.Error("resumable upload: hash part", "file", fileID, "part", p.no, "err", err)
+			u.mu.Lock()
+			u.hash = nil
+			return stop(err)
+		}
+		state, err := h.(encoding.BinaryMarshaler).MarshalBinary()
+		if err == nil {
+			err = s.store.SetUploadHash(ctx, fileID, u.hashedBytes+p.size, state)
+		}
+		u.mu.Lock()
+		if err != nil {
+			u.hash = nil
+			if errors.Is(err, meta.ErrNotFound) {
+				err = errUploadClosed
+			}
+			return stop(err)
+		}
+		u.hashed++
+		u.hashedBytes += p.size
+		if p.tmp == tmp {
+			p.drop()
+		}
+	}
+}
+
+// cipherReader 边读边解密（CTR 加密、解密是同一个操作）。
+type cipherReader struct {
+	r io.Reader
+	s interface{ XORKeyStream(dst, src []byte) }
+}
+
+func (c *cipherReader) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	c.s.XORKeyStream(b[:n], b[:n])
+	return n, err
+}
+
+// finish 都收到了：等分块写完、摘要算完，按内容去重（要求了的话），激活文件。几个请求同时调用时等同一个结果。
+// 有分块没写成返回 (nil, nil)：客户端看进度重传。拿着 mu 时调用，中间会放开。
+func (s *Service) finish(ctx context.Context, id uuid.UUID, u *resumable) (*meta.File, error) {
+	if u.finishing != nil {
+		done := u.finishing
+		u.mu.Unlock()
+		<-done
+		u.mu.Lock()
+		if r := u.result; r != nil {
+			return r.file, r.err
+		}
+		return nil, nil
+	}
+	done := make(chan struct{})
+	u.finishing = done
+	u.result = nil
+	u.mu.Unlock()
+	ctx = context.WithoutCancel(ctx) // 客户端走了也要收完尾：数据已经收到了
+	u.storing.Wait()
+	herr := s.advanceHash(ctx, u)
+	u.mu.Lock()
+
+	var f *meta.File
+	var err error
+	complete := true
+	for _, p := range u.parts {
+		complete = complete && p.part != nil
+	}
+	switch {
+	case !complete: // 有分块没写成
+	case herr != nil || u.hash == nil || u.hashed != len(u.parts):
+		err = fmt.Errorf("upload %s: whole-file hash not complete: %v", id, herr)
+		u.reset()
+	default:
+		f, err = s.finishResumable(ctx, u, u.hash.Sum(nil))
+		var same *SameContentError
+		if err == nil || errors.As(err, &same) {
+			s.forgetResumable(id, u)
+		}
+	}
+	if complete {
+		u.result = &finishResult{file: f, err: err}
+	}
+	u.finishing = nil
+	close(done)
+	return f, err
+}
+
+// finishResumable 传完了：按内容去重（要求了的话），激活文件（拿着 mu 时调用）。
+func (s *Service) finishResumable(ctx context.Context, u *resumable, sum []byte) (*meta.File, error) {
 	if u.sess.Dedupe {
 		same, err := s.sameContentCheck(ctx, UploadRequest{UserID: u.file.UserID, ParentID: u.file.ParentID, SkipSameContent: true})
 		if err != nil {
@@ -517,7 +797,7 @@ func (s *Service) finishResumable(ctx context.Context, u *resumable) (*meta.File
 	}
 	f, err := s.store.FinishUpload(ctx, u.file.ID, u.sess.Size, sum)
 	if err != nil {
-		return nil, err
+		return nil, err // 比如同名文件刚刚出现了（ErrConflict）：留着，下次再试
 	}
 	s.log.Info("resumable upload finished", "file", f.ID, "name", f.Name, "size", f.Size, "sha256", hex.EncodeToString(sum)[:12])
 	s.queueThumbnail(f)

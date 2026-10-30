@@ -18,8 +18,9 @@ import (
 //	头部 X-File-Size：文件字节数
 //	头部 X-Upload-Probe（可选）：文件开头、结尾各 1MB 的 SHA-256，同名同大小的旧上传只有对上了才接着传
 //
-// 已经传过（同名同大小）返回 200 {"result":"skipped"}；否则返回进度 {"id","offset","chunk",...}：
+// 已经传过（同名同大小）返回 200 {"result":"skipped"}；否则返回进度 {"id","offset","chunk","missing","lanes","part"}：
 // 从 offset 开始一段段 PUT /api/ingest/uploads/{id}?offset=…，断了 GET /api/ingest/uploads/{id} 看收到多少再接着传。
+// 也可以开 lanes 条连接，各从 missing 里挑一段同时传（…?offset=起点&parallel=1，见 uploads.go）。
 // 同一个文件再来一次（名字、大小、probe 都一样）接着上次的进度。同名不同大小的已有文件：自动改名“名字 (2)”。
 func (s *Server) startIngestUpload(w http.ResponseWriter, r *http.Request) {
 	name, ok := ingestName(r, "")
@@ -83,7 +84,8 @@ func (s *Server) startIngestUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		s.log.Info("ingest upload started", "folder", folder, "name", n, "size", size, "offset", p.Offset,
 			"client", clientIP(r), "agent", r.UserAgent())
-		writeJSON(w, http.StatusOK, map[string]any{"result": "started", "id": p.ID, "size": p.Size, "offset": p.Offset, "chunk": p.Chunk})
+		writeJSON(w, http.StatusOK, map[string]any{"result": "started", "id": p.ID, "size": p.Size, "offset": p.Offset, "chunk": p.Chunk,
+			"missing": p.Missing, "lanes": p.Lanes, "part": p.Part})
 		return
 	}
 	writeError(w, http.StatusConflict, "too many files with this name")
