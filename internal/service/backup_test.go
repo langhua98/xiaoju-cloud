@@ -86,7 +86,7 @@ func TestBackupIntegration(t *testing.T) {
 		t.Fatalf("before backup: %+v", st)
 	}
 
-	// 2. 启用备份后上传：双写
+	// 2. 启用备份后上传：只等主存储写完，叫醒后台同步去备份
 	optsB := opts
 	optsB.Backup = backup
 	svc := New(store, primary, optsB)
@@ -94,13 +94,18 @@ func TestBackupIntegration(t *testing.T) {
 	fresh := upload(svc, "new.bin", plainNew)
 	parts, _ := store.ListParts(ctx, fresh.ID)
 	for _, p := range parts {
-		if !p.HasBackup() {
-			t.Fatalf("new upload part %d has no backup", p.PartNo)
+		if p.HasBackup() {
+			t.Fatalf("new upload part %d was backed up inline", p.PartNo)
 		}
 	}
+	select {
+	case <-svc.backupKick:
+	default:
+		t.Fatal("upload did not wake the backup sync")
+	}
 
-	// 3. 后台同步补齐旧文件
-	if n, err := svc.SyncBackupOnce(ctx); err != nil || n != 3 {
+	// 3. 后台同步补齐旧文件和新文件
+	if n, err := svc.SyncBackupOnce(ctx); err != nil || n != 5 {
 		t.Fatalf("sync: copied %d, err %v", n, err)
 	}
 	if st := status(svc); !st.Enabled || st.Parts != 5 || st.BackedUp != 5 || st.BackedBytes != 4000 {
@@ -264,8 +269,11 @@ func TestDriveStatsIntegration(t *testing.T) {
 	album, _ := store.CreateFolder(ctx, userID, nil, "相册")
 	trash, _ := store.CreateFolder(ctx, userID, nil, "旧东西")
 
-	put(withBackup, album, "a.jpg", "image/jpeg", 1500)                // 照片（MIME），2 块，已备份
-	put(withBackup, album, "IMG_0001.HEIC", "", 300)                   // 照片（扩展名）
+	put(withBackup, album, "a.jpg", "image/jpeg", 1500)       // 照片（MIME），2 块，已备份
+	put(withBackup, album, "IMG_0001.HEIC", "", 300)          // 照片（扩展名）
+	if _, err := withBackup.SyncBackupOnce(ctx); err != nil { // 上传只写主存储，后台同步补上备份
+		t.Fatal(err)
+	}
 	put(noBackup, album, "clip.MOV", "application/octet-stream", 2000) // 视频（扩展名），未备份
 	put(noBackup, nil, "notes.txt", "text/plain", 10)                  // 其他，未备份
 	put(withBackup, nil, "empty.bin", "", 0)                           // 其他，空文件算已备份
