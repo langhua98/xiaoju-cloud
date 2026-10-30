@@ -4,6 +4,9 @@ package service
 // 收到的数据加密后先攒在临时文件里，攒满一个分块（partSize）就写进存储端，同时把进度和整个文件 SHA-256 的
 // 中间状态记进数据库。网络断了：网页问一下服务端收到了多少，从那里接着传（攒在临时文件里的也算）。
 // 服务重启了：临时文件没了，从最后一个写好的分块接着传。
+//
+// 攒满的分块交给后台写（见 inflight），接着收下一块：以前收满一块要停下来等它写完 Telegram（256MB 要半分钟左右），
+// 这段时间手机那边也停着。最多一块在写、一块在攒，下一块又攒满了而上一块还没写完时，才等它。
 
 import (
 	"context"
@@ -29,6 +32,9 @@ import (
 
 // ResumableChunk 是建议网页每个请求传多少：断网时最多重传这么多。
 const ResumableChunk = 8 << 20
+
+// speedLogBytes：一次请求收到这么多（或传完了）才记一条速度日志。网页每 8MB 一个请求，每个都记太多了。
+const speedLogBytes = 64 << 20
 
 // resumableIdle：这么久没收到这个上传的请求，就把攒在内存、临时文件里的状态丢掉（下次从写好的分块接着传）。
 const resumableIdle = time.Hour
@@ -79,15 +85,18 @@ type resumable struct {
 	lastActive atomic.Int64 // 最后一次处理请求的时间（Unix 秒）
 
 	// 以下只在拿到 lock 时访问
-	loaded    bool
-	closed    bool
-	file      *meta.File
-	sess      *meta.UploadSession
-	dek       []byte
-	committed int64
-	nextPart  int
-	hash      hash.Hash // 整个文件明文的 SHA-256，读到 offset 为止
-	pending   *pendingPart
+	loaded   bool
+	closed   bool
+	file     *meta.File
+	sess     *meta.UploadSession
+	dek      []byte
+	nextPart int       // 下一个攒满的分块的编号（在后台写的那块已经占了号）
+	hash     hash.Hash // 整个文件明文的 SHA-256，读到 offset 为止
+	pending  *pendingPart
+	inflight chan error    // 在后台写的那块：写完（成功是 nil）后送来结果；nil 表示没有在写的
+	waited   time.Duration // 这次请求里等后台写分块等了多久（看慢在手机那边还是 Telegram 这边）
+	// failed：后台那块没写成，收到的进度作废（查进度时看数据库）。后台 goroutine 设置，拿着 lock 时清掉
+	failed atomic.Bool
 }
 
 // pendingPart 是正在攒的分块：密文写在临时文件里。
@@ -120,6 +129,32 @@ func (u *resumable) acquire(ctx context.Context) error {
 
 func (u *resumable) release() { <-u.lock }
 
+// wait 等在后台写的分块写完，返回它的结果（拿着 lock 时调用）。
+func (u *resumable) wait() error {
+	if u.inflight == nil {
+		return nil
+	}
+	start := time.Now()
+	err := <-u.inflight
+	u.waited += time.Since(start)
+	u.inflight = nil
+	return err
+}
+
+// settled 看后台的分块写没写完：没写完返回 nil，写完了返回结果（拿着 lock 时调用）。
+func (u *resumable) settled() error {
+	if u.inflight == nil {
+		return nil
+	}
+	select {
+	case err := <-u.inflight:
+		u.inflight = nil
+		return err
+	default:
+		return nil
+	}
+}
+
 func (u *resumable) setInterrupt(f func()) {
 	u.interruptMu.Lock()
 	u.interrupt = f
@@ -127,7 +162,10 @@ func (u *resumable) setInterrupt(f func()) {
 }
 
 // reset 丢掉攒着的分块和内存里的进度，下次从数据库里写好的分块接着传（拿着 lock 时调用）。
+// 有在后台写的分块就先等它写完：它会记进数据库，下次从数据库读进度时要算上。
 func (u *resumable) reset() {
+	u.wait()
+	u.failed.Store(false)
 	if u.pending != nil {
 		u.pending.remove()
 		u.pending = nil
@@ -233,7 +271,7 @@ func (s *Service) UploadStatus(ctx context.Context, userID, id uuid.UUID) (*Uplo
 	}
 	offset := sess.Committed
 	s.uploadsMu.Lock()
-	if u := s.uploads[id]; u != nil && u.offset.Load() >= 0 {
+	if u := s.uploads[id]; u != nil && u.offset.Load() >= 0 && !u.failed.Load() {
 		offset = u.offset.Load()
 	}
 	s.uploadsMu.Unlock()
@@ -257,6 +295,11 @@ func (s *Service) WriteUpload(ctx context.Context, userID, id uuid.UUID, offset 
 	if u.closed {
 		return nil, meta.ErrNotFound
 	}
+	if err := u.settled(); err != nil {
+		// 上次请求收满的那块在后台没写成：退回写好的分块，告诉客户端从那里重传
+		s.log.Warn("resumable upload: background write failed; client will resend from the last stored part", "file", id, "err", err)
+		u.reset()
+	}
 	if !u.loaded {
 		if err := s.loadResumable(ctx, userID, id, u); err != nil {
 			s.forgetResumable(id, u)
@@ -272,7 +315,16 @@ func (s *Service) WriteUpload(ctx context.Context, userID, id uuid.UUID, offset 
 	if err := s.store.TouchUploadSession(ctx, id); err != nil {
 		return nil, err
 	}
+	began, from := time.Now(), offset
+	u.waited = 0
 	err := s.receive(ctx, u, body)
+	if got := u.offset.Load() - from; got >= speedLogBytes || u.offset.Load() == u.sess.Size {
+		// receive：这次请求收了多少、多快；waited：其中等 Telegram 写上一块等了多久
+		took := time.Since(began)
+		s.log.Info("resumable upload received", "file", id, "bytes", got, "took", took.Round(100*time.Millisecond),
+			"mb_per_s", fmt.Sprintf("%.2f", float64(got)/(1<<20)/max(took.Seconds(), 0.001)),
+			"waited", u.waited.Round(100*time.Millisecond))
+	}
 	switch {
 	case errors.Is(err, errBodyStopped), errors.Is(err, ErrBodyTooLong):
 	case err != nil:
@@ -328,17 +380,21 @@ func (s *Service) loadResumable(ctx context.Context, userID, id uuid.UUID, u *re
 			return fmt.Errorf("restore hash state: %w", err)
 		}
 	}
-	u.file, u.sess, u.dek, u.committed, u.nextPart, u.hash = f, sess, dek, sess.Committed, len(parts), h
+	u.file, u.sess, u.dek, u.nextPart, u.hash = f, sess, dek, len(parts), h
 	u.offset.Store(sess.Committed)
 	u.loaded = true
 	return nil
 }
 
-// receive 把 body 加密写进攒着的分块，攒满就写存储端。body 读出错（客户端断开等）返回 errBodyStopped，收到的都算数。
+// receive 把 body 加密写进攒着的分块，攒满就交给后台写存储端（最后一块等它写完）。
+// body 读出错（客户端断开等）返回 errBodyStopped，收到的都算数。
 func (s *Service) receive(ctx context.Context, u *resumable, body io.Reader) error {
 	buf := make([]byte, 256<<10)
 	size := u.sess.Size
 	for u.offset.Load() < size {
+		if err := u.settled(); err != nil {
+			return err
+		}
 		if u.pending == nil {
 			if err := s.newPending(u); err != nil {
 				return err
@@ -357,9 +413,16 @@ func (s *Service) receive(ctx context.Context, u *resumable, body io.Reader) err
 			u.offset.Add(int64(n))
 		}
 		if u.pending.size == s.partSize || u.offset.Load() == size {
-			// 客户端走了也要写完：数据已经收到了
-			if err := s.commitPending(context.WithoutCancel(ctx), u); err != nil {
+			// 客户端走了也要写完：数据已经收到了。上一块还在写就等它（同时最多一块在写）
+			if err := u.wait(); err != nil {
 				return err
+			}
+			last := u.offset.Load() == size
+			s.commitPending(context.WithoutCancel(ctx), u)
+			if last { // 最后一块：写完才算传完
+				if err := u.wait(); err != nil {
+					return err
+				}
 			}
 		}
 		if rerr == io.EOF {
@@ -393,19 +456,37 @@ func (s *Service) newPending(u *resumable) error {
 	return err
 }
 
-// commitPending 把攒好的分块写进存储端，记下分块和进度。
-func (s *Service) commitPending(ctx context.Context, u *resumable) error {
+// commitPending 把攒好的分块交给后台写进存储端、记下分块和进度，结果送到 u.inflight（拿着 lock、
+// 没有在后台写的分块时调用）。整个文件摘要的中间状态、收到的字节数在这里先记下：后台写的时候还在接着收。
+func (s *Service) commitPending(ctx context.Context, u *resumable) {
 	p := u.pending
 	sp := &sealedPart{no: u.nextPart, tmp: p.tmp, size: p.size, iv: p.iv, sum: p.sum.Sum(nil)}
-	part, loc, err := s.storePart(ctx, u.file.ID, sp)
+	offset := u.offset.Load()
+	state, stateErr := u.hash.(encoding.BinaryMarshaler).MarshalBinary()
+	fileID := u.file.ID
+	u.pending = nil
+	u.nextPart++
+	done := make(chan error, 1)
+	u.inflight = done
+	go func() {
+		err := stateErr
+		if err == nil {
+			err = s.storeResumablePart(ctx, fileID, sp, offset, state)
+		}
+		p.remove()
+		if err != nil {
+			u.failed.Store(true)
+		}
+		done <- err
+	}()
+}
+
+func (s *Service) storeResumablePart(ctx context.Context, fileID uuid.UUID, sp *sealedPart, offset int64, state []byte) error {
+	part, loc, err := s.storePart(ctx, fileID, sp)
 	if err != nil {
 		return err
 	}
-	state, err := u.hash.(encoding.BinaryMarshaler).MarshalBinary()
-	if err == nil {
-		err = s.store.CommitUploadPart(ctx, part, u.offset.Load(), state)
-	}
-	if err != nil {
+	if err := s.store.CommitUploadPart(ctx, part, offset, state); err != nil {
 		// 记不下来：刚写上去的分块删掉，免得成了没人认领的残块
 		s.driver.Delete(ctx, []storage.Location{loc})
 		if part.HasBackup() {
@@ -416,10 +497,6 @@ func (s *Service) commitPending(ctx context.Context, u *resumable) error {
 		}
 		return err
 	}
-	p.remove()
-	u.pending = nil
-	u.committed = u.offset.Load()
-	u.nextPart++
 	return nil
 }
 

@@ -79,8 +79,9 @@ func New(svc *service.Service, opt Options) *Server {
 	return &Server{
 		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
 		passkeys: opt.Passkeys, grid: opt.Grid, sessions: sessions, views: auth.NewViews(), loc: loc,
-		// 快捷指令跳过传过的最快每秒两三个；问“传过没有”的接口一次运行只调一两次
-		ingestLimit: newIPLimiter(120, 60), ingestAskLimit: newIPLimiter(60, 30),
+		// App 备份时每个文件先问一次“传过没有”再传（实况照片算两个），同时传好几个；以前每分钟 60 次、120 次，
+		// 照片最多每秒传两张，网速再快也是这么多。现在放宽到每秒 10 个，知道地址的人也没法无限地发请求
+		ingestLimit: newIPLimiter(600, 200), ingestAskLimit: newIPLimiter(600, 200),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
 		dropLimit: newIPLimiter(120, 60), dropAskLimit: newIPLimiter(60, 30),
 		agents:  newAgentState(),

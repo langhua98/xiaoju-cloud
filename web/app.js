@@ -3871,7 +3871,8 @@ async function fileProbe(file) {
 
 // ---------- 上传 ----------
 
-const CONCURRENCY = 2;
+// 同时传几个文件：服务端有好几个 Telegram 机器人轮流写，跨境网络一条连接又跑不满，多传几个更快
+const CONCURRENCY = 4;
 // 网络中断、服务端出错（多为 Telegram 限流）时的重试间隔（秒）
 const RETRY_DELAYS = [5, 20, 60];
 // 上传卡住的判定：传文件的过程中这么久没有任何进度（网络断了、手机锁屏或切到后台），中断后重试

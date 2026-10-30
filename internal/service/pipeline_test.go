@@ -140,3 +140,100 @@ func TestPutPartRetries(t *testing.T) {
 		t.Fatalf("cancelled: err %v after %d puts, want failure after 1", err, broken.puts)
 	}
 }
+
+// 断点续传（App 大视频、网页）也边收边写：攒满的分块交给后台写，接着收下一块，不再停下来等；内容不变。
+func TestResumableWritesWhileReceiving(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, _ := store.EnsureUser(ctx, "resumable-pipeline-test")
+	base, _ := local.New(t.TempDir())
+	driver := &slowPut{Driver: base, delay: 120 * time.Millisecond}
+	master, _ := crypto.NewKey()
+	svc := New(store, driver, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)})
+
+	data := randBytes(5500) // 6 块
+	p, err := svc.StartUpload(ctx, ResumableRequest{UserID: userID, Name: "v.mov", Mime: "video/quicktime", Size: int64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	body := &slowBody{r: bytes.NewReader(data), step: 1000, delay: 120 * time.Millisecond}
+	done, err := svc.WriteUpload(ctx, userID, p.ID, 0, body, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	// 收满一块停下来写要 6×120 + 6×120 = 1440ms；边收边写约 6×120 + 120 = 840ms
+	if took > 1150*time.Millisecond {
+		t.Fatalf("upload took %s: parts were not written while receiving", took)
+	}
+	if done.File == nil || done.File.Size != int64(len(data)) || len(driver.puts) != 6 {
+		t.Fatalf("progress %+v after %d puts", done, len(driver.puts))
+	}
+	_, rd, err := svc.Open(ctx, userID, done.File.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(rd)
+	if !bytes.Equal(got, data) {
+		t.Fatalf("content differs: %d bytes", len(got))
+	}
+	entries, _ := os.ReadDir(svc.tempDir)
+	if len(entries) != 0 {
+		t.Fatalf("%d temp files left", len(entries))
+	}
+}
+
+// 后台写的分块没写成：这次请求出错，进度退回写好的分块；从那里重传，传完内容不变。
+func TestResumableBackgroundWriteFails(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	delays := putRetryDelays
+	putRetryDelays = nil
+	defer func() { putRetryDelays = delays }()
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, _ := store.EnsureUser(ctx, "resumable-fail-test")
+	base, _ := local.New(t.TempDir())
+	driver := &failingDriver{Driver: base, failAt: 2, failFor: 1} // 第 2 块写不进去
+	master, _ := crypto.NewKey()
+	svc := New(store, driver, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)})
+
+	data := randBytes(3500)
+	p, err := svc.StartUpload(ctx, ResumableRequest{UserID: userID, Name: "v.mov", Mime: "video/quicktime", Size: int64(len(data))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.WriteUpload(ctx, userID, p.ID, 0, bytes.NewReader(data), func() {}); err == nil {
+		t.Fatal("upload succeeded although part 2 was not stored")
+	}
+	st, err := svc.UploadStatus(ctx, userID, p.ID)
+	if err != nil || st.Offset != 1000 {
+		t.Fatalf("status %+v, %v: want offset 1000 (the stored part)", st, err)
+	}
+	done, err := svc.WriteUpload(ctx, userID, p.ID, 1000, bytes.NewReader(data[1000:]), func() {})
+	if err != nil || done.File == nil {
+		t.Fatalf("resend: %+v, %v", done, err)
+	}
+	_, rd, err := svc.Open(ctx, userID, done.File.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := io.ReadAll(rd); !bytes.Equal(got, data) {
+		t.Fatalf("content differs: %d bytes", len(got))
+	}
+}

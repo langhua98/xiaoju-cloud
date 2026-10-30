@@ -102,6 +102,15 @@ func TestResumableUpload(t *testing.T) {
 		pool.QueryRow(ctx, `SELECT count(*) FROM file_parts WHERE file_id = $1`, id).Scan(&n)
 		return n
 	}
+	// 攒满的分块在后台写：等它们都记进数据库
+	waitParts := func(id string, want int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); parts(id) != want; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("upload %s: %d parts stored, want %d", id, parts(id), want)
+			}
+		}
+	}
 	random := func(n int) []byte {
 		b := make([]byte, n)
 		rand.Read(b)
@@ -126,10 +135,11 @@ func TestResumableUpload(t *testing.T) {
 	if code, out := put(id, 0, video[:700]); code != 409 || offset(out) != 700 {
 		t.Fatalf("resend: %d %v", code, out)
 	}
-	// 第二段跨过两个分块边界：写好两个分块，剩 300 字节攒着
-	if code, out := put(id, 700, video[700:2300]); code != 200 || offset(out) != 2300 || parts(id) != 2 {
-		t.Fatalf("put 2: %d %v parts=%d", code, out, parts(id))
+	// 第二段跨过两个分块边界：写好两个分块（第二块在后台写，不等它），剩 300 字节攒着
+	if code, out := put(id, 700, video[700:2300]); code != 200 || offset(out) != 2300 {
+		t.Fatalf("put 2: %d %v", code, out)
 	}
+	waitParts(id, 2)
 
 	// 服务重启：攒着的 300 字节没了，从写好的两个分块（2000）接着传
 	ts.Close()
@@ -258,6 +268,7 @@ func TestResumableUpload(t *testing.T) {
 	_, out = start("old.bin", 1500, "o", false)
 	oid := out["id"].(string)
 	put(oid, 0, random(1200))
+	waitParts(oid, 1)
 	pool.Exec(ctx, `UPDATE upload_sessions SET updated_at = now() - interval '2 days' WHERE file_id = $1`, oid)
 	if _, err := svc.CleanupStaleUploads(ctx); err != nil {
 		t.Fatal(err)
