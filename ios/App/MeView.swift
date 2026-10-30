@@ -7,7 +7,6 @@ struct MeView: View {
     @ObservedObject private var cloud = Cloud.shared
     @ObservedObject private var auto = AutoBackup.shared
     @State private var stats: DriveStats?
-    @State private var showBackup = false
     @State private var showWeb = false
 
     var body: some View {
@@ -15,7 +14,8 @@ struct MeView: View {
             List {
                 if cloud.signedIn { Section { storage } }
                 Section {
-                    Button { showBackup = true } label: {
+                    // 推进去（不是全屏盖住），右滑就回到「我的」
+                    NavigationLink { BackupView(pushed: true) } label: {
                         HStack {
                             BackupRing().allowsHitTesting(false)
                             VStack(alignment: .leading) {
@@ -23,11 +23,8 @@ struct MeView: View {
                                 Text(auto.running ? "点开看进度和网速" : auto.lastFinished.map { "上次完成：\($0.formatted(.relative(presentation: .named)))" } ?? "还没完整备份过")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
-                    .buttonStyle(.plain)
                 }
                 Section {
                     if cloud.signedIn {
@@ -53,7 +50,6 @@ struct MeView: View {
             .navigationTitle("我的")
             .refreshable { await load() }
             .task { await load() }
-            .fullScreenCover(isPresented: $showBackup) { BackupView() }
             .sheet(isPresented: $showWeb) {
                 if let url = cloud.webURL { SafariView(url: url) { showWeb = false }.ignoresSafeArea() }
             }

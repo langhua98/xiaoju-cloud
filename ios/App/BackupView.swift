@@ -6,8 +6,9 @@ import UniformTypeIdentifiers
 
 // 「备份」页（备份中心）：上面一个进度环和「本地相册 / 云端备份 / 等待上传」三个数，下面是正在传的文件、没传上去的、
 // 一个「自动备份」开关和几个设置。服务端地址、试传一张这类排查用的东西放在右上角的「诊断」里。
-// 全屏打开（不是能往下拖走的卡片），左上角「完成」关掉。
+// 从「我的」点进来是推进去的一页，右滑或左上角返回；从别的页面右上角的小圆环打开时是全屏的，左上角「完成」关掉。
 struct BackupView: View {
+    var pushed = false // 推进来的（外面已经有 NavigationStack）：不再套一层，也不要「完成」
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var auto = AutoBackup.shared
     @State private var auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -17,100 +18,108 @@ struct BackupView: View {
     @State private var switchError = ""
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section { summary }
-                if auth == .authorized {
-                    Section { controls }
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
-                    Section { SpeedView() }
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
-                }
-                if auth != .authorized {
-                    Section {
-                        Text(authText).font(.footnote)
-                        if auth == .notDetermined {
-                            Button("允许访问所有照片") { Task { await requestAuth() } }
-                        } else {
-                            Button("去设置里打开") { openSettings() }
-                        }
-                    }
-                }
-                if !auto.transfers.isEmpty {
-                    Section("正在上传") {
-                        ForEach(auto.transfers.prefix(5)) { t in TransferRow(t: t) }
-                        if auto.transfers.count > 5 {
-                            Text("还有 \(auto.transfers.count - 5) 个").font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if !auto.failures.isEmpty {
-                    Section {
-                        NavigationLink {
-                            FailuresView()
-                        } label: {
-                            Label("\(auto.failures.count) 个没传上去", systemImage: "exclamationmark.icloud")
-                                .foregroundStyle(.red)
-                        }
-                    }
-                }
+        if pushed {
+            page
+        } else {
+            NavigationStack { page }
+        }
+    }
+
+    private var page: some View {
+        List {
+            Section { summary }
+            if auth == .authorized {
+                Section { controls }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                Section { SpeedView() }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+            }
+            if auth != .authorized {
                 Section {
-                    Toggle("自动备份", isOn: Binding(get: { auto.enabled }, set: { setAutomatic($0) }))
-                        .disabled(auth != .authorized && !auto.enabled)
-                    NavigationLink {
-                        BackupAlbumsView()
-                    } label: {
-                        LabeledContent("备份哪些照片", value: albumCount == 0 ? "全部照片" : "全部 + \(albumCount) 个相册")
+                    Text(authText).font(.footnote)
+                    if auth == .notDetermined {
+                        Button("允许访问所有照片") { Task { await requestAuth() } }
+                    } else {
+                        Button("去设置里打开") { openSettings() }
                     }
-                    NavigationLink("手机数据") { PhoneDataView() }
-                    NavigationLink {
-                        SyncFoldersView()
-                    } label: {
-                        LabeledContent("同步文件夹", value: auto.folders.isEmpty ? "没有" : "\(auto.folders.count) 个")
-                    }
-                    NavigationLink("插上电就备份") { ChargeShortcutView() }
-                    Button("从云盘恢复到手机…") { Restorer.shared.show = true }
-                } footer: {
-                    Text(switchError.isEmpty
-                        ? "打开后，新拍的照片由系统在后台传；插着电、连着网的时候（一般是夜里）再把没传的补齐。"
-                        : switchError)
                 }
             }
-            .navigationTitle("备份")
-            .toolbar {
+            if !auto.transfers.isEmpty {
+                Section("正在上传") {
+                    ForEach(auto.transfers.prefix(5)) { t in TransferRow(t: t) }
+                    if auto.transfers.count > 5 {
+                        Text("还有 \(auto.transfers.count - 5) 个").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if !auto.failures.isEmpty {
+                Section {
+                    NavigationLink {
+                        FailuresView()
+                    } label: {
+                        Label("\(auto.failures.count) 个没传上去", systemImage: "exclamationmark.icloud")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            Section {
+                Toggle("自动备份", isOn: Binding(get: { auto.enabled }, set: { setAutomatic($0) }))
+                    .disabled(auth != .authorized && !auto.enabled)
+                NavigationLink {
+                    BackupAlbumsView()
+                } label: {
+                    LabeledContent("备份哪些照片", value: albumCount == 0 ? "全部照片" : "全部 + \(albumCount) 个相册")
+                }
+                NavigationLink("手机数据") { PhoneDataView() }
+                NavigationLink {
+                    SyncFoldersView()
+                } label: {
+                    LabeledContent("同步文件夹", value: auto.folders.isEmpty ? "没有" : "\(auto.folders.count) 个")
+                }
+                NavigationLink("插上电就备份") { ChargeShortcutView() }
+                Button("从云盘恢复到手机…") { Restorer.shared.show = true }
+            } footer: {
+                Text(switchError.isEmpty
+                    ? "打开后，新拍的照片由系统在后台传；插着电、连着网的时候（一般是夜里）再把没传的补齐。"
+                    : switchError)
+            }
+        }
+        .navigationTitle("备份")
+        .toolbar {
+            if !pushed {
                 ToolbarItem(placement: .topBarLeading) { Button("完成") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink { DiagnosticsView() } label: { Image(systemName: "stethoscope") }
-                        .accessibilityLabel("诊断")
-                }
             }
-            .refreshable {
-                await AutoBackup.shared.reconcileAll()
-                await refresh()
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink { DiagnosticsView() } label: { Image(systemName: "stethoscope") }
+                    .accessibilityLabel("诊断")
             }
-            .onAppear { albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count }
-            // 先用本地记下的马上算出三个数，再在后台和云盘比对（以前用快捷指令、网页传过的也算进「已备份」），
-            // 比对时每认出一批就重算一次（以前要等核对完才显示，一万张要等一两分钟，这段时间一直是「—」）
-            .task {
+        }
+        .refreshable {
+            await AutoBackup.shared.reconcileAll()
+            await refresh()
+        }
+        .onAppear { albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count }
+        // 先用本地记下的马上算出三个数，再在后台和云盘比对（以前用快捷指令、网页传过的也算进「已备份」），
+        // 比对时每认出一批就重算一次（以前要等核对完才显示，一万张要等一两分钟，这段时间一直是「—」）
+        .task {
+            await refresh()
+            // 自动备份开着就再确认一次系统后台上传是开的（上次没开成的，这次打开页面时补上）
+            if auth == .authorized && auto.enabled { switchError = await auto.setAutomatic(true) ?? "" }
+            await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileIfStale() }.value
+            await refresh()
+        }
+        .onChange(of: auto.matched) { _, _ in Task { await refresh() } }
+        .onChange(of: auto.checking) { _, checking in
+            if !checking { Task { await refresh() } }
+        }
+        // 备份的时候每 5 秒重算一次三个数，停了再算一次
+        .task(id: auto.running) {
+            await refresh()
+            while auto.running && !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
                 await refresh()
-                // 自动备份开着就再确认一次系统后台上传是开的（上次没开成的，这次打开页面时补上）
-                if auth == .authorized && auto.enabled { switchError = await auto.setAutomatic(true) ?? "" }
-                await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileIfStale() }.value
-                await refresh()
-            }
-            .onChange(of: auto.matched) { _, _ in Task { await refresh() } }
-            .onChange(of: auto.checking) { _, checking in
-                if !checking { Task { await refresh() } }
-            }
-            // 备份的时候每 5 秒重算一次三个数，停了再算一次
-            .task(id: auto.running) {
-                await refresh()
-                while auto.running && !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(5))
-                    await refresh()
-                }
             }
         }
     }
