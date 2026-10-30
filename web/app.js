@@ -3871,7 +3871,8 @@ async function fileProbe(file) {
 
 // ---------- 上传 ----------
 
-const CONCURRENCY = 2;
+// 同时传几个文件：服务端有好几个 Telegram 机器人轮流写，跨境网络一条连接又跑不满，多传几个更快
+const CONCURRENCY = 4;
 // 网络中断、服务端出错（多为 Telegram 限流）时的重试间隔（秒）
 const RETRY_DELAYS = [5, 20, 60];
 // 上传卡住的判定：传文件的过程中这么久没有任何进度（网络断了、手机锁屏或切到后台），中断后重试
@@ -3884,6 +3885,8 @@ const RESUMABLE_MIN = 16 << 20;
 // 断点续传有一段没传上去时，等这么久再问服务端收到了多少、接着传（之后都按最后一个）；连着失败这么多次才算失败
 const RESUME_DELAYS = [3, 5, 10, 20, 30, 60];
 const RESUME_TRIES = 30;
+// 一个大文件最多同时开几条连接传（服务端建议的 lanes 和这个取小的）
+const PARALLEL_LANES = 4;
 
 const queue = [];
 let active = 0;
@@ -4073,6 +4076,8 @@ async function uploadResumable({ file, name, parent, sync }, status, bar) {
       throw err;
     });
   const chunk = s.chunk || 8 << 20;
+  // 服务端支持分段同时传（新版本才有 lanes、missing）：比 chunk 大的文件几条连接一起传
+  if (s.lanes > 1 && Array.isArray(s.missing) && file.size > chunk) return uploadLanes(file, s, status, bar);
   let offset = s.offset;
   const show = (n) => {
     bar.value = n / file.size;
@@ -4112,6 +4117,98 @@ async function uploadResumable({ file, name, parent, sync }, status, bar) {
         if (e.status && e.status < 500) throw e;
       }
     }
+  }
+}
+
+// 分段同时传：开 lanes 条连接，每条从还缺的地方（missing）挑一段没人在传的（一段 chunk 字节，不跨过服务端的
+// 分块边界）传上去，传完再挑下一段。跨境网络一条连接跑不满带宽，几条一起传快得多。
+// 一段没传上去：等一会儿问服务端还缺哪些，接着传；服务端会记住已经收到的部分。
+async function uploadLanes(file, s, status, bar) {
+  const chunk = s.chunk || 8 << 20;
+  const part = s.part || 0;
+  let missing = s.missing;
+  const inflight = new Map(); // 起点 → { end, loaded }
+  let result = null;
+  let fatal = null;
+  let fails = 0;
+  const left = () => missing.reduce((n, [a, b]) => n + b - a, 0);
+  const show = () => {
+    let n = file.size - left();
+    for (const x of inflight.values()) n += x.loaded;
+    n = Math.min(n, file.size);
+    bar.value = n / file.size;
+    status.textContent = `${formatSize(n)} / ${formatSize(file.size)}（${inflight.size} 条连接）`;
+  };
+  const finished = () => request("GET", `/api/files/${s.id}`).catch(() => null);
+  const refresh = async () => {
+    try {
+      missing = (await request("GET", `/api/uploads/${s.id}`)).missing || [];
+    } catch (e) {
+      if (e.status === 404 && await finished()) result = {};
+      else if (e.status && e.status < 500) fatal = e;
+    }
+  };
+  const take = () => {
+    for (const [a, b] of missing) {
+      for (let x = a; x < b;) {
+        let end = Math.min(b, x + chunk);
+        if (part) end = Math.min(end, (Math.floor(x / part) + 1) * part);
+        let busy = false;
+        for (const [from, y] of inflight) if (from < end && x < y.end) busy = true;
+        if (!busy) return [x, end];
+        x = end;
+      }
+    }
+    return null;
+  };
+  const lane = async () => {
+    while (!result && !fatal) {
+      const seg = take();
+      if (!seg) return;
+      const [a, b] = seg;
+      const mine = { end: b, loaded: 0 };
+      inflight.set(a, mine);
+      try {
+        const res = await xhrUpload("PUT", `/api/uploads/${s.id}?offset=${a}&parallel=1`, file.slice(a, b), "application/octet-stream", (loaded, sent) => {
+          mine.loaded = loaded;
+          show();
+          if (sent && !left()) status.textContent = "加密并写入 Telegram…";
+        });
+        if (res.same_content) result = { same: true };
+        else if (res.file) result = {};
+        else missing = res.missing || [];
+        fails = 0;
+      } catch (err) {
+        if (err.status === 409) { // 这段别的连接已经传过了：看看还缺哪些
+          await refresh();
+          continue;
+        }
+        if (err.status === 404 && await finished()) { result = {}; break; }
+        if (err.status && err.status < 500) { fatal = err; break; }
+        if (++fails > RESUME_TRIES) { fatal = err; break; }
+        const wait = RESUME_DELAYS[Math.min(fails, RESUME_DELAYS.length) - 1];
+        status.textContent = `${err.status ? `服务端出错（${err.status}）` : "网络断了"}，${wait} 秒后接着传`;
+        inflight.delete(a);
+        await sleep(wait);
+        if (!state.session) { fatal = new HttpError(0, "已退出登录"); break; }
+        await refresh();
+      } finally {
+        inflight.delete(a);
+        show();
+      }
+    }
+  };
+  show();
+  if (left() < file.size) status.textContent += "（接着上次传）";
+  for (;;) {
+    await Promise.all(Array.from({ length: Math.min(s.lanes, PARALLEL_LANES) }, lane));
+    if (result) return result;
+    if (fatal) throw fatal;
+    // 没有能挑的段了，但还没听到传完（最后一段的回复丢了、还有段没写成）：问一下再来
+    await sleep(2);
+    await refresh();
+    if (result) return result;
+    if (fatal) throw fatal;
   }
 }
 

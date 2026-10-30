@@ -74,25 +74,36 @@ func (s *Store) GetUploadSession(ctx context.Context, userID, fileID uuid.UUID) 
 	return u, &f, nil
 }
 
-// CommitUploadPart 记下又一个写好的分块，以及读到 committed 为止的 SHA-256 中间状态（同一个事务）。
-func (s *Store) CommitUploadPart(ctx context.Context, p *Part, committed int64, hashState []byte) error {
+// AddUploadPart 记下又一个写好的分块（分段同时传时不一定按顺序），顺便更新会话的最后活动时间。
+// 会话已经被清理了返回 ErrNotFound。
+func (s *Store) AddUploadPart(ctx context.Context, p *Part) error {
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `UPDATE upload_sessions SET updated_at = now() WHERE file_id = $1`, p.FileID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound // 会话已经被清理了
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO file_parts (file_id, part_no, storage, channel_id, message_id, size, iv, sha256,
 			                        backup_channel_id, backup_message_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 			p.FileID, p.PartNo, p.Storage, p.ChannelID, p.MessageID, p.Size, p.IV, p.SHA256,
-			p.BackupChannelID, p.BackupMessageID); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `
-			UPDATE upload_sessions SET committed = $2, hash_state = $3, updated_at = now() WHERE file_id = $1`,
-			p.FileID, committed, hashState)
-		if err == nil && tag.RowsAffected() == 0 {
-			err = ErrNotFound // 会话已经被清理了
-		}
+			p.BackupChannelID, p.BackupMessageID)
 		return err
 	})
+}
+
+// SetUploadHash 记下整个文件的 SHA-256 算到 committed 字节时的中间状态（前面连续写好的分块都算进去了）。
+func (s *Store) SetUploadHash(ctx context.Context, fileID uuid.UUID, committed int64, hashState []byte) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE upload_sessions SET committed = $2, hash_state = $3, updated_at = now() WHERE file_id = $1`,
+		fileID, committed, hashState)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound // 会话已经被清理了
+	}
+	return err
 }
 
 // TouchUploadSession 更新会话的最后活动时间（每次收到数据时调用；24 小时没动静的会被清理）。

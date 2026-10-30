@@ -21,8 +21,10 @@ import (
 //	POST /api/uploads {"name", "parent_id", "size", "mime", "probe", "dedupe"}
 //	     → 201 {"id", "size", "offset": 0, "chunk"}；同一个文件夹里有同名同大小、probe 一样的没传完的，
 //	       返回 200 和它的进度（刷新页面后重新选了同一个文件，接着传）
-//	PUT  /api/uploads/{id}?offset=N，请求体是文件里从 N 开始的一段（建议 chunk 字节）
-//	     → 200 {"offset", ...}；传完时 201 {"offset": size, "file": {...}}；
+//	PUT  /api/uploads/{id}?offset=N[&parallel=1]，请求体是文件里从 N 开始的一段（建议 chunk 字节）。
+//	     不带 parallel 时 N 必须是 offset（从头连续收到的末尾）；带 parallel=1 时可以几条连接同时传不同的段，
+//	     N 是 missing 里任何还没收到的位置（一段别跨过 part 字节的分块边界）
+//	     → 200 {"offset", "missing": [[起点, 终点), ...], "lanes": 建议开几条连接, "part": 分块大小, ...}；传完时 201 {"offset": size, "file": {...}}；
 //	       N 和服务端收到的对不上 409 {"offset": 实际收到的}；dedupe 时网盘里已有一样的 200 {"same_content": true, "file"}
 //	GET  /api/uploads/{id} → {"offset", ...}；传完了（或被清理了）是 404
 //
@@ -94,7 +96,8 @@ func (s *Server) writeUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	rc := http.NewResponseController(w)
 	body := &idleReader{r: r.Body, rc: rc, idle: uploadIdle}
-	p, err := s.svc.WriteUpload(r.Context(), s.userID, id, offset, body, body.stop)
+	parallel := r.URL.Query().Get("parallel") == "1"
+	p, err := s.svc.WriteUpload(r.Context(), s.userID, id, offset, parallel, body, body.stop)
 	var off *service.OffsetError
 	var same *service.SameContentError
 	switch {

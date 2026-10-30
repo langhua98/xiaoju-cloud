@@ -87,7 +87,12 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private var done: Set<String> = []
     private var inCloud: Set<String> = [] // "target|assetLocalID"：按名字 + 拍摄日期认出云盘里已经有的（见 planMatch）
     private var doneDirty = 0
-    private var counts = (uploaded: 0, skipped: 0, failed: 0)
+    // 这一轮的统计。几张照片同时在准备、上传（见 backupPhotos），改的时候拿着 lock（用 count）
+    private var tally = (uploaded: 0, skipped: 0, failed: 0)
+    private var counts: (uploaded: Int, skipped: Int, failed: Int) { lock.withLock { tally } }
+    private func count(_ change: (inout (uploaded: Int, skipped: Int, failed: Int)) -> Void) {
+        lock.withLock { change(&tally) }
+    }
     private var lastError = ""
 
     private lazy var session: URLSession = {
@@ -321,7 +326,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             completion?(true)
             return
         }
-        counts = (0, 0, 0)
+        tally = (0, 0, 0) // 还拿着 lock
         lastError = ""
         failed = [] // 这一轮会把上次没传上去的再传一遍
         (scanTotal, scanned, queuedBytes, movedBytes, checkTotal, checkedItems) = (0, 0, 0, 0, 0, 0)
@@ -383,8 +388,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private var failed: [Failure] = []
 
     private func fail(_ name: String, _ reason: String) {
-        lastError = "\(name)：\(reason)"
         lock.withLock {
+            lastError = "\(name)：\(reason)"
             failed.removeAll { $0.name == name }
             failed.append(Failure(name: name, reason: reason))
         }
@@ -440,31 +445,46 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         let busy = await busyKeys()
         let targets = photoTargets()
         lock.withLock { scanTotal = Int64(targets.reduce(0) { $0 + $1.assets.count }) }
-        for target in targets {
-            let assets = target.assets
-            for i in 0..<assets.count {
-                if Task.isCancelled { return }
-                lock.withLock { scanned += 1 }
-                reportContinued()
-                if i % 20 == 0 {
-                    setStatus("正在备份「\(target.label)」\(i)/\(assets.count)：新传 \(counts.uploaded)，已有 \(counts.skipped)，失败 \(counts.failed)")
-                }
-                let asset = assets.object(at: i)
-                let known = lock.withLock { inCloud.contains("\(target.key)|\(asset.localIdentifier)") }
-                for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
-                    let key = "\(target.key)|\(asset.localIdentifier)|\(resource.type.rawValue)"
-                    if busy.contains(key) || lock.withLock({ done.contains(key) }) { continue }
-                    if known && resource.type != .pairedVideo { continue } // 快捷指令、网页传过这张：不重传（实况照片的视频照常问）
-                    do {
-                        try await upload(resource, key: key, album: target.album)
-                    } catch {
-                        counts.failed += 1
-                        fail(resource.originalFilename, error.localizedDescription)
+        // 同时准备几张（问服务端有没有、从相册导出、可能还要先从 iCloud 下载原图），以前是一张张来：
+        // 导出、下载慢的时候，后台上传那边经常是空着的
+        await withTaskGroup(of: Void.self) { group in
+            var preparing = 0
+            for target in targets {
+                let assets = target.assets
+                for i in 0..<assets.count {
+                    if Task.isCancelled { return }
+                    lock.withLock { scanned += 1 }
+                    reportContinued()
+                    if i % 20 == 0 {
+                        setStatus("正在备份「\(target.label)」\(i)/\(assets.count)：新传 \(counts.uploaded)，已有 \(counts.skipped)，失败 \(counts.failed)")
+                    }
+                    let asset = assets.object(at: i)
+                    let known = lock.withLock { inCloud.contains("\(target.key)|\(asset.localIdentifier)") }
+                    for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
+                        let key = "\(target.key)|\(asset.localIdentifier)|\(resource.type.rawValue)"
+                        if busy.contains(key) || lock.withLock({ done.contains(key) }) { continue }
+                        if known && resource.type != .pairedVideo { continue } // 快捷指令、网页传过这张：不重传（实况照片的视频照常问）
+                        if preparing >= Self.preparing {
+                            await group.next()
+                            preparing -= 1
+                        }
+                        preparing += 1
+                        group.addTask { [self] in
+                            do {
+                                try await upload(resource, key: key, album: target.album)
+                            } catch {
+                                count { $0.failed += 1 }
+                                fail(resource.originalFilename, error.localizedDescription)
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    // 同时准备几张照片
+    private static let preparing = 4
 
     typealias PhotoTarget = (key: String, label: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?)
 
@@ -659,12 +679,18 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             let (data, _) = try await URLSession.shared.data(for: ask)
             if (try? JSONDecoder().decode([String: String].self, from: data))?["result"] == "exists" {
                 markDone(key)
-                counts.skipped += 1
+                count { $0.skipped += 1 }
                 return
             }
         }
         // 大文件（视频）：分段断点续传，断了下次从断的地方接着传。导出的文件留着，下次不用再导出
         if size > 16 << 20 {
+            // 同时最多 3 个大文件在后台分段传。先等再导出：几张同时在准备，不先等的话会同时导出好几个大视频，占满手机空间
+            while await chunkTasks() >= 3 {
+                if Task.isCancelled { return }
+                reportContinued()
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            }
             let file = spool.appendingPathComponent(Self.sha(key))
             if !FileManager.default.fileExists(atPath: file.path) {
                 let part = file.appendingPathExtension("part")
@@ -672,14 +698,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 try await export(part)
                 try FileManager.default.moveItem(at: part, to: file)
             }
-            // 同时最多 3 个大文件在后台分段传
-            while await chunkTasks() >= 3 {
-                if Task.isCancelled { return }
-                reportContinued()
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-            }
             let job = BigJob(key: key, file: file.path, name: name, headers: extra, size: size)
-            if try await startBig(job) { counts.uploaded += 1 } else { counts.skipped += 1 }
+            if try await startBig(job) { count { $0.uploaded += 1 } } else { count { $0.skipped += 1 } }
             return
         }
         while await allTasks().count >= 10 {
@@ -699,7 +719,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         lock.withLock { lastNames[key] = name }
         track(key, name: name, sent: 0, total: size)
         task.resume()
-        counts.uploaded += 1
+        count { $0.uploaded += 1 }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -757,7 +777,17 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                     totalBytesSent: Int64, totalBytesExpectedToSend: Int64)
     {
         let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
-        if parts.first == "chunk", parts.count == 4, let end = Int64(parts[3]) {
+        if parts.first == "chunk", parts.count == 5 {
+            // 分段同时传：服务端已经收到的 + 每条连接这一段已发出的
+            let sent = lock.withLock { () -> Int64 in
+                laneSent[task.taskIdentifier] = (parts[1], totalBytesSent)
+                return (laneBase[parts[1]] ?? 0) + laneSent.values.filter { $0.key == parts[1] }.reduce(0) { $0 + $1.sent }
+            }
+            if lock.withLock({ meta[parts[1]] }) == nil, let job = loadJobs()[parts[1]] {
+                lock.withLock { meta[job.key] = (job.name, job.size) }
+            }
+            updateProgress(parts[1], sent: sent)
+        } else if parts.first == "chunk", parts.count == 4, let end = Int64(parts[3]) {
             // 大文件：这一段的起点 + 这一段已发出的
             let sent = end - task.countOfBytesExpectedToSend + totalBytesSent
             if lock.withLock({ meta[parts[1]] }) == nil, let job = loadJobs()[parts[1]] {
@@ -835,7 +865,19 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         var size: Int64
         var id = ""
         var chunk: Int64 = 8 << 20
+        // 服务端支持分段同时传时：建议开几条连接、分块多大（一段不跨过分块边界）。旧版本存的任务里没有
+        var lanes: Int?
+        var part: Int64?
     }
+
+    // 分段同时传：每段多大。一段一个后台任务，太小任务太多，太大断了要重传的多、占手机空间多
+    private static let laneSegment: Int64 = 32 << 20
+    // 正在传的段：key → [起点: 终点]（挑下一段时避开）；laneSeeded：App 重启后从系统的任务列表里补过了
+    private var laneBusy: [String: [Int64: Int64]] = [:]
+    private var laneSeeded: Set<String> = []
+    // 进度：key → 服务端已经收到的字节数；任务 ID → (key, 这一段已发出的字节数)
+    private var laneBase: [String: Int64] = [:]
+    private var laneSent: [Int: (key: String, sent: Int64)] = [:]
 
     private var replies: [Int: Data] = [:]
     private var jobsFile: URL { support.appendingPathComponent("bigjobs.json") }
@@ -853,8 +895,12 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
     }
 
+    // 在后台传的大文件有几个（分段同时传时一个文件有好几个任务）
     private func chunkTasks() async -> Int {
-        await allTasks().filter { $0.taskDescription?.hasPrefix("chunk\t") == true }.count
+        Set(await allTasks().compactMap { task -> String? in
+            let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+            return parts.first == "chunk" && parts.count > 1 ? parts[1] : nil
+        }).count
     }
 
     // 开始（或接着）传一个大文件：问服务端收到了多少，从那里交出下一段。服务端早就有了返回 false。
@@ -877,9 +923,98 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         job.id = out["id"] as? String ?? ""
         job.chunk = max((out["chunk"] as? NSNumber)?.int64Value ?? job.chunk, 1 << 20)
+        job.lanes = (out["lanes"] as? NSNumber)?.intValue
+        job.part = (out["part"] as? NSNumber)?.int64Value
         saveJob(job, key: job.key)
-        try queueChunk(job, offset: (out["offset"] as? NSNumber)?.int64Value ?? 0)
+        if (job.lanes ?? 1) > 1, let missing = Self.ranges(out["missing"]) {
+            await queueLanes(job, missing: missing)
+        } else {
+            try queueChunk(job, offset: (out["offset"] as? NSNumber)?.int64Value ?? 0)
+        }
         return true
+    }
+
+    // 服务端回复里的 missing：[[起点, 终点], …]
+    private static func ranges(_ v: Any?) -> [(Int64, Int64)]? {
+        guard let list = v as? [[NSNumber]] else { return nil }
+        return list.compactMap { $0.count == 2 ? ($0[0].int64Value, $0[1].int64Value) : nil }
+    }
+
+    // 分段同时传：从还缺的地方（missing）挑没人在传的段，补到 lanes 条连接。一段一个后台任务，
+    // 从导出的原文件里把这一段复制出来传（PUT …?offset=起点&parallel=1）。
+    private func queueLanes(_ job: BigJob, missing: [(Int64, Int64)]) async {
+        if !lock.withLock({ laneSeeded.contains(job.key) }) {
+            // App 重启过：系统还在传的段先记上，免得同一段交两次（新的会打断旧的）
+            let running = await allTasks().compactMap { task -> (Int64, Int64)? in
+                let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+                guard parts.count == 5, parts[0] == "chunk", parts[1] == job.key,
+                      let start = Int64(parts[4]), let end = Int64(parts[3]) else { return nil }
+                return (start, end)
+            }
+            lock.withLock {
+                for (a, b) in running { laneBusy[job.key, default: [:]][a] = b }
+                laneSeeded.insert(job.key)
+            }
+        }
+        let lanes = max(job.lanes ?? 1, 1)
+        let part = job.part ?? 0
+        let picked: [(Int64, Int64)] = lock.withLock {
+            laneBase[job.key] = job.size - missing.reduce(0) { $0 + $1.1 - $1.0 }
+            var busy = laneBusy[job.key] ?? [:]
+            var out: [(Int64, Int64)] = []
+            for (a, b) in missing {
+                var x = a
+                while x < b, busy.count < lanes {
+                    var end = min(b, x + Self.laneSegment)
+                    if part > 0 { end = min(end, (x / part + 1) * part) }
+                    if !busy.contains(where: { $0.key < end && x < $0.value }) {
+                        busy[x] = end
+                        out.append((x, end))
+                    }
+                    x = end
+                }
+            }
+            laneBusy[job.key] = busy
+            return out
+        }
+        track(job.key, name: job.name, sent: lock.withLock { laneBase[job.key] ?? 0 }, total: job.size)
+        for (a, b) in picked {
+            do {
+                let body = spool.appendingPathComponent("\(job.id)-\(a)-\(b)")
+                try Self.copyRange(of: URL(fileURLWithPath: job.file), from: a, to: b, dest: body)
+                var req = URLRequest(url: URL(string: server + "/api/ingest/uploads/\(job.id)?offset=\(a)&parallel=1")!)
+                req.httpMethod = "PUT"
+                req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                let task = uploadSession().uploadTask(with: req, fromFile: body)
+                task.taskDescription = ["chunk", job.key, body.path, String(b), String(a)].joined(separator: "\t")
+                task.resume()
+            } catch {
+                _ = lock.withLock { laneBusy[job.key]?.removeValue(forKey: a) }
+                fail(job.name, "\(error.localizedDescription)（下次接着传）")
+            }
+        }
+        if !picked.isEmpty {
+            let count = lock.withLock { laneBusy[job.key]?.count ?? 0 }
+            setStatus("后台在传 \(job.name)：\(count) 条连接，已收到 \((lock.withLock { laneBase[job.key] ?? 0 }) >> 20)/\(job.size >> 20) MB")
+        }
+    }
+
+    // 把 [from, to) 复制到 dest（一块块复制，不把整个视频读进内存）
+    private static func copyRange(of src: URL, from: Int64, to: Int64, dest: URL) throws {
+        let input = try FileHandle(forReadingFrom: src)
+        defer { try? input.close() }
+        try input.seek(toOffset: UInt64(from))
+        try? FileManager.default.removeItem(at: dest)
+        FileManager.default.createFile(atPath: dest.path, contents: nil)
+        let output = try FileHandle(forWritingTo: dest)
+        defer { try? output.close() }
+        var left = to - from
+        while left > 0 {
+            let block = try autoreleasepool { try input.read(upToCount: Int(min(left, 8 << 20))) ?? Data() }
+            if block.isEmpty { break }
+            try output.write(contentsOf: block)
+            left -= Int64(block.count)
+        }
     }
 
     // 从 offset 到文件结尾一个请求传完（服务端一直收到结尾）。offset 是 0 时直接传导出的文件，否则把后半截复制出来。
@@ -918,7 +1053,12 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     private func chunkDone(_ task: URLSessionTask, reply: Data, error: Error?) {
         let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
-        guard parts.count == 4, let job = loadJobs()[parts[1]] else { return }
+        let lane = parts.count == 5 ? Int64(parts[4]) : nil // 分段同时传的一段：它的起点
+        lock.withLock {
+            laneSent[task.taskIdentifier] = nil
+            if let lane, parts.count > 1 { laneBusy[parts[1]]?.removeValue(forKey: lane) }
+        }
+        guard parts.count >= 4, let job = loadJobs()[parts[1]] else { return }
         if parts[2] != job.file { try? FileManager.default.removeItem(atPath: parts[2]) } // 导出的原文件传完才删
         let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         let out = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any] ?? [:]
@@ -929,6 +1069,18 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 finishBig(job)
             case 200 where out["same_content"] as? Bool == true:
                 finishBig(job)
+            case 200 where lane != nil:
+                lock.withLock { retries[job.key] = nil }
+                let missing = Self.ranges(out["missing"]) ?? []
+                Task.detached { [self] in await queueLanes(job, missing: missing) }
+            case 409 where lane != nil: // 这段别的连接已经传过了：问服务端还缺哪些
+                Task.detached { [self] in
+                    guard let url = URL(string: server + "/api/ingest/uploads/\(job.id)"),
+                          let reply = try? await URLSession.shared.data(from: url),
+                          let status = (try? JSONSerialization.jsonObject(with: reply.0)) as? [String: Any],
+                          let missing = Self.ranges(status["missing"]) else { return }
+                    await queueLanes(job, missing: missing)
+                }
             case 200, 409:
                 try queueChunk(job, offset: next)
             default:
@@ -965,7 +1117,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private var retries: [String: Int] = [:] // 大文件断了自己接着传的次数
 
     private func finishBig(_ job: BigJob) {
-        lock.withLock { retries[job.key] = nil }
+        lock.withLock {
+            retries[job.key] = nil
+            laneBusy[job.key] = nil
+            laneBase[job.key] = nil
+        }
         untrack(job.key)
         try? FileManager.default.removeItem(atPath: job.file)
         saveJob(nil, key: job.key)
@@ -1072,7 +1228,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                         try Self.coordinatedCopy(file, to: dest)
                     }
                 } catch {
-                    counts.failed += 1
+                    count { $0.failed += 1 }
                     fail(file.lastPathComponent, error.localizedDescription)
                 }
             }
@@ -1134,15 +1290,15 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             let (body, resp) = try await URLSession.shared.upload(for: req, from: data)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if code == 201 {
-                counts.uploaded += 1
+                count { $0.uploaded += 1 }
             } else if code == 200 {
-                counts.skipped += 1
+                count { $0.skipped += 1 }
             } else {
-                counts.failed += 1
+                count { $0.failed += 1 }
                 fail(name, "服务器返回 \(code) \(String(decoding: body, as: UTF8.self))")
             }
         } catch {
-            counts.failed += 1
+            count { $0.failed += 1 }
             fail(name, error.localizedDescription)
         }
     }
