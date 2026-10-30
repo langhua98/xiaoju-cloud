@@ -32,9 +32,14 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     @Published private(set) var failures: [Failure] = [] // 这一轮没传上去的，下次备份（或点「重试」）再传
     @Published private(set) var pausedUntil = UserDefaults.standard.object(forKey: Keys.pausedUntil) as? Date
     @Published private(set) var lastFinished = UserDefaults.standard.object(forKey: Keys.lastFinished) as? Date
-    // 正在和云盘核对（核对完之前「已备份」不准，界面上先不显示新数）；checked：这次打开 App 后核对完过一遍
+    // 正在和云盘核对；checked：这次打开 App 后核对完过一遍。
+    // 「备份」页一打开就用本地记下的（传过的、上次核对认出来的）先算三个数，核对时边核对边更新，不再等核对完：
+    // checkedPhotos / checkPhotos 是核对到第几张（界面上显示进度），matched 每认出一批加一（界面上重算一次三个数）
     @Published private(set) var checking = false
     @Published private(set) var checked = false
+    @Published private(set) var checkedPhotos = 0
+    @Published private(set) var checkPhotos = 0
+    @Published private(set) var matched = 0
 
     struct Failure: Codable, Identifiable, Hashable {
         var id: String { name + "\t" + reason }
@@ -70,6 +75,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         static let failures = "auto.failures"
         static let pausedUntil = "auto.pausedUntil"
         static let lastFinished = "auto.lastFinished"
+        static let lastChecked = "auto.lastChecked"
     }
 
     // 「备份哪些照片」「手机数据」里的开关，默认都开
@@ -508,6 +514,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private typealias Item = (id: String, date: Date?, resources: [PHAssetResource])
 
     func reconcile(target: String, assets: PHFetchResult<PHAsset>, album: PhoneAlbum?) async {
+        // 云盘里的“名字|大小”摘要和下面取一遍照片同时进行（以前取完一万张才去问服务端）
+        let names = Task { await cloudNames(album: album) }
         var items: [Item] = []
         items.reserveCapacity(assets.count)
         // 核对也算进「继续在后台运行」的进度：一万张取一遍要几十秒，以前这段时间进度不动，锁屏后容易被系统收回
@@ -516,6 +524,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             checkTotal += Int64(assets.count)
             return true
         }
+        let start = await MainActor.run { checkedPhotos }
         assets.enumerateObjects { asset, i, _ in
             let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
             items.append((asset.localIdentifier, asset.creationDate, resources))
@@ -523,15 +532,17 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 self.lock.withLock { self.checkedItems += 1 }
                 if i % 50 == 0 { self.reportContinued() }
             }
+            if i % 200 == 199 { Task { @MainActor in self.checkedPhotos = max(self.checkedPhotos, start + i + 1) } }
         }
-        await matchNames(target: target, items: items, album: album)
+        await MainActor.run { checkedPhotos = start + assets.count }
+        if let known = await names.value { matchNames(target: target, items: items, known: known) }
         await planMatch(target: target, items: items, album: album)
     }
 
     // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
-    // （GET /api/ingest/names），在手机上比对，对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
-    private func matchNames(target: String, items: [Item], album: PhoneAlbum?) async {
-        guard let url = URL(string: server + "/api/ingest/names") else { return }
+    // （GET /api/ingest/names），在手机上比对（matchNames），对上的记成传过。这样「已备份」一打开就是对的，备份时也不用每张都去问。
+    private func cloudNames(album: PhoneAlbum?) async -> Set<String>? {
+        guard let url = URL(string: server + "/api/ingest/names") else { return nil }
         var req = URLRequest(url: url)
         if let album {
             if album.hidden {
@@ -541,9 +552,12 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             }
         }
         guard let reply = try? await URLSession.shared.data(for: req),
-              (reply.1 as? HTTPURLResponse)?.statusCode == 200 else { return }
+              (reply.1 as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         let known = Set(String(decoding: reply.0, as: UTF8.self).split(separator: "\n").map(String.init))
-        guard !known.isEmpty else { return }
+        return known.isEmpty ? nil : known
+    }
+
+    private func matchNames(target: String, items: [Item], known: Set<String>) {
         var found = 0
         for item in items {
             for resource in item.resources {
@@ -555,7 +569,10 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 found += 1
             }
         }
-        if found > 0 { saveDone(force: true) }
+        if found > 0 {
+            saveDone(force: true)
+            Task { @MainActor in matched += 1 }
+        }
     }
 
     // 快捷指令、网页传的照片常常和手机上的原件大小不一样（导出时重新编码），按“名字|大小”认不出来，
@@ -597,20 +614,28 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             return Array(inCloud)
         }
         if let data = try? JSONEncoder().encode(keys) { try? data.write(to: inCloudFile, options: .atomic) }
+        await MainActor.run { matched += 1 }
     }
 
     // 把每个要备份的相册都和云盘核对一遍：「备份」页打开时、每一轮备份开始传之前。
-    // 同一时间只跑一遍；已经在核对时就等它核对完（以前是直接跳过，界面马上用没核对完的数算，一会儿又跳一下）。
+    // 同一时间只跑一遍；已经在核对时就等它核对完。
     func reconcileAll() async {
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
         let task: Task<Void, Never> = lock.withLock {
             if let running = reconciling { return running }
             let task = Task.detached(priority: .userInitiated) { [self] in
-                await MainActor.run { checking = true }
-                for target in photoTargets() {
+                let targets = photoTargets()
+                let total = targets.reduce(0) { $0 + $1.assets.count }
+                await MainActor.run {
+                    checkedPhotos = 0
+                    checkPhotos = total
+                    checking = true
+                }
+                for target in targets {
                     await reconcile(target: target.key, assets: target.assets, album: target.album)
                 }
                 lock.withLock { reconciling = nil }
+                defaults.set(Date(), forKey: Keys.lastChecked)
                 await MainActor.run {
                     checking = false
                     checked = true
@@ -620,6 +645,15 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             return task
         }
         await task.value
+    }
+
+    // 「备份」页打开时：几分钟内刚核对过就不再核对（三个数直接用本地记下的），下拉刷新、开始备份时照常核对
+    func reconcileIfStale() async {
+        if let last = defaults.object(forKey: Keys.lastChecked) as? Date, Date().timeIntervalSince(last) < 10 * 60 {
+            await MainActor.run { checked = true }
+            return
+        }
+        await reconcileAll()
     }
 
     private var reconciling: Task<Void, Never>?
