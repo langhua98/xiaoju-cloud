@@ -22,19 +22,37 @@ final class NetMeter {
     var totals: (up: Int64, down: Int64) { lock.withLock { (up, down) } }
 }
 
-// 「备份」页的网速小卡片：左边上传（绿）、右边下载（红），各一个大数字和最近 30 秒的小柱状图。
-// 颜色和代码改动里新增、删减的一样（GitHub 的 diff 配色，深色、浅色各一套）
+// 「备份」页的配色：只有一个主色（橙），其余是略带暖色的灰；上传绿、下载红只用在箭头和小柱状图上，
+// 备份完成时圆环变绿。深色、浅色各一套，跟着手机的设置走
+enum Palette {
+    static let bg = dynamic(dark: 0x0F0E0D, light: 0xF5F2EE)
+    static let card = dynamic(dark: 0x1B1917, light: 0xFFFFFF)
+    static let well = dynamic(dark: 0x262320, light: 0xF1ECE6) // 卡片里再垫一层的底板（三个数）
+    static let sub = dynamic(dark: 0x978D82, light: 0x8A7F73)
+    static let track = dynamic(dark: 0x2C2926, light: 0xECE5DC)
+    static let accent = dynamic(dark: 0xFF9B42, light: 0xF07E17)
+    static let up = dynamic(dark: 0x4CC38A, light: 0x1F9D63)
+    static let down = dynamic(dark: 0xF07A6A, light: 0xD9533F)
+
+    private static func dynamic(dark: Int, light: Int) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark ? rgb(dark) : rgb(light) })
+    }
+
+    private static func rgb(_ hex: Int) -> UIColor {
+        UIColor(red: CGFloat(hex >> 16 & 0xFF) / 255, green: CGFloat(hex >> 8 & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+}
+
+// 「备份」页的网速小卡片：左边上传、右边下载，各一个大数字和最近 30 秒的小柱状图
 struct SpeedView: View {
     @State private var ups: [Double] = [] // 最近 30 秒每秒的速度，最新的在最后
     @State private var downs: [Double] = []
 
-    static let upColor = Color(UIColor { $0.userInterfaceStyle == .dark ? rgb(0x3FB950) : rgb(0x1A7F37) })
-    static let downColor = Color(UIColor { $0.userInterfaceStyle == .dark ? rgb(0xF85149) : rgb(0xCF222E) })
-
     var body: some View {
         HStack(spacing: 10) {
-            SpeedTile(title: "上传", icon: "arrow.up", color: Self.upColor, history: ups)
-            SpeedTile(title: "下载", icon: "arrow.down", color: Self.downColor, history: downs)
+            SpeedTile(title: "上传", icon: "arrow.up", color: Palette.up, history: ups)
+            SpeedTile(title: "下载", icon: "arrow.down", color: Palette.down, history: downs)
         }
         .task {
             var last = NetMeter.shared.totals
@@ -56,11 +74,6 @@ struct SpeedView: View {
         if kb < 1000 { return ("\(Int(kb.rounded()))", "KB/s") }
         return (String(format: "%.1f", kb / 1024), "MB/s")
     }
-
-    private static func rgb(_ hex: Int) -> UIColor {
-        UIColor(red: CGFloat(hex >> 16 & 0xFF) / 255, green: CGFloat(hex >> 8 & 0xFF) / 255,
-                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
-    }
 }
 
 private struct SpeedTile: View {
@@ -79,29 +92,26 @@ private struct SpeedTile: View {
         let speed = SpeedView.text(current)
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
-                Image(systemName: icon).font(.caption.weight(.bold))
-                    .frame(width: 20, height: 20)
-                    .background(color.opacity(0.18), in: Circle())
-                Text(title).font(.caption).foregroundStyle(.secondary)
+                Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
+                Text(title).font(.caption).foregroundStyle(Palette.sub)
             }
-            .foregroundStyle(color)
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(speed.number).font(.title3.bold()).monospacedDigit()
                     .contentTransition(.numericText())
                     .animation(.default, value: speed.number)
-                Text(speed.unit).font(.caption2).foregroundStyle(.secondary)
+                Text(speed.unit).font(.caption2).foregroundStyle(Palette.sub)
             }
-            Bars(values: history, color: color).frame(height: 22)
+            Bars(values: history, color: color).frame(height: 20)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title) \(speed.number) \(speed.unit)")
     }
 }
 
-// 小柱状图：最近 30 秒，每秒一根，按这 30 秒里最快的那秒算高度；没有数据的位置画成一个点高
+// 小柱状图：最近 30 秒，每秒一根，按这 30 秒里最快的那秒算高度；没有数据的位置画成一条灰的短柱
 private struct Bars: View {
     let values: [Double]
     let color: Color
@@ -117,7 +127,7 @@ private struct Bars: View {
                 let height = max(size.height * CGFloat(value / top), 2)
                 let rect = CGRect(x: CGFloat(i) * (width + gap), y: size.height - height, width: width, height: height)
                 context.fill(Path(roundedRect: rect, cornerRadius: width / 2),
-                             with: .color(value > 0 ? color : color.opacity(0.2)))
+                             with: .color(value > 0 ? color.opacity(0.85) : Palette.track))
             }
         }
     }

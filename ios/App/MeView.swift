@@ -19,8 +19,8 @@ struct MeView: View {
                         HStack {
                             BackupRing().allowsHitTesting(false)
                             VStack(alignment: .leading) {
-                                Text(auto.running ? "正在备份" : auto.failures.isEmpty ? "备份" : "有 \(auto.failures.count) 个没传上去")
-                                Text(auto.running ? "点开看进度和网速" : auto.lastFinished.map { "上次完成：\($0.formatted(.relative(presentation: .named)))" } ?? "还没完整备份过")
+                                Text(auto.running ? "备份中" : auto.failures.isEmpty ? "备份" : "\(auto.failures.count) 个没传上")
+                                Text(auto.running ? "查看进度" : auto.lastFinished.map { "上次 \($0.formatted(.relative(presentation: .named)))" } ?? "还没备份过")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
