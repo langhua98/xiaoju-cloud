@@ -278,3 +278,21 @@ func TestPoolAgentLane(t *testing.T) {
 		t.Fatal("with its bot benched, the agent lane should use the normal bots")
 	}
 }
+
+func TestPoolTimeoutBenchesBriefly(t *testing.T) {
+	p := newPool(&fakeBot{name: "main"}, slog.New(slog.DiscardHandler))
+	p.add(&fakeBot{name: "a"})
+	p.add(&fakeBot{name: "b"})
+
+	// Telegram 那边临时超时：只停一小会儿；别的错照旧停 10 分钟
+	p.bench(1, tgerr.New(503, "Timeout"))
+	p.bench(2, errors.New("CHAT_ADMIN_REQUIRED"))
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d := time.Until(p.benched[1]); d > benchBrief {
+		t.Fatalf("timeout paused the bot for %s", d)
+	}
+	if d := time.Until(p.benched[2]); d < benchFor-time.Minute {
+		t.Fatalf("other errors should pause for %s, got %s", benchFor, d)
+	}
+}

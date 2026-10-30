@@ -49,8 +49,10 @@ type bot interface {
 }
 
 const (
-	// benchFor 是出错的额外 Bot 停用多久。
-	benchFor = 10 * time.Minute
+	// benchFor 是出错的额外 Bot 停用多久；benchBrief 是 Telegram 那边临时超时（-503 Timeout）时停用多久：
+	// 这种错过一会儿就好，停 10 分钟等于大批上传时少一个 Bot。
+	benchFor   = 10 * time.Minute
+	benchBrief = 30 * time.Second
 	// 被限速时等多久以上就换 Bot：小分块换个 Bot 重传很快；大分块重传要重新上传几百 MB，宁可原地多等一会儿。
 	handoffSmall = 5 * time.Second
 	handoffLarge = 2 * time.Minute
@@ -153,10 +155,14 @@ func (p *Pool) done(k int) {
 }
 
 func (p *Pool) bench(k int, err error) {
+	pause := benchFor
+	if e, ok := tgerr.As(err); ok && e.Code == 503 {
+		pause = benchBrief
+	}
 	p.mu.Lock()
-	p.benched[k] = time.Now().Add(benchFor)
+	p.benched[k] = time.Now().Add(pause)
 	p.mu.Unlock()
-	p.log.Warn("extra telegram bot failed; not using it for a while", "bot", k, "pause", benchFor, "err", err)
+	p.log.Warn("extra telegram bot failed; not using it for a while", "bot", k, "pause", pause, "err", err)
 }
 
 func (p *Pool) flood(k int, d time.Duration) {
