@@ -29,9 +29,6 @@ struct BackupView: View {
         List {
             Section { summary }
             if auth == .authorized {
-                Section { controls }
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
                 Section { SpeedView() }
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
@@ -140,11 +137,11 @@ struct BackupView: View {
     private var headline: String {
         if auth != .authorized { return "需要照片权限" }
         if tally == nil && auto.checking { return "正在和云盘核对…" }
-        if auto.running { return "正在备份" }
-        if auto.isPaused { return "已暂停" }
+        if auto.running { return "正在备份 · 轻点圆环停止" }
+        if auto.isPaused { return "已暂停 · 轻点圆环继续" }
         if !auto.failures.isEmpty { return "有 \(auto.failures.count) 个没传上去" }
         if let tally, tally.total > 0, tally.remaining == 0 { return "已全部备份" }
-        return auto.enabled ? "等插上电时自动备份" : "自动备份已关闭"
+        return "轻点圆环开始备份"
     }
 
     private var subline: String {
@@ -164,19 +161,7 @@ struct BackupView: View {
 
     private var summary: some View {
         VStack(spacing: 14) {
-            ZStack {
-                Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 10)
-                Circle().trim(from: 0, to: progress)
-                    .stroke(tint, style: StrokeStyle(lineWidth: 10, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.easeInOut, value: progress)
-                if tint == .green {
-                    Image(systemName: "checkmark").font(.system(size: 34, weight: .bold)).foregroundStyle(.green)
-                } else {
-                    Text(progress, format: .percent.precision(.fractionLength(0))).font(.title2.bold()).monospacedDigit()
-                }
-            }
-            .frame(width: 112, height: 112)
+            ring
             VStack(spacing: 2) {
                 Text(headline).font(.headline)
                 Text(subline).font(.footnote).foregroundStyle(.secondary)
@@ -197,6 +182,54 @@ struct BackupView: View {
         .padding(.vertical, 8)
     }
 
+    // 圆环就是开始 / 停止按钮：中间的图标说明点了会怎样（▶ 开始、■ 停止）；长按选暂停多久
+    private var ring: some View {
+        Button(action: toggle) {
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 10)
+                Circle().trim(from: 0, to: progress)
+                    .stroke(tint, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut, value: progress)
+                Circle().fill(Color.secondary.opacity(0.12)).padding(16)
+                VStack(spacing: 2) {
+                    Image(systemName: auto.running ? "stop.fill" : "play.fill")
+                        .font(.system(size: 18, weight: .bold)).foregroundStyle(auto.running ? .red : .orange)
+                        .contentTransition(.symbolEffect(.replace))
+                    if tint == .green && !auto.running {
+                        Image(systemName: "checkmark").font(.title2.bold()).foregroundStyle(.green)
+                    } else {
+                        Text(progress, format: .percent.precision(.fractionLength(0))).font(.title2.bold()).monospacedDigit()
+                    }
+                }
+            }
+            .frame(width: 140, height: 140)
+            .contentShape(Circle())
+        }
+        .buttonStyle(RingPress())
+        .disabled(auth != .authorized)
+        .contextMenu {
+            if auto.isPaused {
+                Button("继续自动备份", systemImage: "play") { auto.resume() }
+            } else {
+                Button("暂停 1 小时", systemImage: "pause") { auto.pause(hours: 1) }
+                Button("暂停到明天", systemImage: "moon") { auto.pause(hours: 24) }
+            }
+        }
+        .accessibilityLabel(auto.running ? "停止备份" : "开始备份")
+        .accessibilityHint("长按可以选暂停多久")
+        .sensoryFeedback(.impact, trigger: auto.running)
+    }
+
+    private func toggle() {
+        if auto.running {
+            auto.stop()
+        } else {
+            auto.resume()
+            auto.start(reason: "手动")
+        }
+    }
+
     private func stat(_ label: String, _ value: Int?) -> some View {
         VStack(spacing: 2) {
             Text(value.map { $0.formatted() } ?? "—").font(.title3.bold()).monospacedDigit()
@@ -205,48 +238,6 @@ struct BackupView: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-    }
-
-    // MARK: 按钮
-
-    // 进度卡片下面一排真正的按钮（以前是列表里的一行字，点了要等列表的按下效果，有点滞后）：
-    // 左边「开始备份 / 停止这一轮」，右边「暂停备份 / 继续备份」
-    private var controls: some View {
-        HStack(spacing: 10) {
-            if auto.running {
-                Button(role: .destructive) { auto.stop() } label: {
-                    Label("停止这一轮", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                }
-                .tint(SpeedView.downColor)
-            } else {
-                Button {
-                    auto.resume()
-                    auto.start(reason: "手动")
-                } label: {
-                    Label("开始备份", systemImage: "play.fill").frame(maxWidth: .infinity)
-                }
-                .tint(.orange)
-            }
-            if auto.isPaused {
-                Button { auto.resume() } label: {
-                    Label("继续备份", systemImage: "play.fill").frame(maxWidth: .infinity)
-                }
-                .tint(.orange)
-            } else {
-                Menu {
-                    Button("暂停 1 小时") { auto.pause(hours: 1) }
-                    Button("暂停到明天") { auto.pause(hours: 24) }
-                } label: {
-                    Label("暂停备份", systemImage: "pause.fill").frame(maxWidth: .infinity)
-                }
-                .tint(.secondary)
-            }
-        }
-        .buttonStyle(.borderedProminent)
-        .buttonBorderShape(.capsule)
-        .controlSize(.large)
-        .font(.subheadline.weight(.semibold))
-        .disabled(auth != .authorized)
     }
 
     // MARK: 动作
@@ -291,6 +282,15 @@ struct BackupView: View {
         case .denied, .restricted: return "没有照片权限，请到 设置 → 小桔备份 → 照片 里选「所有照片」。"
         default: return "备份照片需要访问「所有照片」。"
         }
+    }
+}
+
+// 圆环按下时缩一下，松手弹回（不用列表那种整行变灰、要等一下的按下效果）
+private struct RingPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.spring(duration: 0.2), value: configuration.isPressed)
     }
 }
 
