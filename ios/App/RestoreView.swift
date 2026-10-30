@@ -101,6 +101,7 @@ final class Restorer: ObservableObject {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dest = dir.appendingPathComponent(item.name)
         try FileManager.default.moveItem(at: tmp, to: dest)
+        NetMeter.shared.received((try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0)
         return dest
     }
 

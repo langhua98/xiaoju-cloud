@@ -102,22 +102,24 @@ struct BackupView: View {
                 await refresh()
             }
             .onAppear { albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count }
-            // 先和云盘比对一遍（以前用快捷指令、网页传过的也算进「已备份」），再算三个数
+            // 先用本地记下的马上算出三个数，再在后台和云盘比对（以前用快捷指令、网页传过的也算进「已备份」），
+            // 比对时每认出一批就重算一次（以前要等核对完才显示，一万张要等一两分钟，这段时间一直是「—」）
             .task {
+                await refresh()
                 // 自动备份开着就再确认一次系统后台上传是开的（上次没开成的，这次打开页面时补上）
                 if auth == .authorized && auto.enabled { switchError = await auto.setAutomatic(true) ?? "" }
-                await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileAll() }.value
+                await Task.detached(priority: .userInitiated) { await AutoBackup.shared.reconcileIfStale() }.value
                 await refresh()
             }
-            // 核对完马上算一次
+            .onChange(of: auto.matched) { _, _ in Task { await refresh() } }
             .onChange(of: auto.checking) { _, checking in
                 if !checking { Task { await refresh() } }
             }
-            // 备份的时候每 10 秒重算一次三个数，停了再算一次
+            // 备份的时候每 5 秒重算一次三个数，停了再算一次
             .task(id: auto.running) {
                 await refresh()
                 while auto.running && !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(10))
+                    try? await Task.sleep(for: .seconds(5))
                     await refresh()
                 }
             }
@@ -148,7 +150,10 @@ struct BackupView: View {
     }
 
     private var subline: String {
-        if auto.checking { return "核对完再更新下面的数" }
+        if auto.checking {
+            guard auto.checkPhotos > 0 else { return "正在和云盘核对…" }
+            return "正在和云盘核对 \(auto.checkedPhotos.formatted())/\(auto.checkPhotos.formatted())，下面的数会跟着更新"
+        }
         if auto.isPaused, let until = auto.pausedUntil {
             return "\(until.formatted(date: .omitted, time: .shortened)) 自动恢复"
         }
@@ -182,6 +187,7 @@ struct BackupView: View {
                 stat("已备份", tally?.done)
                 stat("还剩", tally?.remaining)
             }
+            SpeedView()
             if let hiddenTally, hiddenTally.total > 0 {
                 Text("隐藏相册另算：已备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
                     .font(.caption).foregroundStyle(.secondary)
@@ -207,8 +213,7 @@ struct BackupView: View {
             tally = nil
             return
         }
-        // 和云盘核对完之前不算：没核对完的数不准，算出来一会儿又跳（先显示「—」或上一次核对完的数）
-        guard auto.checked && !auto.checking else { return }
+        // 不等核对完：手机上的张数马上就有；已备份先按本地记下的算（传过的、上次核对认出来的），核对时认出一批再加上
         let counted = await Task.detached(priority: .userInitiated) { () -> (AutoBackup.Tally, AutoBackup.Tally?) in
             let all = AutoBackup.shared.tally(target: "all", assets: AutoBackup.allPhotos())
             guard AutoBackup.flag(AutoBackup.backupHidden), let hidden = PhoneAlbum.hiddenAlbum() else { return (all, nil) }
