@@ -20,6 +20,11 @@ struct BackupView: View {
         NavigationStack {
             List {
                 Section { summary }
+                if auth == .authorized {
+                    Section { SpeedView() }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
                 if auth != .authorized {
                     Section {
                         Text(authText).font(.footnote)
@@ -154,6 +159,7 @@ struct BackupView: View {
             guard auto.checkPhotos > 0 else { return "正在和云盘核对…" }
             return "正在和云盘核对 \(auto.checkedPhotos.formatted())/\(auto.checkPhotos.formatted())，下面的数会跟着更新"
         }
+        if auto.running { return "下面的数边传边更新" }
         if auto.isPaused, let until = auto.pausedUntil {
             return "\(until.formatted(date: .omitted, time: .shortened)) 自动恢复"
         }
@@ -182,12 +188,13 @@ struct BackupView: View {
                 Text(headline).font(.headline)
                 Text(subline).font(.footnote).foregroundStyle(.secondary)
             }
-            HStack {
+            HStack(spacing: 0) {
                 stat("手机上", tally?.total)
+                Divider().frame(height: 28)
                 stat("已备份", tally?.done)
+                Divider().frame(height: 28)
                 stat("还剩", tally?.remaining)
             }
-            SpeedView()
             if let hiddenTally, hiddenTally.total > 0 {
                 Text("隐藏相册另算：已备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
                     .font(.caption).foregroundStyle(.secondary)
@@ -199,7 +206,9 @@ struct BackupView: View {
 
     private func stat(_ label: String, _ value: Int?) -> some View {
         VStack(spacing: 2) {
-            Text(value.map { $0.formatted() } ?? "—").font(.headline).monospacedDigit()
+            Text(value.map { $0.formatted() } ?? "—").font(.title3.bold()).monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(.default, value: value)
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -256,20 +265,36 @@ struct TransferRow: View {
     // 「12/490 MB」；小于 1MB 的显示百分比
     static func progressText(_ t: AutoBackup.Transfer) -> String {
         // 手机这边发完了，服务端还要把最后一段存进 Telegram，大文件要等一两分钟才算传完
-        if t.total > 0 && t.sent >= t.total { return "发完了，服务器保存中…" }
+        if t.total > 0 && t.sent >= t.total { return "保存中…" }
         if t.total < 1 << 20 { return "\(t.sent * 100 / max(t.total, 1))%" }
         return "\(t.sent >> 20)/\(t.total >> 20) MB"
     }
 
+    private var saving: Bool { t.total > 0 && t.sent >= t.total }
+
+    // 照片、视频各一个图标（看扩展名）
+    private var icon: String {
+        let ext = (t.name as NSString).pathExtension.lowercased()
+        return ["mov", "mp4", "m4v", "avi", "hevc"].contains(ext) ? "video.fill" : "photo.fill"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(t.name).font(.footnote).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Text(Self.progressText(t)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.footnote).foregroundStyle(.orange)
+                .frame(width: 32, height: 32)
+                .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(t.name).font(.footnote).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(Self.progressText(t)).font(.caption).monospacedDigit().lineLimit(1)
+                        .foregroundStyle(saving ? SpeedView.upColor : .secondary)
+                }
+                ProgressView(value: Double(min(t.sent, max(t.total, 1))), total: Double(max(t.total, 1)))
+                    .tint(saving ? SpeedView.upColor : .orange)
             }
-            ProgressView(value: Double(t.sent), total: Double(max(t.total, 1)))
         }
+        .padding(.vertical, 2)
     }
 }
 
