@@ -37,6 +37,8 @@ type Service struct {
 
 	uploadsMu sync.Mutex
 	uploads   map[uuid.UUID]*resumable // 断点续传中的上传（见 resumable.go）
+
+	backupKick chan struct{} // 有新分块要备份：叫醒后台备份同步（见 RunBackupSync）
 }
 
 type Options struct {
@@ -64,6 +66,8 @@ func New(store *meta.Store, driver storage.Driver, opt Options) *Service {
 		log:       opt.Log,
 		uploads:   map[uuid.UUID]*resumable{},
 		previews:  newPreviews(),
+
+		backupKick: make(chan struct{}, 1),
 	}
 	if opt.Thumbs != nil {
 		s.thumbs = newThumbnails(opt.Thumbs)
@@ -359,8 +363,26 @@ func (s *Service) sealPart(partNo int, dek []byte, body io.Reader) (_ *sealedPar
 	return sp, nil
 }
 
-// storePart 把加密好的分块写进存储端，同时写备份端（两个频道是不同的账号，一起写，总时间约等于慢的那一个）。
+// storePart 把加密好的分块写进主存储。备份端不在这里写：以前两边一起写、等慢的那一个，备份频道的机器人少
+// （Telegram 限制每个机器人约 3 秒发一条），每张照片都要等它，上传快不起来。现在写完主存储就算存好，
+// 叫醒后台备份同步（RunBackupSync）从主存储复制过去。
 func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPart) (*meta.Part, storage.Location, error) {
+	if s.backup != nil {
+		defer s.kickBackup()
+	}
+	return s.storePrimary(ctx, fileID, sp)
+}
+
+// kickBackup 叫醒后台备份同步（已经叫过、它还没醒的话什么都不做）。
+func (s *Service) kickBackup() {
+	select {
+	case s.backupKick <- struct{}{}:
+	default:
+	}
+}
+
+// storePrimary 把加密好的分块写进主存储（失败了按 putRetryDelays 再试）。
+func (s *Service) storePrimary(ctx context.Context, fileID uuid.UUID, sp *sealedPart) (*meta.Part, storage.Location, error) {
 	req := func() storage.PutRequest {
 		return storage.PutRequest{
 			Name:    partName(fileID, sp.no),
@@ -369,43 +391,15 @@ func (s *Service) storePart(ctx context.Context, fileID uuid.UUID, sp *sealedPar
 			Size:    sp.size,
 		}
 	}
-	// 双备份：同一份密文再写进备份频道。失败不影响本次上传，后台同步任务会补上。
-	type result struct {
-		loc storage.Location
-		err error
-	}
-	var backup chan result
-	if s.backup != nil {
-		backup = make(chan result, 1)
-		go func() {
-			loc, err := s.backup.Put(ctx, req())
-			backup <- result{loc, err}
-		}()
-	}
 	loc, err := s.putPart(ctx, fileID, sp, req)
 	if err != nil {
-		if backup != nil {
-			if b := <-backup; b.err == nil { // 主存储没写成，备份里的这块用不上了
-				if derr := s.backup.Delete(context.WithoutCancel(ctx), []storage.Location{b.loc}); derr != nil {
-					s.log.Warn("delete unused backup part", "file", fileID, "part", sp.no, "err", derr)
-				}
-			}
-		}
 		return nil, storage.Location{}, err
 	}
-	part := &meta.Part{
+	return &meta.Part{
 		FileID: fileID, PartNo: sp.no, Storage: s.driver.Name(),
 		ChannelID: loc.ChannelID, MessageID: loc.MessageID,
 		Size: sp.size, IV: sp.iv, SHA256: sp.sum,
-	}
-	if backup != nil {
-		if b := <-backup; b.err != nil {
-			s.log.Warn("backup upload failed; will retry in background", "file", fileID, "part", sp.no, "err", b.err)
-		} else {
-			part.BackupChannelID, part.BackupMessageID = &b.loc.ChannelID, &b.loc.MessageID
-		}
-	}
-	return part, loc, nil
+	}, loc, nil
 }
 
 // putRetryDelays：分块写主存储失败后，隔多久再试一次（试完这几次还不行才算上传失败）。

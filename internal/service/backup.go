@@ -15,6 +15,9 @@ import (
 
 const backupBatch = 20
 
+// backupKickDelay：上传了新分块后，等这么久再去备份（文件激活了才备份它的分块）。
+var backupKickDelay = 5 * time.Second
+
 type BackupStatus struct {
 	Enabled bool   `json:"enabled"`
 	Error   string `json:"error,omitempty"`
@@ -51,6 +54,13 @@ func (s *Service) RunBackupSync(ctx context.Context, idle time.Duration) {
 		}
 		select {
 		case <-time.After(idle):
+		case <-s.backupKick: // 刚传了新分块
+			// 等一下再查：分块要等整个文件传完才算数（ListPartsMissingBackup 只看已经激活的文件）
+			select {
+			case <-time.After(backupKickDelay):
+			case <-ctx.Done():
+				return
+			}
 		case <-ctx.Done():
 			return
 		}

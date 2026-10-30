@@ -55,6 +55,9 @@ func TestScrubAndTrashExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := svc.SyncBackupOnce(ctx); err != nil { // 上传只写主存储，备份由后台同步补上
+		t.Fatal(err)
+	}
 	parts, _ := store.ListParts(ctx, f.ID)
 	corrupt := func(dir string, msgID int64) {
 		t.Helper()

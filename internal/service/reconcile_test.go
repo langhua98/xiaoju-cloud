@@ -71,6 +71,10 @@ func TestReconcileIntegration(t *testing.T) {
 		plains[f.ID] = data
 		files = append(files, f)
 	}
+	// 上传只写主存储，备份由后台同步补上
+	if _, err := svc.SyncBackupOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	readAll := func() {
 		t.Helper()
 		for _, f := range files {
