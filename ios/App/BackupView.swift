@@ -16,6 +16,7 @@ struct BackupView: View {
     @State private var hiddenTally: AutoBackup.Tally? // 隐藏相册另算（不在「全部照片」里）
     @State private var albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count
     @State private var switchError = ""
+    @State private var pace: [(time: Date, done: Int)] = [] // 备份时每次重算记一笔，估算还要多久
 
     var body: some View {
         if pushed {
@@ -28,6 +29,7 @@ struct BackupView: View {
     private var page: some View {
         List {
             Section { summary }
+                .listRowBackground(Palette.card)
             if auth == .authorized {
                 Section { SpeedView() }
                     .listRowInsets(EdgeInsets())
@@ -42,14 +44,16 @@ struct BackupView: View {
                         Button("去设置里打开") { openSettings() }
                     }
                 }
+                .listRowBackground(Palette.card)
             }
             if !auto.transfers.isEmpty {
                 Section("正在上传") {
                     ForEach(auto.transfers.prefix(5)) { t in TransferRow(t: t) }
                     if auto.transfers.count > 5 {
-                        Text("还有 \(auto.transfers.count - 5) 个").font(.footnote).foregroundStyle(.secondary)
+                        Text("还有 \(auto.transfers.count - 5) 个").font(.footnote).foregroundStyle(Palette.sub)
                     }
                 }
+                .listRowBackground(Palette.card)
             }
             if !auto.failures.isEmpty {
                 Section {
@@ -57,9 +61,10 @@ struct BackupView: View {
                         FailuresView()
                     } label: {
                         Label("\(auto.failures.count) 个没传上去", systemImage: "exclamationmark.icloud")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Palette.down)
                     }
                 }
+                .listRowBackground(Palette.card)
             }
             Section {
                 Toggle("自动备份", isOn: Binding(get: { auto.enabled }, set: { setAutomatic($0) }))
@@ -79,10 +84,14 @@ struct BackupView: View {
                 Button("从云盘恢复到手机…") { Restorer.shared.show = true }
             } footer: {
                 Text(switchError.isEmpty
-                    ? "打开后，新拍的照片由系统在后台传；插着电、连着网的时候（一般是夜里）再把没传的补齐。"
+                    ? "充电、连网时自动补齐"
                     : switchError)
             }
+            .listRowBackground(Palette.card)
         }
+        .tint(Palette.accent)
+        .scrollContentBackground(.hidden)
+        .background(Palette.bg)
         .navigationTitle("备份")
         .toolbar {
             if !pushed {
@@ -128,82 +137,101 @@ struct BackupView: View {
         return Double(tally.done) / Double(tally.total)
     }
 
-    private var tint: Color {
-        if !auto.failures.isEmpty { return .red }
-        if let tally, tally.total > 0, tally.remaining == 0 { return .green }
-        return .orange
+    private var finished: Bool {
+        guard let tally, tally.total > 0 else { return false }
+        return tally.remaining == 0 && !auto.running
     }
 
+    private var tint: Color {
+        if !auto.failures.isEmpty && !auto.running { return Palette.down }
+        return finished ? Palette.up : Palette.accent
+    }
+
+    // 标题只说状态，两三个字
     private var headline: String {
         if auth != .authorized { return "需要照片权限" }
-        if tally == nil && auto.checking { return "正在和云盘核对…" }
-        if auto.running { return "正在备份 · 轻点圆环停止" }
-        if auto.isPaused { return "已暂停 · 轻点圆环继续" }
-        if !auto.failures.isEmpty { return "有 \(auto.failures.count) 个没传上去" }
-        if let tally, tally.total > 0, tally.remaining == 0 { return "已全部备份" }
-        return "轻点圆环开始备份"
+        if auto.running { return "备份中" }
+        if auto.isPaused { return "已暂停" }
+        if !auto.failures.isEmpty { return "\(auto.failures.count) 个没传上" }
+        if finished { return "已完成" }
+        return "待备份"
     }
 
+    // 下面一行只放一个短信息：还要多久、几点继续、上次完成是什么时候
     private var subline: String {
-        if auto.checking {
-            guard auto.checkPhotos > 0 else { return "正在和云盘核对…" }
-            return "正在和云盘核对 \(auto.checkedPhotos.formatted())/\(auto.checkPhotos.formatted())，下面的数会跟着更新"
-        }
-        if auto.running { return "下面的数边传边更新" }
+        if auth != .authorized { return "去设置里允许" }
+        if auto.running { return eta }
         if auto.isPaused, let until = auto.pausedUntil {
-            return "\(until.formatted(date: .omitted, time: .shortened)) 自动恢复"
+            return "\(until.formatted(date: .omitted, time: .shortened)) 继续"
         }
-        if let last = auto.lastFinished {
-            return "上次备份完成：\(last.formatted(.relative(presentation: .named)))"
-        }
-        return "还没完整备份过"
+        if finished, let last = auto.lastFinished { return last.formatted(.relative(presentation: .named)) }
+        if !auto.failures.isEmpty { return "下一轮重传" }
+        return auto.enabled ? "充电时自动" : "自动备份已关"
     }
 
+    // 按最近两分钟传了多少张估算；刚开始还算不出来时只写「正在传」
+    private var eta: String {
+        guard let tally, let first = pace.first, let last = pace.last, last.done > first.done,
+              last.time.timeIntervalSince(first.time) >= 20 else { return "正在传" }
+        let perSecond = Double(last.done - first.done) / last.time.timeIntervalSince(first.time)
+        let seconds = Double(tally.remaining) / perSecond
+        if seconds < 60 { return "不到 1 分钟" }
+        if seconds < 3600 { return "约 \(Int((seconds / 60).rounded())) 分钟" }
+        return "约 \(Int((seconds / 3600).rounded())) 小时"
+    }
+
+    // 圆环在左、状态在右，三个数在下面一条底板里：整块是规整的长方形
     private var summary: some View {
         VStack(spacing: 14) {
-            ring
-            VStack(spacing: 2) {
-                Text(headline).font(.headline)
-                Text(subline).font(.footnote).foregroundStyle(.secondary)
+            HStack(spacing: 16) {
+                ring
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(headline).font(.title3.bold())
+                        .foregroundStyle(finished ? Palette.up : .primary)
+                    Text(subline).font(.footnote).foregroundStyle(Palette.sub).monospacedDigit()
+                }
+                .lineLimit(1)
+                Spacer(minLength: 0)
             }
             HStack(spacing: 0) {
                 stat("本地相册", tally?.total)
-                Divider().frame(height: 28)
+                Divider().frame(height: 26)
                 stat("云端备份", tally?.done)
-                Divider().frame(height: 28)
+                Divider().frame(height: 26)
                 stat("等待上传", tally?.remaining)
             }
+            .padding(.vertical, 10)
+            .background(Palette.well, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             if let hiddenTally, hiddenTally.total > 0 {
-                Text("隐藏相册另算：云端备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("隐藏相册 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
+                    .font(.caption).foregroundStyle(Palette.sub)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 
-    // 圆环就是开始 / 停止按钮：中间的图标说明点了会怎样（▶ 开始、■ 停止）；长按选暂停多久
+    // 圆环就是开始 / 停止按钮：中间是百分比和一个小字（停止 / 开始 / 继续）；长按选暂停多久
     private var ring: some View {
         Button(action: toggle) {
             ZStack {
-                Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 10)
+                Circle().stroke(Palette.track, lineWidth: 8)
                 Circle().trim(from: 0, to: progress)
-                    .stroke(tint, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    .stroke(tint, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .animation(.easeInOut, value: progress)
-                Circle().fill(Color.secondary.opacity(0.12)).padding(16)
-                VStack(spacing: 2) {
-                    Image(systemName: auto.running ? "stop.fill" : "play.fill")
-                        .font(.system(size: 18, weight: .bold)).foregroundStyle(auto.running ? .red : .orange)
-                        .contentTransition(.symbolEffect(.replace))
-                    if tint == .green && !auto.running {
-                        Image(systemName: "checkmark").font(.title2.bold()).foregroundStyle(.green)
+                VStack(spacing: 1) {
+                    if finished {
+                        Image(systemName: "checkmark").font(.title.bold()).foregroundStyle(Palette.up)
                     } else {
-                        Text(progress, format: .percent.precision(.fractionLength(0))).font(.title2.bold()).monospacedDigit()
+                        Text(progress, format: .percent.precision(.fractionLength(0)))
+                            .font(.title2.bold()).monospacedDigit()
+                        Label(auto.running ? "停止" : auto.isPaused ? "继续" : "开始",
+                              systemImage: auto.running ? "stop.fill" : "play.fill")
+                            .labelStyle(RingAction())
                     }
                 }
             }
-            .frame(width: 140, height: 140)
+            .frame(width: 104, height: 104)
             .contentShape(Circle())
         }
         .buttonStyle(RingPress())
@@ -232,10 +260,10 @@ struct BackupView: View {
 
     private func stat(_ label: String, _ value: Int?) -> some View {
         VStack(spacing: 2) {
-            Text(value.map { $0.formatted() } ?? "—").font(.title3.bold()).monospacedDigit()
+            Text(value.map { $0.formatted() } ?? "—").font(.headline).monospacedDigit()
                 .contentTransition(.numericText())
                 .animation(.default, value: value)
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.caption2).foregroundStyle(Palette.sub)
         }
         .frame(maxWidth: .infinity)
     }
@@ -255,6 +283,11 @@ struct BackupView: View {
             return (all, AutoBackup.shared.tally(target: "hidden", assets: hidden.assets()))
         }.value
         (tally, hiddenTally) = counted
+        if auto.running {
+            pace = (pace + [(time: Date(), done: counted.0.done)]).filter { Date().timeIntervalSince($0.time) < 120 }
+        } else {
+            pace = []
+        }
     }
 
     private func setAutomatic(_ on: Bool) {
@@ -285,6 +318,17 @@ struct BackupView: View {
     }
 }
 
+// 圆环里「■ 停止」「▶ 开始」这样的一行小灰字
+private struct RingAction: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) {
+            configuration.icon.font(.system(size: 7, weight: .bold))
+            configuration.title.font(.caption2)
+        }
+        .foregroundStyle(Palette.sub)
+    }
+}
+
 // 圆环按下时缩一下，松手弹回（不用列表那种整行变灰、要等一下的按下效果）
 private struct RingPress: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -300,7 +344,7 @@ struct TransferRow: View {
     // 「12/490 MB」；小于 1MB 的显示百分比
     static func progressText(_ t: AutoBackup.Transfer) -> String {
         // 手机这边发完了，服务端还要把最后一段存进 Telegram，大文件要等一两分钟才算传完
-        if t.total > 0 && t.sent >= t.total { return "保存中…" }
+        if t.total > 0 && t.sent >= t.total { return "保存中" }
         if t.total < 1 << 20 { return "\(t.sent * 100 / max(t.total, 1))%" }
         return "\(t.sent >> 20)/\(t.total >> 20) MB"
     }
@@ -315,18 +359,18 @@ struct TransferRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon).font(.footnote).foregroundStyle(.orange)
+            Image(systemName: icon).font(.footnote).foregroundStyle(Palette.accent)
                 .frame(width: 32, height: 32)
-                .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(Palette.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(t.name).font(.footnote).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 8)
                     Text(Self.progressText(t)).font(.caption).monospacedDigit().lineLimit(1)
-                        .foregroundStyle(saving ? SpeedView.upColor : .secondary)
+                        .foregroundStyle(Palette.sub)
                 }
                 ProgressView(value: Double(min(t.sent, max(t.total, 1))), total: Double(max(t.total, 1)))
-                    .tint(saving ? SpeedView.upColor : .orange)
+                    .tint(saving ? Palette.sub : Palette.accent)
             }
         }
         .padding(.vertical, 2)
