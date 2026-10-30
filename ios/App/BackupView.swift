@@ -4,7 +4,7 @@ import Photos
 import SwiftUI
 import UniformTypeIdentifiers
 
-// 「备份」页（备份中心）：上面一个进度环和「手机上 / 已备份 / 还剩」三个数，下面是正在传的文件、没传上去的、
+// 「备份」页（备份中心）：上面一个进度环和「本地相册 / 云端备份 / 等待上传」三个数，下面是正在传的文件、没传上去的、
 // 一个「自动备份」开关和几个设置。服务端地址、试传一张这类排查用的东西放在右上角的「诊断」里。
 // 全屏打开（不是能往下拖走的卡片），左上角「完成」关掉。
 struct BackupView: View {
@@ -189,14 +189,14 @@ struct BackupView: View {
                 Text(subline).font(.footnote).foregroundStyle(.secondary)
             }
             HStack(spacing: 0) {
-                stat("手机上", tally?.total)
+                stat("本地相册", tally?.total)
                 Divider().frame(height: 28)
-                stat("已备份", tally?.done)
+                stat("云端备份", tally?.done)
                 Divider().frame(height: 28)
-                stat("还剩", tally?.remaining)
+                stat("等待上传", tally?.remaining)
             }
             if let hiddenTally, hiddenTally.total > 0 {
-                Text("隐藏相册另算：已备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
+                Text("隐藏相册另算：云端备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
