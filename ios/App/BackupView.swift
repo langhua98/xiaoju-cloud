@@ -187,6 +187,7 @@ struct BackupView: View {
                 stat("已备份", tally?.done)
                 stat("还剩", tally?.remaining)
             }
+            SpeedView()
             if let hiddenTally, hiddenTally.total > 0 {
                 Text("隐藏相册另算：已备份 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
                     .font(.caption).foregroundStyle(.secondary)

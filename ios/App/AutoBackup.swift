@@ -689,7 +689,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                     self.queuedBytes += size
                     fetched.bytes = 0
                 }
-                self.movedBytes += max(now - fetched.bytes, 0)
+                let moved = max(now - fetched.bytes, 0)
+                self.movedBytes += moved
+                NetMeter.shared.received(moved) // 从 iCloud 下载原图
                 fetched.bytes = max(now, fetched.bytes)
             }
             self.reportContinued()
@@ -862,7 +864,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     private func updateProgress(_ key: String, sent: Int64) {
         lock.withLock {
-            movedBytes += max(sent - (sentBytes[key] ?? sent), 0)
+            let moved = max(sent - (sentBytes[key] ?? sent), 0)
+            movedBytes += moved
+            NetMeter.shared.sent(moved)
             sentBytes[key] = sent
         }
         publishProgress(force: false)
