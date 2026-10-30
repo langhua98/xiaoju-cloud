@@ -115,11 +115,11 @@ struct BackupView: View {
             .onChange(of: auto.checking) { _, checking in
                 if !checking { Task { await refresh() } }
             }
-            // 备份的时候每 10 秒重算一次三个数，停了再算一次
+            // 备份的时候每 5 秒重算一次三个数，停了再算一次
             .task(id: auto.running) {
                 await refresh()
                 while auto.running && !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(10))
+                    try? await Task.sleep(for: .seconds(5))
                     await refresh()
                 }
             }
