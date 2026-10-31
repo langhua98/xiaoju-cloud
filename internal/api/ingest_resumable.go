@@ -82,6 +82,20 @@ func (s *Server) startIngestUpload(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
+		if len(p.Missing) == 0 {
+			// 上次都收到了，只是没收完尾（比如激活时撞了名字）：这里收尾。不收的话手机上没有要传的段，一直“保存中”
+			done, err := s.svc.WriteUpload(r.Context(), s.userID, p.ID, p.Size, true, http.NoBody, func() {})
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			if done.File != nil {
+				s.log.Info("ingest upload finished on restart", "folder", folder, "name", done.File.Name, "size", size)
+				writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": done.File.Name})
+				return
+			}
+			p = done // 有分块没写成：按进度重传缺的
+		}
 		s.log.Info("ingest upload started", "folder", folder, "name", n, "size", size, "offset", p.Offset,
 			"client", clientIP(r), "agent", r.UserAgent())
 		writeJSON(w, http.StatusOK, map[string]any{"result": "started", "id": p.ID, "size": p.Size, "offset": p.Offset, "chunk": p.Chunk,

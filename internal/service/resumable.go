@@ -23,7 +23,10 @@ import (
 	"hash"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -796,10 +799,24 @@ func (s *Service) finishResumable(ctx context.Context, u *resumable, sum []byte)
 		}
 	}
 	f, err := s.store.FinishUpload(ctx, u.file.ID, u.sess.Size, sum)
+	// 同名的文件在这个上传开始之后才传完（手机上几个不同的视频同名、同时在传）：改叫“名字 (2)”…再激活。
+	// 以前一直用原来的名字重试，永远冲突，手机上那个视频一直“保存中”
+	for i := 2; errors.Is(err, meta.ErrConflict) && i < 100; i++ {
+		name := copyName(u.file.Name, i)
+		if err = s.store.RenameUpload(ctx, u.file.ID, name); err == nil {
+			f, err = s.store.FinishUpload(ctx, u.file.ID, u.sess.Size, sum)
+		}
+	}
 	if err != nil {
-		return nil, err // 比如同名文件刚刚出现了（ErrConflict）：留着，下次再试
+		return nil, err
 	}
 	s.log.Info("resumable upload finished", "file", f.ID, "name", f.Name, "size", f.Size, "sha256", hex.EncodeToString(sum)[:12])
 	s.queueThumbnail(f)
 	return f, nil
+}
+
+// copyName 给名字加序号：copyName("IMG_1.mov", 2) == "IMG_1 (2).mov"。
+func copyName(name string, i int) string {
+	ext := filepath.Ext(name)
+	return strings.TrimSuffix(name, ext) + " (" + strconv.Itoa(i) + ")" + ext
 }

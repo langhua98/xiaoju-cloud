@@ -131,6 +131,15 @@ func (s *Store) FinishUpload(ctx context.Context, id uuid.UUID, size int64, sha 
 	return out, err
 }
 
+// RenameUpload 给还在上传的文件换个名字（上传中的不占名字，所以不会冲突）。
+func (s *Store) RenameUpload(ctx context.Context, id uuid.UUID, name string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE files SET name = $2, updated_at = now() WHERE id = $1 AND status = 'uploading'`, id, name)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
 // prefixed 给逗号分隔的列名加上表别名：prefixed("f", "id, name") == "f.id, f.name"。
 func prefixed(alias, cols string) string {
 	parts := strings.Split(cols, ",")
