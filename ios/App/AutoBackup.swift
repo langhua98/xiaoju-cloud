@@ -746,7 +746,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 }
                 let moved = max(now - fetched.bytes, 0)
                 self.movedBytes += moved
-                NetMeter.shared.received(moved) // 从 iCloud 下载原图
+                NetMeter.shared.received(moved, fromICloud: true) // 从 iCloud 下载原图
                 fetched.bytes = max(now, fetched.bytes)
             }
             self.reportContinued()

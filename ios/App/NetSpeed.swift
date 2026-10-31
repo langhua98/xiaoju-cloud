@@ -14,10 +14,18 @@ final class NetMeter {
         lock.withLock { up += bytes }
     }
 
-    func received(_ bytes: Int64) {
+    // fromICloud：备份时先从苹果 iCloud 取原图（开了「优化 iPhone 储存空间」的照片）
+    func received(_ bytes: Int64, fromICloud: Bool = false) {
         guard bytes > 0 else { return }
-        lock.withLock { down += bytes }
+        lock.withLock {
+            down += bytes
+            if fromICloud { iCloudAt = Date() }
+        }
     }
+
+    private var iCloudAt: Date?
+    // 最近 3 秒有没有在从 iCloud 取原图：下载卡片右上角显示「访问 iCloud」
+    var iCloudActive: Bool { lock.withLock { iCloudAt.map { Date().timeIntervalSince($0) < 3 } ?? false } }
 
     var totals: (up: Int64, down: Int64) { lock.withLock { (up, down) } }
 }
@@ -50,11 +58,13 @@ struct SpeedView: View {
     @State private var ups: [Double] = [] // 最近 30 秒每秒的速度，最新的在最后
     @State private var downs: [Double] = []
     @State private var totals = NetMeter.shared.totals
+    @State private var iCloud = false
 
     var body: some View {
         HStack(spacing: 10) {
             SpeedTile(title: "上传", done: "已传", icon: "arrow.up", color: Palette.up, history: ups, total: totals.up)
-            SpeedTile(title: "下载", done: "已下", icon: "arrow.down", color: Palette.down, history: downs, total: totals.down)
+            SpeedTile(title: "下载", done: "已下", icon: "arrow.down", color: Palette.down, history: downs, total: totals.down,
+                      badge: iCloud ? "访问 iCloud" : nil)
         }
         .task {
             var last = NetMeter.shared.totals
@@ -66,6 +76,7 @@ struct SpeedView: View {
                 ups = Array((ups + [Double(now.up - last.up) / seconds]).suffix(30))
                 downs = Array((downs + [Double(now.down - last.down) / seconds]).suffix(30))
                 (last, lastTime, totals) = (now, time, now)
+                iCloud = NetMeter.shared.iCloudActive
             }
         }
     }
@@ -97,6 +108,7 @@ private struct SpeedTile: View {
     let color: Color
     let history: [Double]
     let total: Int64
+    var badge: String? = nil // 右上角的小提示，比如「访问 iCloud」
     // 曲线的刻度：每秒往最新的最大值靠 35%，突然来个高峰不会一下把整条线压扁
     @State private var scale: Double = 0
 
@@ -120,7 +132,15 @@ private struct SpeedTile: View {
                     .opacity(active ? 1 : 0.6)
                     .animation(.easeInOut(duration: 0.4), value: active)
                 Text(title).font(.footnote.weight(.semibold))
+                Spacer(minLength: 4)
+                if let badge {
+                    Label(badge, systemImage: "icloud")
+                        .font(.caption2).foregroundStyle(Palette.sub)
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .transition(.opacity)
+                }
             }
+            .animation(.easeInOut(duration: 0.3), value: badge)
             // 第二行：当前网速；没在传时是灰色的「—」
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 if active {
