@@ -281,22 +281,23 @@ func TestPoolAgentLane(t *testing.T) {
 
 func TestPoolTimeoutBenchesBriefly(t *testing.T) {
 	p := newPool(&fakeBot{name: "main"}, slog.New(slog.DiscardHandler))
-	p.add(&fakeBot{name: "a"})
-	p.add(&fakeBot{name: "b"})
+	for _, name := range []string{"a", "b", "c", "d"} {
+		p.add(&fakeBot{name: name})
+	}
 
-	// Telegram 那边临时超时：只停一小会儿；别的错照旧停 10 分钟
-	p.add(&fakeBot{name: "c"})
+	// 临时的错（超时、重试没回应）只停一小会儿；Telegram 明确拒绝的照旧停 10 分钟
 	p.bench(1, tgerr.New(-503, "Timeout")) // 日志里是 rpc error code -503: Timeout
-	p.bench(2, errors.New("CHAT_ADMIN_REQUIRED"))
+	p.bench(2, fmt.Errorf("send: %w", tgerr.New(400, "CHAT_ADMIN_REQUIRED")))
 	p.bench(3, fmt.Errorf("get file: %w", tgerr.New(503, "Timeout")))
+	p.bench(4, errors.New("get file: rpcDoRequest: retryUntilAck: retry limit reached after 5 attempts"))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, k := range []int{1, 3} {
+	for _, k := range []int{1, 3, 4} {
 		if d := time.Until(p.benched[k]); d > benchBrief {
-			t.Fatalf("timeout paused bot %d for %s", k, d)
+			t.Fatalf("transient error paused bot %d for %s", k, d)
 		}
 	}
 	if d := time.Until(p.benched[2]); d < benchFor-time.Minute {
-		t.Fatalf("other errors should pause for %s, got %s", benchFor, d)
+		t.Fatalf("a rejected bot should pause for %s, got %s", benchFor, d)
 	}
 }
