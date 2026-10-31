@@ -361,9 +361,7 @@ struct TransferRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon).font(.footnote).foregroundStyle(Palette.accent)
-                .frame(width: 32, height: 32)
-                .background(Palette.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            IconTile(symbol: icon, color: icon == "video.fill" ? .purple : .pink, size: 32)
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(t.name).font(.footnote).lineLimit(1).truncationMode(.middle)

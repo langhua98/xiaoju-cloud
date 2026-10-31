@@ -28,17 +28,17 @@ struct MeView: View {
                 }
                 Section {
                     if cloud.signedIn {
-                        NavigationLink { SharesView() } label: { Label("分享的链接", systemImage: "link") }
-                        NavigationLink { TrashView() } label: { Label("回收站", systemImage: "trash") }
-                        NavigationLink { DuplicatesView() } label: { Label("重复文件", systemImage: "square.on.square") }
+                        NavigationLink { SharesView() } label: { TileLabel("分享的链接", symbol: "link", color: .indigo) }
+                        NavigationLink { TrashView() } label: { TileLabel("回收站", symbol: "trash.fill", color: .gray) }
+                        NavigationLink { DuplicatesView() } label: { TileLabel("重复文件", symbol: "square.on.square.fill", color: .purple) }
                     }
-                    NavigationLink { FreeSpaceView() } label: { Label("释放手机空间", systemImage: "iphone") }
-                    Button { Restorer.shared.show = true } label: { Label("恢复到这台手机", systemImage: "clock.arrow.circlepath") }
+                    NavigationLink { FreeSpaceView() } label: { TileLabel("释放手机空间", symbol: "iphone", color: .green) }
+                    Button { Restorer.shared.show = true } label: { TileLabel("恢复到这台手机", symbol: "clock.arrow.circlepath", color: .teal) }
                 }
                 Section {
-                    Button { showWeb = true } label: { Label("在网页里打开", systemImage: "safari") }
+                    Button { showWeb = true } label: { TileLabel("在网页里打开", symbol: "safari", color: .blue) }
                     if cloud.signedIn {
-                        Button(role: .destructive) { cloud.signOut() } label: { Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right") }
+                        Button(role: .destructive) { cloud.signOut() } label: { TileLabel("退出登录", symbol: "rectangle.portrait.and.arrow.right", color: .red, titleColor: .red) }
                     }
                 } footer: {
                     Text("退出登录只影响在 App 里看照片、文件，自动备份照常跑。")
@@ -171,9 +171,7 @@ struct TrashView: View {
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             ForEach(items) { item in
                 HStack(spacing: 12) {
-                    Image(systemName: item.isFolder ? "folder" : item.isVideo ? "video" : item.isImage ? "photo" : "doc")
-                        .frame(width: 28)
-                        .foregroundStyle(.secondary)
+                    IconTile(symbol: FileTile.symbol(item), color: FileTile.color(item), size: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).lineLimit(1).truncationMode(.middle)
                         Text(item.trashedAt.map { "\($0.formatted(.relative(presentation: .named)))删除" } ?? "")
