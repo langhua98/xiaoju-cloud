@@ -371,3 +371,46 @@ func TestResumableParallel(t *testing.T) {
 		t.Fatalf("%d temp files left", len(entries))
 	}
 }
+
+// 手机上两个不同的视频同名、同时在传：后传完的那个改叫“名字 (2)”，不会一直卡在激活这一步
+func TestResumableSameNameFinishesRenamed(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, _ := store.EnsureUser(ctx, "resumable-same-name-test")
+	driver, _ := local.New(t.TempDir())
+	master, _ := crypto.NewKey()
+	svc := New(store, driver, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler)})
+
+	a, b := randBytes(1500), randBytes(2500)
+	pa, err := svc.StartUpload(ctx, ResumableRequest{UserID: userID, Name: "IMG_3970.mov", Size: int64(len(a))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, err := svc.StartUpload(ctx, ResumableRequest{UserID: userID, Name: "IMG_3970.mov", Size: int64(len(b))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ga, err := svc.WriteUpload(ctx, userID, pa.ID, 0, false, bytes.NewReader(a), func() {})
+	if err != nil || ga.File == nil || ga.File.Name != "IMG_3970.mov" {
+		t.Fatalf("first: %+v %v", ga, err)
+	}
+	gb, err := svc.WriteUpload(ctx, userID, pb.ID, 0, false, bytes.NewReader(b), func() {})
+	if err != nil || gb.File == nil || gb.File.Name != "IMG_3970 (2).mov" {
+		t.Fatalf("second: %+v %v", gb, err)
+	}
+	_, rd, err := svc.Open(ctx, userID, gb.File.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := io.ReadAll(rd); !bytes.Equal(got, b) {
+		t.Fatal("second file content differs")
+	}
+}
