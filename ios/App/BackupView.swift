@@ -67,21 +67,33 @@ struct BackupView: View {
                 .listRowBackground(Palette.card)
             }
             Section {
-                Toggle("自动备份", isOn: Binding(get: { auto.enabled }, set: { setAutomatic($0) }))
+                Toggle(isOn: Binding(get: { auto.enabled }, set: { setAutomatic($0) })) {
+                    TileLabel("自动备份", symbol: "icloud.and.arrow.up.fill", color: .blue)
+                }
                     .disabled(auth != .authorized && !auto.enabled)
                 NavigationLink {
                     BackupAlbumsView()
                 } label: {
-                    LabeledContent("备份哪些照片", value: albumCount == 0 ? "全部照片" : "全部 + \(albumCount) 个相册")
+                    LabeledContent { Text(albumCount == 0 ? "全部照片" : "全部 + \(albumCount) 个相册") } label: {
+                        TileLabel("备份哪些照片", symbol: "photo.on.rectangle.angled", color: .pink)
+                    }
                 }
-                NavigationLink("手机数据") { PhoneDataView() }
+                NavigationLink { PhoneDataView() } label: { TileLabel("手机数据", symbol: "person.text.rectangle.fill", color: .indigo) }
                 NavigationLink {
                     SyncFoldersView()
                 } label: {
-                    LabeledContent("同步文件夹", value: auto.folders.isEmpty ? "没有" : "\(auto.folders.count) 个")
+                    LabeledContent { Text(auto.folders.isEmpty ? "没有" : "\(auto.folders.count) 个") } label: {
+                        TileLabel("同步文件夹", symbol: "folder.fill", color: .orange)
+                    }
                 }
-                NavigationLink("插上电就备份") { ChargeShortcutView() }
-                Button("从云盘恢复到手机…") { Restorer.shared.show = true }
+                NavigationLink { ChargeShortcutView() } label: { TileLabel("插上电就备份", symbol: "bolt.fill", color: .green) }
+                Button { Restorer.shared.show = true } label: {
+                    HStack {
+                        TileLabel("从云盘恢复到手机", symbol: "clock.arrow.circlepath", color: .teal)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                }
             } footer: {
                 Text(switchError.isEmpty
                     ? "充电、连网时自动补齐"

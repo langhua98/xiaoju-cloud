@@ -64,13 +64,22 @@ struct MeView: View {
         return "\(short)（构建 \(build)）"
     }()
 
+    // 白云 +「云盘存储」，大字总量，彩色条，下面三栏：数量大字、大小小字
     private var storage: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(stats.map { "已用 \(sizeText($0.bytes))" } ?? "已用 —").font(.title3.bold())
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("云盘存储", systemImage: "cloud.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .labelStyle(CloudLabelStyle())
                 Spacer()
-                Text("Telegram 频道 · 不限容量").font(.caption).foregroundStyle(.secondary)
+                Text("不限容量")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .overlay(Capsule().stroke(Color.secondary.opacity(0.4), lineWidth: 0.5))
             }
+            Text(stats.map { shortSize($0.bytes) } ?? "—")
+                .font(.system(size: 30, weight: .bold)).monospacedDigit()
             if let s = stats, s.bytes > 0 {
                 GeometryReader { geo in
                     HStack(spacing: 0) {
@@ -81,11 +90,35 @@ struct MeView: View {
                 }
                 .frame(height: 8)
                 .clipShape(Capsule())
-                Text("照片 \(s.photos.formatted()) 张 · \(sizeText(s.photoBytes))　视频 \(s.videos.formatted()) 个 · \(sizeText(s.videoBytes))　其他 \(s.others.formatted()) 个")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 8) {
+                    legend("照片", .orange, "\(s.photos.formatted()) 张", s.photoBytes)
+                    legend("视频", .blue, "\(s.videos.formatted()) 个", s.videoBytes)
+                    legend("其他", .green, "\(s.others.formatted()) 个", max(0, s.bytes - s.photoBytes - s.videoBytes))
+                }
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func legend(_ name: String, _ color: Color, _ count: String, _ bytes: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 5) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(name)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            Text(count).font(.subheadline.weight(.semibold)).monospacedDigit()
+            Text(shortSize(bytes)).font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // 「327.7 GB」：只留一位小数
+    private func shortSize(_ bytes: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var v = Double(bytes), i = 0
+        while v >= 1000, i < units.count - 1 { v /= 1000; i += 1 }
+        return i == 0 ? "\(bytes) B" : String(format: "%.1f %@", v, units[i])
     }
 
     private func load() async {
@@ -394,6 +427,16 @@ struct FreeSpaceView: View {
             await check()
         } catch {
             message = "没有删除：\(error.localizedDescription)"
+        }
+    }
+}
+
+// 白色的云，和文字间距小一点
+private struct CloudLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.foregroundStyle(.white).font(.title3)
+            configuration.title
         }
     }
 }
