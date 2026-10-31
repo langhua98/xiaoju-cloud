@@ -118,7 +118,7 @@ func (g *Generator) Generate(ctx context.Context, src Source) (*Result, error) {
 		return g.video(ctx, src, typ)
 	}
 	rd.Close()
-	return nil, ErrNoThumbnail
+	return nil, fmt.Errorf("%w: unrecognized header %x", ErrNoThumbnail, head[:min(n, 16)])
 }
 
 // copyImage 把照片拷进临时文件交给外部程序（vips 要能跳着读）；太大的不做。用完要删掉返回的文件。
