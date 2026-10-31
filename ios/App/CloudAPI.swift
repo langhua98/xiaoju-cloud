@@ -67,9 +67,26 @@ final class Cloud: ObservableObject {
             req.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
         }
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await Self.data(for: req)
         try check(data, resp)
         return data
+    }
+
+    // 发请求；被限流（429，多半是 Hugging Face 门口按 IP 限的）时等一会儿自己再试，最多 3 次：
+    // 以前直接把「HTTP 429」显示在页面上
+    nonisolated static func data(for req: URLRequest) async throws -> (Data, URLResponse) {
+        for attempt in 0..<3 {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 429 else { return (data, resp) }
+            try await Task.sleep(nanoseconds: UInt64(retryDelay(http, attempt: attempt) * 1_000_000_000))
+        }
+        return try await URLSession.shared.data(for: req)
+    }
+
+    // 429 后等几秒：服务端给了 Retry-After 就按它（最多 30 秒），没给就 2、4、8 秒
+    nonisolated static func retryDelay(_ resp: HTTPURLResponse, attempt: Int) -> Double {
+        if let s = resp.value(forHTTPHeaderField: "Retry-After"), let v = Double(s) { return min(max(v, 1), 30) }
+        return Double(2 << attempt)
     }
 
     // 上传文件（流式，从文件读）：POST /api/files?name=&parent_id=
@@ -90,7 +107,8 @@ final class Cloud: ObservableObject {
         if (200..<300).contains(status) { return }
         let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let code = body["code"] as? String ?? ""
-        let message = body["error"] as? String ?? "HTTP \(status)"
+        let message = status == 429 ? "请求太多，服务器让等一会儿，过半分钟再刷新试试"
+            : body["error"] as? String ?? "HTTP \(status)"
         switch (status, code) {
         case (403, "grid_required"):
             throw CloudError.gridRequired

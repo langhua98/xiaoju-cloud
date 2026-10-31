@@ -227,21 +227,23 @@ struct MediaGallery: View {
     }
 }
 
-// 缩略图：服务端给的签名地址（/thumb/…，6–12 小时有效），系统的网络缓存会存着，来回滑不用重下
+// 缩略图：服务端给的签名地址（/thumb/…，6–12 小时有效），系统的网络缓存会存着，来回滑不用重下。
+// 同一时间最多下 6 张（ThumbLoader）：以前快速滑过一万张的相册时一下子几百个请求，
+// Hugging Face 门口按 IP 限流（429），之后一阵子文件列表也打不开。
 struct Thumb: View {
     let item: CloudItem
+    @State private var image: UIImage?
+    @State private var failed = false
 
     var body: some View {
         Color.secondary.opacity(0.15)
             .overlay {
-                AsyncImage(url: Cloud.shared.absolute(item.thumb ?? item.cover)) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else if item.isFolder {
-                        Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(.orange)
-                    } else if phase.error != nil || item.thumb == nil {
-                        Image(systemName: item.isVideo ? "video" : "photo").foregroundStyle(.secondary)
-                    }
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else if item.isFolder {
+                    Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(.orange)
+                } else if failed || item.thumb == nil {
+                    Image(systemName: item.isVideo ? "video" : "photo").foregroundStyle(.secondary)
                 }
             }
             .clipped()
@@ -251,6 +253,52 @@ struct Thumb: View {
                         .font(.caption2.bold()).foregroundStyle(.white).shadow(radius: 2).padding(4)
                 }
             }
+            .task(id: item.thumb ?? item.cover) {
+                guard image == nil, let url = Cloud.shared.absolute(item.thumb ?? item.cover) else { return }
+                image = await ThumbLoader.shared.image(url)
+                failed = image == nil && !Task.isCancelled
+            }
+    }
+}
+
+// 下缩略图：同一时间最多 6 个，滑走了（任务取消）的不再下；被限流（429）时按 Retry-After 等一会儿再试
+actor ThumbLoader {
+    static let shared = ThumbLoader()
+    private var running = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func image(_ url: URL) async -> UIImage? {
+        let req = URLRequest(url: url)
+        if let hit = URLCache.shared.cachedResponse(for: req), let img = UIImage(data: hit.data) { return img }
+        await acquire()
+        defer { release() }
+        for attempt in 0..<3 {
+            if Task.isCancelled { return nil }
+            guard let reply = try? await URLSession.shared.data(for: req),
+                  let http = reply.1 as? HTTPURLResponse else { return nil }
+            if http.statusCode == 429 {
+                try? await Task.sleep(nanoseconds: UInt64(Cloud.retryDelay(http, attempt: attempt) * 1_000_000_000))
+                continue
+            }
+            return http.statusCode == 200 ? UIImage(data: reply.0) : nil
+        }
+        return nil
+    }
+
+    private func acquire() async {
+        if running < 6 {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    private func release() {
+        if waiting.isEmpty {
+            running -= 1
+        } else {
+            waiting.removeFirst().resume() // 名额直接交给下一个
+        }
     }
 }
 
