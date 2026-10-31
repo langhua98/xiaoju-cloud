@@ -131,7 +131,7 @@ private struct SpeedTile: View {
                     .background((active ? color : Palette.sub).opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .opacity(active ? 1 : 0.6)
                     .animation(.easeInOut(duration: 0.4), value: active)
-                Text(title).font(.footnote.weight(.semibold))
+                Text(title).font(.footnote.weight(.semibold)).fixedSize()
                 Spacer(minLength: 4)
                 if let badge {
                     Label(badge, systemImage: "icloud")
