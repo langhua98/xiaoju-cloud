@@ -171,7 +171,7 @@ struct FolderView: View {
             items = try await Cloud.shared.children(of: folder?.id)
             error = ""
         } catch {
-            self.error = error.localizedDescription
+            if !error.isCancellation { self.error = error.localizedDescription }
         }
     }
 
