@@ -285,12 +285,16 @@ func TestPoolTimeoutBenchesBriefly(t *testing.T) {
 	p.add(&fakeBot{name: "b"})
 
 	// Telegram 那边临时超时：只停一小会儿；别的错照旧停 10 分钟
-	p.bench(1, tgerr.New(503, "Timeout"))
+	p.add(&fakeBot{name: "c"})
+	p.bench(1, tgerr.New(-503, "Timeout")) // 日志里是 rpc error code -503: Timeout
 	p.bench(2, errors.New("CHAT_ADMIN_REQUIRED"))
+	p.bench(3, fmt.Errorf("get file: %w", tgerr.New(503, "Timeout")))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if d := time.Until(p.benched[1]); d > benchBrief {
-		t.Fatalf("timeout paused the bot for %s", d)
+	for _, k := range []int{1, 3} {
+		if d := time.Until(p.benched[k]); d > benchBrief {
+			t.Fatalf("timeout paused bot %d for %s", k, d)
+		}
 	}
 	if d := time.Until(p.benched[2]); d < benchFor-time.Minute {
 		t.Fatalf("other errors should pause for %s, got %s", benchFor, d)
