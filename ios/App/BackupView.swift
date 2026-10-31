@@ -141,7 +141,8 @@ struct BackupView: View {
 
     private var finished: Bool {
         guard let tally, tally.total > 0 else { return false }
-        return tally.remaining == 0 && !auto.running
+        // 全都在云盘上了、也没有文件在传：就算点了开始（只是在查有没有新照片），也算「已完成」
+        return tally.remaining == 0 && auto.transfers.isEmpty
     }
 
     private var tint: Color {
@@ -152,6 +153,7 @@ struct BackupView: View {
     // 标题只说状态，两三个字
     private var headline: String {
         if auth != .authorized { return "需要照片权限" }
+        if finished && auto.failures.isEmpty { return "已完成" }
         if auto.running { return "备份中" }
         if auto.isPaused { return "已暂停" }
         if !auto.failures.isEmpty { return "\(auto.failures.count) 个没传上" }
@@ -162,6 +164,7 @@ struct BackupView: View {
     // 下面一行只放一个短信息：还要多久、几点继续、上次完成是什么时候
     private var subline: String {
         if auth != .authorized { return "去设置里允许" }
+        if finished && auto.running { return "检查新照片…" }
         if auto.running { return eta }
         if auto.isPaused, let until = auto.pausedUntil {
             return "\(until.formatted(date: .omitted, time: .shortened)) 继续"
@@ -224,6 +227,8 @@ struct BackupView: View {
                 VStack(spacing: 1) {
                     if finished {
                         Image(systemName: "checkmark").font(.title.bold()).foregroundStyle(Palette.up)
+                            // 正在查新照片时对勾轻轻闪一下，表示在动
+                            .symbolEffect(.pulse, isActive: auto.running)
                     } else {
                         Text(progress, format: .percent.precision(.fractionLength(0)))
                             .font(.title2.bold()).monospacedDigit()
