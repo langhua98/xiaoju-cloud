@@ -156,7 +156,7 @@ func (p *Pool) done(k int) {
 
 func (p *Pool) bench(k int, err error) {
 	pause := benchFor
-	if e, ok := tgerr.As(err); ok && e.Code == 503 {
+	if e, ok := tgerr.As(err); ok && (e.Code == 503 || e.Code == -503) { // Telegram 回的是 -503
 		pause = benchBrief
 	}
 	p.mu.Lock()
