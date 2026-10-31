@@ -45,7 +45,7 @@ enum Palette {
 }
 
 // 「备份」页的网速小卡片：左边上传、右边下载，各一个大数字和最近 30 秒的小柱状图；
-// 柱状图下面一行：左边是打开 App 以来一共传了（下了）多少，右边是最近 30 秒的峰值
+// 柱状图下面两行：打开 App 以来一共传了（下了）多少、最近 30 秒的峰值
 struct SpeedView: View {
     @State private var ups: [Double] = [] // 最近 30 秒每秒的速度，最新的在最后
     @State private var downs: [Double] = []
@@ -108,27 +108,25 @@ private struct SpeedTile: View {
         let speed = SpeedView.text(current)
         let peak = history.max() ?? 0
         VStack(alignment: .leading, spacing: 6) {
-            // 第一行：箭头 + 当前网速，右边小字「上传」「下载」
+            // 第一行：加大的箭头（带淡色底）+「上传」「下载」
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.footnote.weight(.bold)).foregroundStyle(color)
+                    .frame(width: 24, height: 24)
+                    .background(color.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text(title).font(.footnote.weight(.semibold))
+            }
+            // 第二行：当前网速
             HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
-                Text(speed.number).font(.title3.bold()).monospacedDigit()
+                Text(speed.number).font(.title2.bold()).monospacedDigit()
                     .contentTransition(.numericText())
                     .animation(.default, value: speed.number)
                 Text(speed.unit).font(.caption2).foregroundStyle(Palette.sub)
-                Spacer(minLength: 4)
-                Text(title).font(.caption2).foregroundStyle(Palette.sub)
             }
             Bars(values: history, color: color).frame(height: 20)
-            // 最后一行：左边一共传了多少，右边最近 30 秒峰值（都没动：空闲）
-            HStack(spacing: 4) {
-                meta(done, total > 0 ? SpeedView.size(total) : "0 KB")
-                Spacer(minLength: 4)
-                if peak > 0 {
-                    meta("峰值", SpeedView.text(peak).number + " " + SpeedView.text(peak).unit)
-                } else {
-                    meta("空闲", nil)
-                }
-            }
+            Divider().overlay(Palette.track)
+            // 最后两行各放一个信息：一共传了多少、最近 30 秒峰值（都没动：空闲）
+            row(done, total > 0 ? SpeedView.size(total) : "0 KB")
+            row("峰值", peak > 0 ? SpeedView.text(peak).number + " " + SpeedView.text(peak).unit : "空闲", dim: peak == 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -137,14 +135,14 @@ private struct SpeedTile: View {
         .accessibilityLabel("\(title) \(speed.number) \(speed.unit)")
     }
 
-    // 右边一行小灰字，数字加粗
-    private func meta(_ label: String, _ value: String?) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-            if let value { Text(value).fontWeight(.semibold).foregroundStyle(.primary) }
+    // 左边灰色名字，右边加粗数字
+    private func row(_ label: String, _ value: String, dim: Bool = false) -> some View {
+        HStack {
+            Text(label).foregroundStyle(Palette.sub)
+            Spacer(minLength: 4)
+            Text(value).fontWeight(dim ? .regular : .semibold).foregroundStyle(dim ? Palette.sub : .primary)
         }
-        .font(.caption2).monospacedDigit().foregroundStyle(Palette.sub).lineLimit(1)
-        .minimumScaleFactor(0.8)
+        .font(.caption2).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
     }
 }
 
@@ -165,6 +163,13 @@ private struct Bars: View {
                 let rect = CGRect(x: CGFloat(i) * (width + gap), y: size.height - height, width: width, height: height)
                 context.fill(Path(roundedRect: rect, cornerRadius: width / 2),
                              with: .color(value > 0 ? color.opacity(0.85) : Palette.track))
+            }
+            // 顶上一条淡虚线：峰值的高度
+            if (values.max() ?? 0) > 0 {
+                var line = Path()
+                line.move(to: CGPoint(x: 0, y: 0.75))
+                line.addLine(to: CGPoint(x: size.width, y: 0.75))
+                context.stroke(line, with: .color(color.opacity(0.45)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
             }
         }
     }
