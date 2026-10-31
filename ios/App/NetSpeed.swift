@@ -73,8 +73,12 @@ struct SpeedView: View {
     // 每秒字节数 → ("850", "KB/s")、("2.3", "MB/s")
     static func text(_ bytesPerSecond: Double) -> (number: String, unit: String) {
         let kb = bytesPerSecond / 1024
+        // 数字最多 3 位：太大就换单位（KB → MB → GB），字数不会变长
         if kb < 1000 { return ("\(Int(kb.rounded()))", "KB/s") }
-        return (String(format: "%.1f", kb / 1024), "MB/s")
+        let mb = kb / 1024
+        if mb < 100 { return (String(format: "%.1f", mb), "MB/s") }
+        if mb < 1000 { return ("\(Int(mb.rounded()))", "MB/s") }
+        return (String(format: "%.1f", mb / 1024), "GB/s")
     }
 
     // 字节数 → 「850 KB」「340 MB」「1.24 GB」
