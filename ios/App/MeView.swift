@@ -12,7 +12,7 @@ struct MeView: View {
     var body: some View {
         NavigationStack {
             List {
-                if cloud.signedIn { Section { storage } }
+                if cloud.signedIn { Section { storage }.listRowBackground(Palette.card) }
                 Section {
                     // 推进去（不是全屏盖住），右滑就回到「我的」
                     NavigationLink { BackupView(pushed: true) } label: {
@@ -26,27 +26,33 @@ struct MeView: View {
                         }
                     }
                 }
+                .listRowBackground(Palette.card)
                 Section {
                     if cloud.signedIn {
-                        NavigationLink { SharesView() } label: { TileLabel("分享的链接", symbol: "link", color: .indigo) }
-                        NavigationLink { TrashView() } label: { TileLabel("回收站", symbol: "trash.fill", color: .gray) }
-                        NavigationLink { DuplicatesView() } label: { TileLabel("重复文件", symbol: "square.on.square.fill", color: .purple) }
+                        NavigationLink { SharesView() } label: { TileLabel("分享的链接", symbol: "link", color: .fileDocument) }
+                        NavigationLink { TrashView() } label: { TileLabel("回收站", symbol: "trash.fill", color: .fileOther) }
+                        NavigationLink { DuplicatesView() } label: { TileLabel("重复文件", symbol: "square.on.square.fill", color: .fileVideo) }
                     }
-                    NavigationLink { FreeSpaceView() } label: { TileLabel("释放手机空间", symbol: "iphone", color: .green) }
-                    Button { Restorer.shared.show = true } label: { TileLabel("恢复到这台手机", symbol: "clock.arrow.circlepath", color: .teal) }
+                    NavigationLink { FreeSpaceView() } label: { TileLabel("释放手机空间", symbol: "iphone", color: .fileAudio) }
+                    Button { Restorer.shared.show = true } label: { TileLabel("恢复到这台手机", symbol: "clock.arrow.circlepath", color: .brand, chevron: true) }
                 }
+                .listRowBackground(Palette.card)
                 Section {
-                    Button { showWeb = true } label: { TileLabel("在网页里打开", symbol: "safari", color: .blue) }
+                    Button { showWeb = true } label: { TileLabel("在网页里打开", symbol: "safari", color: .fileDocument, chevron: true) }
                     if cloud.signedIn {
-                        Button(role: .destructive) { cloud.signOut() } label: { TileLabel("退出登录", symbol: "rectangle.portrait.and.arrow.right", color: .red, titleColor: .red) }
+                        Button(role: .destructive) { cloud.signOut() } label: { TileLabel("退出登录", symbol: "rectangle.portrait.and.arrow.right", color: .danger, titleColor: .danger) }
                     }
                 } footer: {
                     Text("退出登录只影响在 App 里看照片、文件，自动备份照常跑。")
                 }
+                .listRowBackground(Palette.card)
                 Section {
                     LabeledContent("版本", value: Self.version)
                 }
+                .listRowBackground(Palette.card)
             }
+            .scrollContentBackground(.hidden)
+            .background(Palette.bg)
             .navigationTitle("我的")
             .refreshable { await Task { await load() }.value }
             .task { await load() }
@@ -64,53 +70,72 @@ struct MeView: View {
         return "\(short)（构建 \(build)）"
     }()
 
-    // 白云 +「云盘存储」，大字总量，彩色条，下面三栏：数量大字、大小小字
+    // 白云 +「云盘存储」，大字总量，分段存储条，下面每类一栏：数量大字、大小小字
     private var storage: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("云盘存储", systemImage: "cloud.fill")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
                     .labelStyle(CloudLabelStyle())
                 Spacer()
                 Text("不限容量")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .overlay(Capsule().stroke(Color.secondary.opacity(0.4), lineWidth: 0.5))
+                    .font(.caption2.weight(.semibold)).foregroundStyle(Color.brand)
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .background(Color.brand.opacity(0.14), in: Capsule())
             }
             Text(stats.map { shortSize($0.bytes) } ?? "—")
                 .font(.system(size: 30, weight: .bold)).monospacedDigit()
             if let s = stats, s.bytes > 0 {
+                let parts = categories(s).filter { $0.bytes > 0 || $0.count > 0 }
                 GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        Rectangle().fill(Color.pink).frame(width: geo.size.width * CGFloat(s.photoBytes) / CGFloat(s.bytes))
-                        Rectangle().fill(Color.purple).frame(width: geo.size.width * CGFloat(s.videoBytes) / CGFloat(s.bytes))
-                        Rectangle().fill(Color.cyan)
+                    let gaps = CGFloat(max(0, parts.filter { $0.bytes > 0 }.count - 1)) * 2
+                    HStack(spacing: 2) {
+                        ForEach(parts.filter { $0.bytes > 0 }) { p in
+                            RoundedRectangle(cornerRadius: 2).fill(p.color)
+                                .frame(width: max(2, (geo.size.width - gaps) * CGFloat(p.bytes) / CGFloat(s.bytes)))
+                        }
                     }
                 }
-                .frame(height: 8)
+                .frame(height: 10)
                 .clipShape(Capsule())
-                HStack(alignment: .top, spacing: 8) {
-                    legend("照片", .pink, "\(s.photos.formatted()) 张", s.photoBytes)
-                    legend("视频", .purple, "\(s.videos.formatted()) 个", s.videoBytes)
-                    legend("其他", .cyan, "\(s.others.formatted()) 个", max(0, s.bytes - s.photoBytes - s.videoBytes))
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), alignment: .leading, spacing: 10) {
+                    ForEach(parts) { p in legend(p) }
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 
-    private func legend(_ name: String, _ color: Color, _ count: String, _ bytes: Int64) -> some View {
+    private struct Category: Identifiable {
+        let name: String, color: Color, count: String, bytes: Int64
+        var id: String { name }
+    }
+
+    // 照片、视频、文档、音频、压缩包、其他；老服务器没有细分时，文档、音频、压缩包都是 0，全算在「其他」里
+    private func categories(_ s: DriveStats) -> [Category] {
+        let docs = s.documents ?? 0, audios = s.audios ?? 0, archives = s.archives ?? 0
+        let docBytes = s.documentBytes ?? 0, audioBytes = s.audioBytes ?? 0, archiveBytes = s.archiveBytes ?? 0
+        let otherBytes = max(0, s.bytes - s.photoBytes - s.videoBytes - docBytes - audioBytes - archiveBytes)
+        return [
+            Category(name: "照片", color: .filePhoto, count: "\(s.photos.formatted()) 张", bytes: s.photoBytes),
+            Category(name: "视频", color: .fileVideo, count: "\(s.videos.formatted()) 个", bytes: s.videoBytes),
+            Category(name: "文档", color: .fileDocument, count: "\(docs.formatted()) 个", bytes: docBytes),
+            Category(name: "音频", color: .fileAudio, count: "\(audios.formatted()) 个", bytes: audioBytes),
+            Category(name: "压缩包", color: .fileArchive, count: "\(archives.formatted()) 个", bytes: archiveBytes),
+            Category(name: "其他", color: .fileOther, count: "\(max(0, s.others - docs - audios - archives).formatted()) 个", bytes: otherBytes),
+        ]
+    }
+
+    private func legend(_ p: Category) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 5) {
-                Circle().fill(color).frame(width: 8, height: 8)
-                Text(name)
+                Circle().fill(p.color).frame(width: 8, height: 8)
+                Text(p.name)
             }
-            .font(.caption).foregroundStyle(.secondary)
-            Text(count).font(.subheadline.weight(.semibold)).monospacedDigit()
-            Text(shortSize(bytes)).font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+            .font(.caption).foregroundStyle(Palette.sub)
+            Text(p.count).font(.subheadline.weight(.semibold)).monospacedDigit()
+            Text(shortSize(p.bytes)).font(.caption2).foregroundStyle(Palette.sub).monospacedDigit()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // 「327.7 GB」：只留一位小数
@@ -142,7 +167,7 @@ struct SharesView: View {
                 }
                 .swipeActions {
                     Button("取消分享", role: .destructive) { Task { await remove(share) } }
-                    Button("复制") { UIPasteboard.general.string = Cloud.shared.shareURL(share) }.tint(.orange)
+                    Button("复制") { UIPasteboard.general.string = Cloud.shared.shareURL(share) }.tint(.brand)
                 }
                 .contextMenu {
                     Button("复制链接", systemImage: "doc.on.doc") { UIPasteboard.general.string = Cloud.shared.shareURL(share) }
@@ -204,7 +229,7 @@ struct TrashView: View {
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             ForEach(items) { item in
                 HStack(spacing: 12) {
-                    IconTile(symbol: FileTile.symbol(item), color: FileTile.color(item), size: 32)
+                    IconTile(symbol: FileTile.symbol(item), color: FileTile.color(item), size: 32, glyph: FileTile.glyph(item))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).lineLimit(1).truncationMode(.middle)
                         Text(item.trashedAt.map { "\($0.formatted(.relative(presentation: .named)))删除" } ?? "")

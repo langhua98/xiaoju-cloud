@@ -68,31 +68,27 @@ struct BackupView: View {
             }
             Section {
                 Toggle(isOn: Binding(get: { auto.enabled }, set: { setAutomatic($0) })) {
-                    TileLabel("自动备份", symbol: "icloud.and.arrow.up.fill", color: .blue)
+                    TileLabel("自动备份", symbol: "icloud.and.arrow.up.fill", color: .fileDocument)
                 }
                     .disabled(auth != .authorized && !auto.enabled)
                 NavigationLink {
                     BackupAlbumsView()
                 } label: {
                     LabeledContent { Text(albumCount == 0 ? "全部照片" : "全部 + \(albumCount) 个相册") } label: {
-                        TileLabel("备份哪些照片", symbol: "photo.on.rectangle.angled", color: .pink)
+                        TileLabel("备份哪些照片", symbol: "photo.on.rectangle.angled", color: .filePhoto)
                     }
                 }
-                NavigationLink { PhoneDataView() } label: { TileLabel("手机数据", symbol: "person.text.rectangle.fill", color: .indigo) }
+                NavigationLink { PhoneDataView() } label: { TileLabel("手机数据", symbol: "person.text.rectangle.fill", color: .fileVideo) }
                 NavigationLink {
                     SyncFoldersView()
                 } label: {
                     LabeledContent { Text(auto.folders.isEmpty ? "没有" : "\(auto.folders.count) 个") } label: {
-                        TileLabel("同步文件夹", symbol: "folder.fill", color: .orange)
+                        TileLabel("同步文件夹", symbol: "folder.fill", color: .fileOther)
                     }
                 }
-                NavigationLink { ChargeShortcutView() } label: { TileLabel("插上电就备份", symbol: "bolt.fill", color: .green) }
+                NavigationLink { ChargeShortcutView() } label: { TileLabel("插上电就备份", symbol: "bolt.fill", color: .fileAudio) }
                 Button { Restorer.shared.show = true } label: {
-                    HStack {
-                        TileLabel("从云盘恢复到手机", symbol: "clock.arrow.circlepath", color: .teal)
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-                    }
+                    TileLabel("从云盘恢复到手机", symbol: "clock.arrow.circlepath", color: .fileArchive, chevron: true)
                 }
             } footer: {
                 Text(switchError.isEmpty
@@ -378,7 +374,7 @@ struct TransferRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            IconTile(symbol: icon, color: icon == "video.fill" ? .purple : .pink, size: 32)
+            IconTile(symbol: icon, color: icon == "video.fill" ? .fileVideo : .filePhoto, size: 32)
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(t.name).font(.footnote).lineLimit(1).truncationMode(.middle)

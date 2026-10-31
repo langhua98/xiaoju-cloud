@@ -73,7 +73,7 @@ struct FolderView: View {
                 row(item)
                     .swipeActions {
                         Button(role: .destructive) { Task { await remove(item) } } label: { Label("删除", systemImage: "trash") }
-                        Button { sharing = item } label: { Label("分享", systemImage: "link") }.tint(.orange)
+                        Button { sharing = item } label: { Label("分享", systemImage: "link") }.tint(.brand)
                     }
                     .contextMenu {
                         Button("重命名", systemImage: "pencil") {
@@ -150,7 +150,7 @@ struct FolderView: View {
         if item.thumb != nil && !(item.isPrivate ?? false) {
             Thumb(item: item).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            IconTile(symbol: FileTile.symbol(item), color: FileTile.color(item), size: 40)
+            IconTile(symbol: FileTile.symbol(item), color: FileTile.color(item), size: 40, glyph: FileTile.glyph(item))
         }
     }
 

@@ -15,7 +15,7 @@ struct LoginView: View {
             Spacer()
             Image(systemName: "cloud.fill")
                 .font(.system(size: 64))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.brand)
             Text("小桔云盘").font(.largeTitle.bold())
             Text("登录后可以在 App 里看照片、管理文件。备份不用登录，照常在后台跑。")
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -29,7 +29,7 @@ struct LoginView: View {
                 Text(busy ? "正在登录…" : "登录").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
-            .tint(.orange)
+            .tint(.brand)
             .disabled(busy)
             Text("会打开网盘的登录页：输入令牌、刷脸，完成后自动回到 App。登录 12 小时有效。")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -122,7 +122,7 @@ struct GridGateView: View {
             HStack(spacing: 8) {
                 ForEach(0..<(challenge?.digits ?? 0), id: \.self) { i in
                     Circle()
-                        .fill(i < digits.count ? Color.orange : Color.secondary.opacity(0.3))
+                        .fill(i < digits.count ? Color.brand : Color.secondary.opacity(0.3))
                         .frame(width: 12, height: 12)
                 }
             }

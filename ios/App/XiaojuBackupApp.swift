@@ -39,7 +39,7 @@ struct RootView: View {
             MeView()
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
         }
-        .tint(.orange)
+        .tint(.brand)
         .sheet(item: $cloud.gridPrompt) { _ in GridGateView() }
     }
 
