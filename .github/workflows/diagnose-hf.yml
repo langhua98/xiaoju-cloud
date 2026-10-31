@@ -10,6 +10,10 @@ on:
         type: choice
         options: [report, none, apply]
         default: report
+      grep:
+        description: "另外打印日志里含这个文字的所有行（比如文件名），不填不打印"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -22,6 +26,7 @@ jobs:
       - name: Query service and logs
         env:
           RECONCILE: ${{ inputs.reconcile }}
+          GREP: ${{ inputs.grep }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
           XIAOJU_ADMIN_TOKEN: ${{ secrets.XIAOJU_ADMIN_TOKEN }}
@@ -93,5 +98,10 @@ jobs:
               print(t, "stored", stored[t], "chunks", chunks[t], "flood", dict(flood[t]), longest.get(t, ""))
           PY
           echo "::endgroup::"
+          if [ -n "$GREP" ]; then
+            echo "::group::log lines containing: $GREP"
+            grep -F -- "$GREP" run.log | tail -200 || true
+            echo "::endgroup::"
+          fi
           echo "telegram flood waits in these logs: $(grep -c "telegram flood wait" run.log || true)" \
             "(last: $(grep "telegram flood wait" run.log | tail -1 | sed -n 's/^time=\([^ ]*\).*/\1/p'))"
