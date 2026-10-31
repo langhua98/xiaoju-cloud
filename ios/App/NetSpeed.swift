@@ -131,13 +131,17 @@ private struct SpeedTile: View {
                     .background((active ? color : Palette.sub).opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .opacity(active ? 1 : 0.6)
                     .animation(.easeInOut(duration: 0.4), value: active)
-                Text(title).font(.footnote.weight(.semibold))
+                Text(title).font(.footnote.weight(.semibold)).fixedSize()
                 Spacer(minLength: 4)
                 if let badge {
-                    Label(badge, systemImage: "icloud")
-                        .font(.caption2).foregroundStyle(Palette.sub)
-                        .lineLimit(1).minimumScaleFactor(0.8)
-                        .transition(.opacity)
+                    // 两行：上面云朵，下面字，字不截断
+                    VStack(spacing: 1) {
+                        Image(systemName: "icloud").font(.system(size: 18, weight: .medium))
+                        Text(badge).font(.system(size: 10))
+                    }
+                    .foregroundStyle(Palette.sub)
+                    .fixedSize()
+                    .transition(.opacity)
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: badge)
