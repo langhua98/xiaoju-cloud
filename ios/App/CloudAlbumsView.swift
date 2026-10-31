@@ -92,7 +92,7 @@ struct CloudAlbumsView: View {
             hidden = root.filter { $0.isFolder && ($0.name == "隐藏相册" || ($0.isPrivate ?? false)) }
             error = ""
         } catch {
-            self.error = error.localizedDescription
+            if !error.isCancellation { self.error = error.localizedDescription }
         }
     }
 }
