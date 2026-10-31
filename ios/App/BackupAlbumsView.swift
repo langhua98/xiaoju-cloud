@@ -51,7 +51,7 @@ struct BackupAlbumsView: View {
             }
         }
         .navigationTitle("备份哪些照片")
-        .refreshable { await load() }
+        .refreshable { await Task { await load() }.value }
         .task { await load() }
     }
 
