@@ -45,7 +45,7 @@ enum Palette {
 }
 
 // 「备份」页的网速小卡片：左边上传、右边下载，各一个大数字和最近 30 秒的小柱状图；
-// 右上角是打开 App 以来一共传了（下了）多少，柱状图下面一行是最近 30 秒的峰值
+// 柱状图下面一行：左边是打开 App 以来一共传了（下了）多少，右边是最近 30 秒的峰值
 struct SpeedView: View {
     @State private var ups: [Double] = [] // 最近 30 秒每秒的速度，最新的在最后
     @State private var downs: [Double] = []
@@ -104,34 +104,27 @@ private struct SpeedTile: View {
         let speed = SpeedView.text(current)
         let peak = history.max() ?? 0
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                HStack(spacing: 5) {
-                    Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
-                    Text(title).font(.caption).foregroundStyle(Palette.sub)
-                }
-                Spacer(minLength: 4)
-                meta(done, total > 0 ? SpeedView.size(total) : nil)
-            }
+            // 第一行：箭头 + 当前网速，右边小字「上传」「下载」
             HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
                 Text(speed.number).font(.title3.bold()).monospacedDigit()
                     .contentTransition(.numericText())
                     .animation(.default, value: speed.number)
                 Text(speed.unit).font(.caption2).foregroundStyle(Palette.sub)
+                Spacer(minLength: 4)
+                Text(title).font(.caption2).foregroundStyle(Palette.sub)
             }
             Bars(values: history, color: color).frame(height: 20)
-            // 峰值单独一行放在柱状图下面，数字再大也不会挤到别的字；最近 30 秒都没动：空闲
-            Divider().overlay(Palette.track)
-            HStack {
-                Text("峰值")
+            // 最后一行：左边一共传了多少，右边最近 30 秒峰值（都没动：空闲）
+            HStack(spacing: 4) {
+                meta(done, total > 0 ? SpeedView.size(total) : "0 KB")
                 Spacer(minLength: 4)
                 if peak > 0 {
-                    Text(SpeedView.text(peak).number + " " + SpeedView.text(peak).unit)
-                        .fontWeight(.semibold).foregroundStyle(.primary)
+                    meta("峰值", SpeedView.text(peak).number + " " + SpeedView.text(peak).unit)
                 } else {
-                    Text("空闲")
+                    meta("空闲", nil)
                 }
             }
-            .font(.caption2).monospacedDigit().foregroundStyle(Palette.sub).lineLimit(1)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
