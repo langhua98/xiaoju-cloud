@@ -73,5 +73,25 @@ jobs:
           grep -E "heartbeat|preflight" run.log | tail -50 || true
           grep "ingest receiving" run.log | grep -v "XiaojuBackup/1 CFNetwork" | tail -20 || true
           echo "::endgroup::"
+          echo "::group::per minute: flood waits (method, longest wait) / files stored / big-file chunks"
+          grep "telegram flood wait" run.log | tail -3 || true
+          python3 - run.log <<'PY'
+          import re, sys, collections
+          flood = collections.defaultdict(collections.Counter); longest = {}; stored = collections.Counter(); chunks = collections.Counter()
+          for line in open(sys.argv[1], errors="replace"):
+              m = re.search(r"time=\S+T(\d\d:\d\d)", line)
+              if not m: continue
+              t = m.group(1)
+              if "telegram flood wait" in line:
+                  meth = re.search(r"method=(\S+)", line); w = re.search(r"wait=(\S+)", line)
+                  rest = re.sub(r"^.*?give_up=\S+", "", line).strip()
+                  flood[t][(meth.group(1) if meth else "?") + (" " + rest if rest else "")] += 1
+                  if w: longest[t] = max(longest.get(t, ""), w.group(1), key=len)
+              elif "msg=ingested" in line: stored[t] += 1
+              elif "resumable upload received" in line: chunks[t] += 1
+          for t in sorted(set(flood) | set(stored) | set(chunks)):
+              print(t, "stored", stored[t], "chunks", chunks[t], "flood", dict(flood[t]), longest.get(t, ""))
+          PY
+          echo "::endgroup::"
           echo "telegram flood waits in these logs: $(grep -c "telegram flood wait" run.log || true)" \
             "(last: $(grep "telegram flood wait" run.log | tail -1 | sed -n 's/^time=\([^ ]*\).*/\1/p'))"

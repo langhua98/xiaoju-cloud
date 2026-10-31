@@ -113,9 +113,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     // App 自己的连接：App 在前台，或者「继续在后台运行」撑着 App 时用。系统的后台上传由系统排时间、限速，
     // 就算 App 开着也常常一个文件传几十秒、传一半停住；自己的连接快得多。
-    // App 切到后台又没人撑着时，正在传的交给系统的后台上传接着传（见 handOff）。
+    // App 切到后台又没人撑着时，正在传的交给系统的后台上传接着传（见 move）。
     private var direct: URLSession!
-    private var handingOff: Set<Int> = [] // 交给后台上传时取消掉的任务：它们的完成回调不算失败
+    // 换连接时取消掉的任务（按原来所在的连接分开记）：它们的完成回调不算失败
+    private var handingOff: Set<Int> = [] // 自己的连接 → 系统的后台上传
+    private var reclaiming: Set<Int> = [] // 系统的后台上传 → 自己的连接
     private var appActive = false
     private var continued: BGContinuedProcessingTask?
     // 「继续在后台运行」的进度：扫过的照片数 + 交出去、传出去的 MB 数
@@ -178,28 +180,35 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 return self.resumeWhenActive
             }
             if again && self.enabled { self.restartWhenStopped() }
+            self.move(from: self.session, to: self.direct)
         }
         center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: nil) { _ in
             self.lock.withLock { self.appActive = false }
         }
         center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { _ in
-            if self.lock.withLock({ self.continued == nil }) { self.handOff() }
+            if self.lock.withLock({ self.continued == nil }) { self.move(from: self.direct, to: self.session) }
         }
     }
 
-    // 自己连接上正在传的交给系统的后台上传：照片用同一个请求重传；大文件问服务端还缺哪些，从那里接着传。
-    // 切到后台后系统只给几秒，先申请一点时间做完。
-    private func handOff() {
+    // 正在传的换一个连接接着传：照片用同一个请求重传；大文件问服务端还缺哪些，从那里接着传。
+    // 切到后台：自己的连接 → 系统的后台上传（系统只给几秒，先申请一点时间做完）。
+    // 回到 App：系统的后台上传 → 自己的连接。交给系统的那些系统常常压着不传（App 在前台也一样），
+    // 以前回到 App 后新的照片要等它们（同时最多 10 个），一直 0 KB/s，看着像备份停了。
+    private func move(from: URLSession, to: URLSession) {
         let app = UIApplication.shared
         var grant = UIBackgroundTaskIdentifier.invalid
         grant = app.beginBackgroundTask(withName: "xiaoju.handoff") { app.endBackgroundTask(grant) }
         Task.detached { [self] in
             defer { DispatchQueue.main.async { app.endBackgroundTask(grant) } }
             var big: Set<String> = []
-            for task in await direct.allTasks where task.state == .running || task.state == .suspended {
+            for task in await from.allTasks where task.state == .running || task.state == .suspended {
                 let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
                 lock.withLock {
-                    handingOff.insert(task.taskIdentifier)
+                    if from === direct {
+                        handingOff.insert(task.taskIdentifier)
+                    } else {
+                        reclaiming.insert(task.taskIdentifier)
+                    }
                     laneSent[task.taskIdentifier] = nil
                     if parts.count == 5, let start = Int64(parts[4]) { laneBusy[parts[1]]?.removeValue(forKey: start) }
                 }
@@ -208,7 +217,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                     big.insert(parts[1])
                     if parts[2] != loadJobs()[parts[1]]?.file { try? FileManager.default.removeItem(atPath: parts[2]) }
                 } else if parts.count == 2, let req = task.originalRequest {
-                    let again = session.uploadTask(with: req, fromFile: URL(fileURLWithPath: parts[1]))
+                    let again = to.uploadTask(with: req, fromFile: URL(fileURLWithPath: parts[1]))
                     again.taskDescription = task.taskDescription
                     again.resume()
                 }
@@ -256,7 +265,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             finishContinued(success: false)
             if inBackground {
                 stop()
-                handOff()
+                move(from: direct, to: session)
             }
         }
         reportContinued(force: true)
@@ -754,12 +763,14 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     {
         guard let base = URL(string: server) else { throw URLError(.badURL) }
         if size > 0 {
-            var ask = URLRequest(url: base.appendingPathComponent("api/ingest/exists"))
+            // 只是省流量的预先一问：20 秒没回就直接传（服务端收的时候也按名字 + 大小跳过）。
+            // 以前一直等着，问不通就记成失败，那一阵子什么都不传
+            var ask = URLRequest(url: base.appendingPathComponent("api/ingest/exists"), timeoutInterval: 20)
             ask.setValue(encodedName(name), forHTTPHeaderField: "X-File-Name")
             for (k, v) in extra { ask.setValue(v, forHTTPHeaderField: k) }
             ask.setValue(String(size), forHTTPHeaderField: "X-File-Size")
-            let (data, _) = try await URLSession.shared.data(for: ask)
-            if (try? JSONDecoder().decode([String: String].self, from: data))?["result"] == "exists" {
+            if let reply = try? await URLSession.shared.data(for: ask),
+               (try? JSONDecoder().decode([String: String].self, from: reply.0))?["result"] == "exists" {
                 markDone(key)
                 count { $0.skipped += 1 }
                 return
@@ -784,7 +795,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             if try await startBig(job) { count { $0.uploaded += 1 } } else { count { $0.skipped += 1 } }
             return
         }
-        while await allTasks().count >= 10 {
+        // 只数照片、小视频：大视频的分段不算在里面，以前三个大视频一起传时占满这 10 个，照片就一直等着
+        while await smallTasks() >= 10 {
             if Task.isCancelled { return }
             reportContinued()
             try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -810,9 +822,10 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let reply = lock.withLock { replies.removeValue(forKey: task.taskIdentifier) } ?? Data()
-        if session === direct, lock.withLock({ handingOff.remove(task.taskIdentifier) != nil }) {
-            return // 已经交给后台上传接着传了
+        let moved = lock.withLock {
+            session === direct ? handingOff.remove(task.taskIdentifier) != nil : reclaiming.remove(task.taskIdentifier) != nil
         }
+        if moved { return } // 已经换了个连接接着传了
         if task.taskDescription?.hasPrefix("chunk\t") == true {
             chunkDone(task, reply: reply, error: error)
             return
@@ -980,6 +993,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             jobs[key] = job
             if let data = try? JSONEncoder().encode(jobs) { try? data.write(to: jobsFile, options: .atomic) }
         }
+    }
+
+    // 在传的照片、小视频有几个
+    private func smallTasks() async -> Int {
+        await allTasks().filter { $0.taskDescription?.hasPrefix("chunk\t") != true }.count
     }
 
     // 在后台传的大文件有几个（分段同时传时一个文件有好几个任务）
