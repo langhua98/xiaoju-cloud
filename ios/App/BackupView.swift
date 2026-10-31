@@ -103,8 +103,10 @@ struct BackupView: View {
             }
         }
         .refreshable {
-            await AutoBackup.shared.reconcileAll()
-            await refresh()
+            await Task {
+                await AutoBackup.shared.reconcileAll()
+                await refresh()
+            }.value
         }
         .onAppear { albumCount = (UserDefaults.standard.stringArray(forKey: AutoBackup.selectedAlbums) ?? []).count }
         // 先用本地记下的马上算出三个数，再在后台和云盘比对（以前用快捷指令、网页传过的也算进「已备份」），

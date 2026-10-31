@@ -105,7 +105,7 @@ struct FolderView: View {
             }
             if folder == nil { BackupRing() }
         }
-        .refreshable { await load() }
+        .refreshable { await Task { await load() }.value }
         .task { await load() }
         .navigationDestination(item: $opened) { FolderView(folder: $0) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
