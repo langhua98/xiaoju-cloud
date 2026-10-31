@@ -21,29 +21,37 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
 
     required init() {}
 
+    // 每一步单独处理：一步出错（比如某个任务确认不了）记下来、接着做后面的，不再整个返回 .failure。
+    // 返回 .failure 时系统会弹「备份失败」的通知，而这类错误下次被叫醒时多半就好了。
     func process() -> PHBackgroundResourceUploadProcessingResult {
-        let result: PHBackgroundResourceUploadProcessingResult
-        var note = ""
-        do {
-            try retryFailedJobs()
-            try acknowledgeFinishedJobs()
-            try collectNewAssets()
-            note = "pending=\(defaults.stringArray(forKey: Self.pendingKey)?.count ?? 0)"
-            let more = try createJobs()
-            result = more ? .processing : .completed
-        } catch PHPhotosError.limitExceeded {
-            note = "limitExceeded"
-            result = .processing // 任务数到上限：等已建的传完再来
-        } catch PHPhotosError.persistentChangeTokenExpired {
-            log.error("change token expired, starting over from now")
-            defaults.removeObject(forKey: Self.tokenKey)
-            note = "tokenExpired"
-            result = .processing
-        } catch {
-            log.error("processJobs failed: \(error.localizedDescription, privacy: .public)")
-            note = "error: \(error)"
-            result = .failure
+        var errors: [String] = []
+        var limited = false
+        func step(_ name: String, _ body: () throws -> Void) {
+            do {
+                try body()
+            } catch PHPhotosError.limitExceeded {
+                limited = true // 任务数到上限：等已建的传完再来
+            } catch PHPhotosError.persistentChangeTokenExpired {
+                log.error("change token expired, starting over from now")
+                defaults.removeObject(forKey: Self.tokenKey)
+                errors.append("\(name): tokenExpired")
+            } catch {
+                log.error("\(name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                errors.append("\(name): \(error)")
+            }
         }
+        var more = false
+        step("retry") { errors += retryFailedJobs() }
+        step("acknowledge") { errors += acknowledgeFinishedJobs() }
+        step("collect") { try collectNewAssets() }
+        step("create") { more = try createJobs() }
+        let pending = defaults.stringArray(forKey: Self.pendingKey)?.count ?? 0
+        // 还有没建完的、或者出过错（下次再试）：告诉系统还要再叫醒；否则就是做完了
+        let result: PHBackgroundResourceUploadProcessingResult = more || limited || !errors.isEmpty && pending > 0
+            ? .processing : .completed
+        var note = "pending=\(pending)"
+        if limited { note += " limitExceeded" }
+        if !errors.isEmpty { note += " errors: " + errors.joined(separator: "; ") }
         heartbeat("\(note) result=\(String(describing: result))")
         return result
     }
@@ -68,7 +76,8 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private var isCancelled: Bool { lock.withLock { cancelled } }
 
     // 失败的任务：网络断了、超时这类重试；服务端拒绝（4xx）的确认掉，不再传。
-    private func retryFailedJobs() throws {
+    private func retryFailedJobs() -> [String] {
+        var errors: [String] = []
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(action: .retry, options: nil)
         for i in 0..<jobs.count {
@@ -80,29 +89,44 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 permanent = false
             }
             log.info("job failed: \(String(describing: job.error), privacy: .public) permanent=\(permanent)")
-            try library.performChangesAndWait {
-                guard let req = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
-                if permanent {
-                    req.acknowledge()
-                } else {
-                    req.retry(destination: nil)
+            do {
+                try library.performChangesAndWait {
+                    guard let req = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                    if permanent {
+                        req.acknowledge()
+                    } else {
+                        req.retry(destination: nil)
+                    }
                 }
+            } catch {
+                errors.append("retry \(Self.name(of: job)): \(error)")
             }
         }
+        return errors
     }
 
     // 传完（成功或失败）的任务要确认掉，才能腾出位置建新任务。
-    private func acknowledgeFinishedJobs() throws {
+    private func acknowledgeFinishedJobs() -> [String] {
+        var errors: [String] = []
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(action: .acknowledge, options: nil)
         for i in 0..<jobs.count {
             let job = jobs.object(at: i)
-            let name = (job.resource as PHAssetResource?)?.originalFilename ?? "?"
+            let name = Self.name(of: job)
             log.info("job done: \(name, privacy: .public) state=\(String(describing: job.state), privacy: .public)")
-            try library.performChangesAndWait {
-                PHAssetResourceUploadJobChangeRequest(for: job)?.acknowledge()
+            do {
+                try library.performChangesAndWait {
+                    PHAssetResourceUploadJobChangeRequest(for: job)?.acknowledge()
+                }
+            } catch {
+                errors.append("acknowledge \(name): \(error)")
             }
         }
+        return errors
+    }
+
+    private static func name(of job: PHAssetResourceUploadJob) -> String {
+        (job.resource as PHAssetResource?)?.originalFilename ?? "?"
     }
 
     // 按变更令牌找新加进相册的照片，放进待传列表。
