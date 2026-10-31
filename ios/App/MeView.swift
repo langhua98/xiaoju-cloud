@@ -48,7 +48,7 @@ struct MeView: View {
                 }
             }
             .navigationTitle("我的")
-            .refreshable { await load() }
+            .refreshable { await Task { await load() }.value }
             .task { await load() }
             .sheet(isPresented: $showWeb) {
                 if let url = cloud.webURL { SafariView(url: url) { showWeb = false }.ignoresSafeArea() }
@@ -121,7 +121,7 @@ struct SharesView: View {
             }
         }
         .navigationTitle("分享的链接")
-        .refreshable { await load() }
+        .refreshable { await Task { await load() }.value }
         .task { await load() }
     }
 
@@ -190,7 +190,7 @@ struct TrashView: View {
             }
         }
         .navigationTitle("回收站")
-        .refreshable { await load() }
+        .refreshable { await Task { await load() }.value }
         .task { await load() }
         .confirmationDialog("永久删除「\(purging?.name ?? "")」？", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
                             titleVisibility: .visible) {
@@ -265,7 +265,7 @@ struct DuplicatesView: View {
         }
         .navigationTitle("重复文件")
         .overlay { if loading { ProgressView() } }
-        .refreshable { await load() }
+        .refreshable { await Task { await load() }.value }
         .task { await load() }
     }
 

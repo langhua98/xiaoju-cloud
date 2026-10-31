@@ -33,6 +33,8 @@ struct PhotosView: View {
             }
             items = try await cloud.children(of: album.id).filter(\.isMedia)
             error = ""
+        } catch is CancellationError {
+        } catch let e as URLError where e.code == .cancelled {
         } catch {
             self.error = error.localizedDescription
         }
@@ -90,9 +92,10 @@ struct MediaGallery: View {
             }
             .padding(.bottom, selecting ? 80 : 0)
         }
+        // 下拉刷新的任务会在界面刷新时被系统取消，正在进行的请求跟着报「cancelled」；放到单独的任务里跑完
         .refreshable {
             removed = []
-            await reload()
+            await Task { await reload() }.value
         }
         .simultaneousGesture(
             MagnifyGesture()

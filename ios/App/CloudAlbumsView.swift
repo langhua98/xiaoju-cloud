@@ -36,7 +36,7 @@ struct CloudAlbumsView: View {
             }
             .navigationTitle("相簿")
             .toolbar { BackupRing() }
-            .refreshable { await load() }
+            .refreshable { await Task { await load() }.value }
             .task { if albums.isEmpty { await load() } }
             .navigationDestination(item: $opened) { AlbumDetailView(album: $0) }
         }
