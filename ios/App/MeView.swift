@@ -83,17 +83,17 @@ struct MeView: View {
             if let s = stats, s.bytes > 0 {
                 GeometryReader { geo in
                     HStack(spacing: 0) {
-                        Rectangle().fill(Color.orange).frame(width: geo.size.width * CGFloat(s.photoBytes) / CGFloat(s.bytes))
-                        Rectangle().fill(Color.blue).frame(width: geo.size.width * CGFloat(s.videoBytes) / CGFloat(s.bytes))
-                        Rectangle().fill(Color.green)
+                        Rectangle().fill(Color.pink).frame(width: geo.size.width * CGFloat(s.photoBytes) / CGFloat(s.bytes))
+                        Rectangle().fill(Color.purple).frame(width: geo.size.width * CGFloat(s.videoBytes) / CGFloat(s.bytes))
+                        Rectangle().fill(Color.cyan)
                     }
                 }
                 .frame(height: 8)
                 .clipShape(Capsule())
                 HStack(alignment: .top, spacing: 8) {
-                    legend("照片", .orange, "\(s.photos.formatted()) 张", s.photoBytes)
-                    legend("视频", .blue, "\(s.videos.formatted()) 个", s.videoBytes)
-                    legend("其他", .green, "\(s.others.formatted()) 个", max(0, s.bytes - s.photoBytes - s.videoBytes))
+                    legend("照片", .pink, "\(s.photos.formatted()) 张", s.photoBytes)
+                    legend("视频", .purple, "\(s.videos.formatted()) 个", s.videoBytes)
+                    legend("其他", .cyan, "\(s.others.formatted()) 个", max(0, s.bytes - s.photoBytes - s.videoBytes))
                 }
             }
         }
