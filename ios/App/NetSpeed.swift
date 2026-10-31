@@ -44,15 +44,17 @@ enum Palette {
     }
 }
 
-// 「备份」页的网速小卡片：左边上传、右边下载，各一个大数字和最近 30 秒的小柱状图
+// 「备份」页的网速小卡片：左边上传、右边下载，各一个大数字和最近 30 秒的小柱状图；
+// 右边两行小字是打开 App 以来一共传了（下了）多少、最近 30 秒的峰值
 struct SpeedView: View {
     @State private var ups: [Double] = [] // 最近 30 秒每秒的速度，最新的在最后
     @State private var downs: [Double] = []
+    @State private var totals = NetMeter.shared.totals
 
     var body: some View {
         HStack(spacing: 10) {
-            SpeedTile(title: "上传", icon: "arrow.up", color: Palette.up, history: ups)
-            SpeedTile(title: "下载", icon: "arrow.down", color: Palette.down, history: downs)
+            SpeedTile(title: "上传", done: "已传", icon: "arrow.up", color: Palette.up, history: ups, total: totals.up)
+            SpeedTile(title: "下载", done: "已下", icon: "arrow.down", color: Palette.down, history: downs, total: totals.down)
         }
         .task {
             var last = NetMeter.shared.totals
@@ -63,7 +65,7 @@ struct SpeedView: View {
                 let seconds = max(time.timeIntervalSince(lastTime), 0.1)
                 ups = Array((ups + [Double(now.up - last.up) / seconds]).suffix(30))
                 downs = Array((downs + [Double(now.down - last.down) / seconds]).suffix(30))
-                (last, lastTime) = (now, time)
+                (last, lastTime, totals) = (now, time, now)
             }
         }
     }
@@ -74,13 +76,23 @@ struct SpeedView: View {
         if kb < 1000 { return ("\(Int(kb.rounded()))", "KB/s") }
         return (String(format: "%.1f", kb / 1024), "MB/s")
     }
+
+    // 字节数 → 「850 KB」「340 MB」「1.24 GB」
+    static func size(_ bytes: Int64) -> String {
+        let mb = Double(bytes) / 1_048_576
+        if mb < 1 { return "\(bytes >> 10) KB" }
+        if mb < 1024 { return "\(Int(mb.rounded())) MB" }
+        return String(format: "%.2f GB", mb / 1024)
+    }
 }
 
 private struct SpeedTile: View {
     let title: String
+    let done: String // 「已传」「已下」
     let icon: String
     let color: Color
     let history: [Double]
+    let total: Int64
 
     // 显示最近 3 秒的平均（一个文件传完、下一个还没开始时不会一下跳到 0）
     private var current: Double {
@@ -90,16 +102,24 @@ private struct SpeedTile: View {
 
     var body: some View {
         let speed = SpeedView.text(current)
+        let peak = history.max() ?? 0
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
-                Text(title).font(.caption).foregroundStyle(Palette.sub)
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 5) {
+                    Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
+                    Text(title).font(.caption).foregroundStyle(Palette.sub)
+                }
+                Spacer(minLength: 4)
+                meta(done, total > 0 ? SpeedView.size(total) : nil)
             }
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(speed.number).font(.title3.bold()).monospacedDigit()
                     .contentTransition(.numericText())
                     .animation(.default, value: speed.number)
                 Text(speed.unit).font(.caption2).foregroundStyle(Palette.sub)
+                Spacer(minLength: 4)
+                // 最近 30 秒都没动：空闲
+                meta(peak > 0 ? "峰值" : "空闲", peak > 0 ? SpeedView.text(peak).number + " " + SpeedView.text(peak).unit : nil)
             }
             Bars(values: history, color: color).frame(height: 20)
         }
@@ -108,6 +128,15 @@ private struct SpeedTile: View {
         .background(Palette.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title) \(speed.number) \(speed.unit)")
+    }
+
+    // 右边一行小灰字，数字加粗
+    private func meta(_ label: String, _ value: String?) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+            if let value { Text(value).fontWeight(.semibold).foregroundStyle(.primary) }
+        }
+        .font(.caption2).monospacedDigit().foregroundStyle(Palette.sub).lineLimit(1)
     }
 }
 
