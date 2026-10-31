@@ -33,10 +33,8 @@ struct PhotosView: View {
             }
             items = try await cloud.children(of: album.id).filter(\.isMedia)
             error = ""
-        } catch is CancellationError {
-        } catch let e as URLError where e.code == .cancelled {
         } catch {
-            self.error = error.localizedDescription
+            if !error.isCancellation { self.error = error.localizedDescription }
         }
     }
 }
@@ -415,7 +413,7 @@ struct MediaPage: View {
                     p.play()
                 }
             } catch {
-                self.error = error.localizedDescription
+                if !error.isCancellation { self.error = error.localizedDescription }
             }
         }
     }

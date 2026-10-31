@@ -142,7 +142,7 @@ struct SharesView: View {
             shares = try await Cloud.shared.get("/api/shares", as: ShareList.self).items
             error = ""
         } catch {
-            self.error = error.localizedDescription
+            if !error.isCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -205,7 +205,7 @@ struct TrashView: View {
             items = try await Cloud.shared.get("/api/trash", as: ItemList.self).items
             error = ""
         } catch {
-            self.error = error.localizedDescription
+            if !error.isCancellation { self.error = error.localizedDescription }
         }
     }
 
@@ -277,7 +277,7 @@ struct DuplicatesView: View {
             removed = []
             error = ""
         } catch {
-            self.error = error.localizedDescription
+            if !error.isCancellation { self.error = error.localizedDescription }
         }
     }
 

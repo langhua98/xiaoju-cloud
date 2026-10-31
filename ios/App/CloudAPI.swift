@@ -192,6 +192,13 @@ struct ItemList: Decodable {
     let items: [CloudItem]
 }
 
+extension Error {
+    // 被取消的请求（切走页面、下拉刷新时界面更新，系统取消了加载任务）：不是出错，不用显示
+    var isCancellation: Bool {
+        self is CancellationError || (self as? URLError)?.code == .cancelled
+    }
+}
+
 struct CloudItem: Decodable, Identifiable, Hashable {
     let id: String
     let parentID: String?
