@@ -113,9 +113,12 @@ private struct SpeedTile: View {
         VStack(alignment: .leading, spacing: 6) {
             // 第一行：加大的箭头（带淡色底）+「上传」「下载」
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.footnote.weight(.bold)).foregroundStyle(color)
+                // 没在传时只把箭头调暗（变灰），卡片本身不变
+                Image(systemName: icon).font(.footnote.weight(.bold)).foregroundStyle(active ? color : Palette.sub)
                     .frame(width: 24, height: 24)
-                    .background(color.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .background((active ? color : Palette.sub).opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .opacity(active ? 1 : 0.6)
+                    .animation(.easeInOut(duration: 0.4), value: active)
                 Text(title).font(.footnote.weight(.semibold))
             }
             // 第二行：当前网速；没在传时是灰色的「—」
@@ -138,9 +141,6 @@ private struct SpeedTile: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        // 没在传的那张整张调暗，眼睛自然看在动的那张
-        .opacity(active ? 1 : 0.5)
-        .animation(.easeInOut(duration: 0.4), value: active)
         .onChange(of: history) {
             let target = max(history.max() ?? 0, 1)
             scale = scale == 0 ? target : scale + (target - scale) * 0.35
