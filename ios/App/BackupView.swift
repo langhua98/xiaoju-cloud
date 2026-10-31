@@ -47,7 +47,7 @@ struct BackupView: View {
                 .listRowBackground(Palette.card)
             }
             if !auto.transfers.isEmpty {
-                Section("正在上传") {
+                Section("正在上传 · \(auto.transfers.count) 个") {
                     ForEach(auto.transfers.prefix(5)) { t in TransferRow(t: t) }
                     if auto.transfers.count > 5 {
                         Text("还有 \(auto.transfers.count - 5) 个").font(.footnote).foregroundStyle(Palette.sub)
