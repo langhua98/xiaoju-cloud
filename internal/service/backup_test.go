@@ -291,6 +291,7 @@ func TestDriveStatsIntegration(t *testing.T) {
 	want := meta.DriveStats{
 		Folders: 1, Files: 5, Photos: 2, Videos: 1, Others: 2,
 		Bytes: 1500 + 300 + 2000 + 10, PhotoBytes: 1800, VideoBytes: 2000, BackedUpFiles: 3,
+		Documents: 1, DocumentBytes: 10, // notes.txt；empty.bin 是真正的其他
 	}
 	if st != want {
 		t.Fatalf("stats = %+v\nwant    %+v", st, want)

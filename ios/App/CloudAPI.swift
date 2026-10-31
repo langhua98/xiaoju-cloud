@@ -283,11 +283,21 @@ struct DriveStats: Decodable {
     let bytes: Int64
     let photoBytes: Int64
     let videoBytes: Int64
+    // 「其他」再细分；老服务器没有这几项
+    let documents: Int?
+    let audios: Int?
+    let archives: Int?
+    let documentBytes: Int64?
+    let audioBytes: Int64?
+    let archiveBytes: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case files, photos, videos, others, bytes
+        case files, photos, videos, others, bytes, documents, audios, archives
         case photoBytes = "photo_bytes"
         case videoBytes = "video_bytes"
+        case documentBytes = "document_bytes"
+        case audioBytes = "audio_bytes"
+        case archiveBytes = "archive_bytes"
     }
 }
 

@@ -30,15 +30,15 @@ final class NetMeter {
     var totals: (up: Int64, down: Int64) { lock.withLock { (up, down) } }
 }
 
-// 「备份」页的配色：只有一个主色（橙），其余是略带暖色的灰；上传绿、下载红只用在箭头和小曲线上，
+// 「备份」「我的」页的配色（「云上小橘」配色规范）：品牌鲜橙 #FF7900，其余是石板灰；上传绿、下载红只用在箭头和小曲线上，
 // 备份完成时圆环变绿。深色、浅色各一套，跟着手机的设置走
 enum Palette {
-    static let bg = dynamic(dark: 0x0F0E0D, light: 0xF5F2EE)
-    static let card = dynamic(dark: 0x1B1917, light: 0xFFFFFF)
-    static let well = dynamic(dark: 0x262320, light: 0xF1ECE6) // 卡片里再垫一层的底板（三个数）
-    static let sub = dynamic(dark: 0x978D82, light: 0x8A7F73)
-    static let track = dynamic(dark: 0x2C2926, light: 0xECE5DC)
-    static let accent = dynamic(dark: 0xFF9B42, light: 0xF07E17)
+    static let bg = dynamic(dark: 0x111318, light: 0xFFFFFF)
+    static let card = dynamic(dark: 0x1B1F27, light: 0xF8FAFC)
+    static let well = dynamic(dark: 0x262B35, light: 0xEEF2F6) // 卡片里再垫一层的底板（三个数）
+    static let sub = dynamic(dark: 0x94A3B8, light: 0x64748B)
+    static let track = dynamic(dark: 0x262B35, light: 0xE2E8F0)
+    static let accent = dynamic(dark: 0xFF7900, light: 0xFF7900)
     static let up = dynamic(dark: 0x4CC38A, light: 0x1F9D63)
     static let down = dynamic(dark: 0xF07A6A, light: 0xD9533F)
 

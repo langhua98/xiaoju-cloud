@@ -210,21 +210,31 @@ func (s *Store) ListPartsMissingBackup(ctx context.Context, limit int) ([]Part, 
 
 // DriveStats 是整个网盘的文件统计，不含回收站里的条目及被移入回收站的文件夹里的内容。
 type DriveStats struct {
-	Folders       int64 `json:"folders"`
-	Files         int64 `json:"files"`
-	Photos        int64 `json:"photos"`
-	Videos        int64 `json:"videos"`
-	Others        int64 `json:"others"`
-	Bytes         int64 `json:"bytes"`
-	PhotoBytes    int64 `json:"photo_bytes"`
-	VideoBytes    int64 `json:"video_bytes"`
+	Folders    int64 `json:"folders"`
+	Files      int64 `json:"files"`
+	Photos     int64 `json:"photos"`
+	Videos     int64 `json:"videos"`
+	Others     int64 `json:"others"`
+	Bytes      int64 `json:"bytes"`
+	PhotoBytes int64 `json:"photo_bytes"`
+	VideoBytes int64 `json:"video_bytes"`
+	// 「其他」再细分（只有整个网盘、文件夹统计会算，agent 的统计里是 0）：文档、音频、压缩包，剩下的是真正的其他
+	Documents     int64 `json:"documents"`
+	Audios        int64 `json:"audios"`
+	Archives      int64 `json:"archives"`
+	DocumentBytes int64 `json:"document_bytes"`
+	AudioBytes    int64 `json:"audio_bytes"`
+	ArchiveBytes  int64 `json:"archive_bytes"`
 	BackedUpFiles int64 `json:"backed_up_files"` // 所有分块都已备份的文件数（空文件算已备份）
 }
 
 // 按 MIME 类型识别，类型缺失或不准时（如 curl 上传、部分手机格式）再按扩展名识别
 const (
-	isPhotoSQL = `(mime LIKE 'image/%' OR name ~* '\.(jpe?g|png|gif|webp|heic|heif|bmp|avif|tiff?|dng|raw)$')`
-	isVideoSQL = `(mime LIKE 'video/%' OR name ~* '\.(mp4|mov|m4v|avi|mkv|webm|3gp|wmv|flv|mts)$')`
+	isPhotoSQL    = `(mime LIKE 'image/%' OR name ~* '\.(jpe?g|png|gif|webp|heic|heif|bmp|avif|tiff?|dng|raw)$')`
+	isVideoSQL    = `(mime LIKE 'video/%' OR name ~* '\.(mp4|mov|m4v|avi|mkv|webm|3gp|wmv|flv|mts)$')`
+	isAudioSQL    = `(mime LIKE 'audio/%' OR name ~* '\.(mp3|m4a|aac|wav|flac|ogg|opus|amr|wma|aiff?)$')`
+	isArchiveSQL  = `(name ~* '\.(zip|rar|7z|tar|gz|tgz|bz2|xz|zst)$' OR mime IN ('application/zip', 'application/x-7z-compressed', 'application/vnd.rar', 'application/x-rar-compressed', 'application/gzip', 'application/x-tar'))`
+	isDocumentSQL = `(mime LIKE 'text/%' OR mime = 'application/pdf' OR name ~* '\.(pdf|docx?|xlsx?|pptx?|txt|md|rtf|csv|pages|numbers|key|epub|odt|ods|odp)$')`
 )
 
 // FolderCounts 是一个文件夹里（连同子文件夹）的照片、视频、其他文件各有几个；Cover 是里面最新的一张照片或视频
@@ -305,6 +315,16 @@ func (s *Store) FolderStats(ctx context.Context, userID uuid.UUID, folderID *uui
 			SELECT *, type = 'file' AND `+isPhotoSQL+` AS photo,
 			          type = 'file' AND NOT `+isPhotoSQL+` AND `+isVideoSQL+` AS video
 			FROM live
+		), sub AS (
+			-- 「其他」再分：音频优先，然后压缩包，再是文档
+			SELECT *, type = 'file' AND NOT photo AND NOT video AND `+isAudioSQL+` AS audio
+			FROM kinds
+		), sub2 AS (
+			SELECT *, type = 'file' AND NOT photo AND NOT video AND NOT audio AND `+isArchiveSQL+` AS archive
+			FROM sub
+		), sub3 AS (
+			SELECT *, type = 'file' AND NOT photo AND NOT video AND NOT audio AND NOT archive AND `+isDocumentSQL+` AS document
+			FROM sub2
 		)
 		SELECT count(*) FILTER (WHERE type = 'folder'),
 		       count(*) FILTER (WHERE type = 'file'),
@@ -313,10 +333,15 @@ func (s *Store) FolderStats(ctx context.Context, userID uuid.UUID, folderID *uui
 		       COALESCE(sum(size) FILTER (WHERE type = 'file'), 0),
 		       COALESCE(sum(size) FILTER (WHERE photo), 0),
 		       COALESCE(sum(size) FILTER (WHERE video), 0),
+		       count(*) FILTER (WHERE document), count(*) FILTER (WHERE audio), count(*) FILTER (WHERE archive),
+		       COALESCE(sum(size) FILTER (WHERE document), 0),
+		       COALESCE(sum(size) FILTER (WHERE audio), 0),
+		       COALESCE(sum(size) FILTER (WHERE archive), 0),
 		       count(*) FILTER (WHERE type = 'file' AND NOT EXISTS (
-		           SELECT 1 FROM file_parts p WHERE p.file_id = kinds.id AND p.backup_message_id IS NULL))
-		FROM kinds`, userID, folderID).
-		Scan(&st.Folders, &st.Files, &st.Photos, &st.Videos, &st.Bytes, &st.PhotoBytes, &st.VideoBytes, &st.BackedUpFiles)
+		           SELECT 1 FROM file_parts p WHERE p.file_id = sub3.id AND p.backup_message_id IS NULL))
+		FROM sub3`, userID, folderID).
+		Scan(&st.Folders, &st.Files, &st.Photos, &st.Videos, &st.Bytes, &st.PhotoBytes, &st.VideoBytes,
+			&st.Documents, &st.Audios, &st.Archives, &st.DocumentBytes, &st.AudioBytes, &st.ArchiveBytes, &st.BackedUpFiles)
 	st.Others = st.Files - st.Photos - st.Videos
 	return st, err
 }

@@ -144,12 +144,12 @@ struct MediaGallery: View {
                     if selecting {
                         Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle")
                             .font(.title3)
-                            .foregroundStyle(Color.white, selected.contains(item.id) ? Color.orange : Color.black.opacity(0.3))
+                            .foregroundStyle(Color.white, selected.contains(item.id) ? Color.brand : Color.black.opacity(0.3))
                             .padding(4)
                     }
                 }
                 .overlay {
-                    if selected.contains(item.id) { Rectangle().stroke(Color.orange, lineWidth: 3) }
+                    if selected.contains(item.id) { Rectangle().stroke(Color.brand, lineWidth: 3) }
                 }
         }
         .buttonStyle(.plain)
@@ -236,7 +236,7 @@ struct Thumb: View {
                     if let image = phase.image {
                         image.resizable().scaledToFill()
                     } else if item.isFolder {
-                        Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(.orange)
+                        Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(Color.brand)
                     } else if phase.error != nil || item.thumb == nil {
                         Image(systemName: item.isVideo ? "video" : "photo").foregroundStyle(.secondary)
                     }
@@ -263,7 +263,7 @@ struct BackupRing: View {
                 Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 2.5)
                 if auto.running {
                     Circle().trim(from: 0, to: 0.7)
-                        .stroke(Color.orange, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .stroke(Color.brand, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                 } else {
                     Circle().stroke(tint, lineWidth: 2.5)
@@ -278,7 +278,7 @@ struct BackupRing: View {
 
     private var tint: Color {
         if !auto.failures.isEmpty { return .red }
-        if auto.running { return .orange }
+        if auto.running { return .brand }
         return auto.enabled ? .green : .secondary
     }
 
