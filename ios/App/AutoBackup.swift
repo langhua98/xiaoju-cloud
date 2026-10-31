@@ -15,7 +15,7 @@ import UIKit
 //   1. 系统的后台任务（BGProcessingTask，要求接着电源、有网络），一般是夜里充电时；
 //   2. 快捷指令自动化「连接充电器时」运行「备份到小桔云盘」（会打开 App，跑完自动锁屏照常）；
 //   3. App 里点「开始备份」。
-// 导出的原图交给系统的后台 URLSession 上传，App 被挂起、锁屏了也会传完；传过的记在本地，下次跳过，服务端也按名字 + 大小跳过。
+// App 开着时导出的原图由 App 自己的连接直接传（快）；切到后台时正在传的交给系统的后台 URLSession，App 被挂起、锁屏了也会传完；传过的记在本地，下次跳过，服务端也按名字 + 大小跳过。
 // 大视频从断点到结尾整个交给一个后台任务（以前 8MB 一段、传完一段叫醒 App 再交下一段：App 在后台时系统叫醒得越来越慢，
 // 后台建的任务还会被系统推迟，切出 App 后大视频就停在那里不动了）；断了下次问服务端收到多少，从那里接着传。
 // 在 App 里点了备份（或快捷指令打开 App 备份）时，再向系统申请「继续在后台运行」（BGContinuedProcessingTask，iOS 26）：
@@ -111,9 +111,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
-    // App 自己的连接：「继续在后台运行」撑着 App、App 又不在前台时用（这时建的后台任务会被系统推迟，等 Wi-Fi、充电才传）。
-    // App 停下后这些连接就断了，没传完的下次再传（大文件从断点接着传）。
+    // App 自己的连接：App 在前台，或者「继续在后台运行」撑着 App 时用。系统的后台上传由系统排时间、限速，
+    // 就算 App 开着也常常一个文件传几十秒、传一半停住；自己的连接快得多。
+    // App 切到后台又没人撑着时，正在传的交给系统的后台上传接着传（见 handOff）。
     private var direct: URLSession!
+    private var handingOff: Set<Int> = [] // 交给后台上传时取消掉的任务：它们的完成回调不算失败
     private var appActive = false
     private var continued: BGContinuedProcessingTask?
     // 「继续在后台运行」的进度：扫过的照片数 + 交出去、传出去的 MB 数
@@ -180,6 +182,47 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: nil) { _ in
             self.lock.withLock { self.appActive = false }
         }
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { _ in
+            if self.lock.withLock({ self.continued == nil }) { self.handOff() }
+        }
+    }
+
+    // 自己连接上正在传的交给系统的后台上传：照片用同一个请求重传；大文件问服务端还缺哪些，从那里接着传。
+    // 切到后台后系统只给几秒，先申请一点时间做完。
+    private func handOff() {
+        let app = UIApplication.shared
+        var grant = UIBackgroundTaskIdentifier.invalid
+        grant = app.beginBackgroundTask(withName: "xiaoju.handoff") { app.endBackgroundTask(grant) }
+        Task.detached { [self] in
+            defer { DispatchQueue.main.async { app.endBackgroundTask(grant) } }
+            var big: Set<String> = []
+            for task in await direct.allTasks where task.state == .running || task.state == .suspended {
+                let parts = (task.taskDescription ?? "").components(separatedBy: "\t")
+                lock.withLock {
+                    handingOff.insert(task.taskIdentifier)
+                    laneSent[task.taskIdentifier] = nil
+                    if parts.count == 5, let start = Int64(parts[4]) { laneBusy[parts[1]]?.removeValue(forKey: start) }
+                }
+                task.cancel()
+                if parts.first == "chunk", parts.count >= 4 {
+                    big.insert(parts[1])
+                    if parts[2] != loadJobs()[parts[1]]?.file { try? FileManager.default.removeItem(atPath: parts[2]) }
+                } else if parts.count == 2, let req = task.originalRequest {
+                    let again = session.uploadTask(with: req, fromFile: URL(fileURLWithPath: parts[1]))
+                    again.taskDescription = task.taskDescription
+                    again.resume()
+                }
+            }
+            let jobs = loadJobs()
+            for key in big {
+                guard let job = jobs[key] else { continue }
+                do {
+                    _ = try await startBig(job)
+                } catch {
+                    fail(job.name, "\(error.localizedDescription)（下次接着传）")
+                }
+            }
+        }
     }
 
     // 在 App 里点了备份：向系统申请「继续在后台运行」，切走、锁屏后这一轮接着跑（系统不给就和以前一样，切走后停下）。
@@ -210,8 +253,11 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                 if !self.appActive { self.resumeWhenActive = true }
                 return !self.appActive
             }
-            if inBackground { stop() }
             finishContinued(success: false)
+            if inBackground {
+                stop()
+                handOff()
+            }
         }
         reportContinued(force: true)
     }
@@ -250,9 +296,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         snap.0.updateTitle("小桔备份", subtitle: "新传 \(counts.uploaded) 个，已有 \(counts.skipped) 个")
     }
 
-    // 交上传用哪个连接：「继续在后台运行」撑着、App 在后台时自己传，其他时候交给系统的后台上传
+    // 交上传用哪个连接：App 在前台、或者「继续在后台运行」撑着时自己传，其他时候交给系统的后台上传
     private func uploadSession() -> URLSession {
-        lock.withLock { continued != nil && !appActive } ? direct! : session
+        lock.withLock { appActive || continued != nil } ? direct! : session
     }
 
     private func allTasks() async -> [URLSessionTask] {
@@ -764,6 +810,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let reply = lock.withLock { replies.removeValue(forKey: task.taskIdentifier) } ?? Data()
+        if session === direct, lock.withLock({ handingOff.remove(task.taskIdentifier) != nil }) {
+            return // 已经交给后台上传接着传了
+        }
         if task.taskDescription?.hasPrefix("chunk\t") == true {
             chunkDone(task, reply: reply, error: error)
             return
