@@ -86,7 +86,7 @@ struct MeView: View {
             Text(stats.map { shortSize($0.bytes) } ?? "—")
                 .font(.system(size: 30, weight: .bold)).monospacedDigit()
             if let s = stats, s.bytes > 0 {
-                let parts = categories(s).filter { $0.bytes > 0 || $0.count > 0 }
+                let parts = categories(s).filter { $0.bytes > 0 || $0.n > 0 }
                 GeometryReader { geo in
                     let gaps = CGFloat(max(0, parts.filter { $0.bytes > 0 }.count - 1)) * 2
                     HStack(spacing: 2) {
@@ -107,8 +107,9 @@ struct MeView: View {
     }
 
     private struct Category: Identifiable {
-        let name: String, color: Color, count: String, bytes: Int64
+        let name: String, color: Color, n: Int, unit: String, bytes: Int64
         var id: String { name }
+        var count: String { "\(n.formatted()) \(unit)" }
     }
 
     // 照片、视频、文档、音频、压缩包、其他；老服务器没有细分时，文档、音频、压缩包都是 0，全算在「其他」里
@@ -117,12 +118,12 @@ struct MeView: View {
         let docBytes = s.documentBytes ?? 0, audioBytes = s.audioBytes ?? 0, archiveBytes = s.archiveBytes ?? 0
         let otherBytes = max(0, s.bytes - s.photoBytes - s.videoBytes - docBytes - audioBytes - archiveBytes)
         return [
-            Category(name: "照片", color: .filePhoto, count: "\(s.photos.formatted()) 张", bytes: s.photoBytes),
-            Category(name: "视频", color: .fileVideo, count: "\(s.videos.formatted()) 个", bytes: s.videoBytes),
-            Category(name: "文档", color: .fileDocument, count: "\(docs.formatted()) 个", bytes: docBytes),
-            Category(name: "音频", color: .fileAudio, count: "\(audios.formatted()) 个", bytes: audioBytes),
-            Category(name: "压缩包", color: .fileArchive, count: "\(archives.formatted()) 个", bytes: archiveBytes),
-            Category(name: "其他", color: .fileOther, count: "\(max(0, s.others - docs - audios - archives).formatted()) 个", bytes: otherBytes),
+            Category(name: "照片", color: .filePhoto, n: s.photos, unit: "张", bytes: s.photoBytes),
+            Category(name: "视频", color: .fileVideo, n: s.videos, unit: "个", bytes: s.videoBytes),
+            Category(name: "文档", color: .fileDocument, n: docs, unit: "个", bytes: docBytes),
+            Category(name: "音频", color: .fileAudio, n: audios, unit: "个", bytes: audioBytes),
+            Category(name: "压缩包", color: .fileArchive, n: archives, unit: "个", bytes: archiveBytes),
+            Category(name: "其他", color: .fileOther, n: max(0, s.others - docs - audios - archives), unit: "个", bytes: otherBytes),
         ]
     }
 
