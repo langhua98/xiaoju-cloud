@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
@@ -31,7 +32,7 @@ func (s *Service) BackupStatus(ctx context.Context) (BackupStatus, error) {
 }
 
 // RunBackupSync 在后台把还没有备份的分块（包括启用备份之前上传的旧文件、上传时备份失败的分块）
-// 从主存储复制到备份存储。一次只复制一个分块，避免触发 Telegram 限流；直到 ctx 取消才返回。
+// 从主存储复制到备份存储（备份频道有几个 Bot 就同时复制几个，见 SyncBackupOnce）；直到 ctx 取消才返回。
 func (s *Service) RunBackupSync(ctx context.Context, idle time.Duration) {
 	if s.backup == nil {
 		return
@@ -68,23 +69,47 @@ func (s *Service) RunBackupSync(ctx context.Context, idle time.Duration) {
 }
 
 // SyncBackupOnce 复制一批缺少备份的分块，返回成功复制的数量；某个分块失败时跳过它继续，最后汇总错误。
+// 备份频道有几个 Bot 就同时复制几个分块（每个 Bot 各自排队发消息），只有一个 Bot 时一个一个来。
 func (s *Service) SyncBackupOnce(ctx context.Context) (int, error) {
 	parts, err := s.store.ListPartsMissingBackup(ctx, backupBatch)
 	if err != nil {
 		return 0, err
 	}
-	copied := 0
-	var errs []error
+	workers := 1
+	if p, ok := s.backup.(interface{ Bots() int }); ok {
+		workers = max(p.Bots(), 1)
+	}
+	var (
+		mu     sync.Mutex
+		copied int
+		errs   []error
+		wg     sync.WaitGroup
+	)
+	next := make(chan *meta.Part)
+	for range min(workers, len(parts)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range next {
+				err := s.copyToBackup(ctx, p)
+				mu.Lock()
+				if err != nil {
+					errs = append(errs, fmt.Errorf("file %s part %d: %w", p.FileID, p.PartNo, err))
+				} else {
+					copied++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
 	for i := range parts {
 		if ctx.Err() != nil {
 			break
 		}
-		if err := s.copyToBackup(ctx, &parts[i]); err != nil {
-			errs = append(errs, fmt.Errorf("file %s part %d: %w", parts[i].FileID, parts[i].PartNo, err))
-			continue
-		}
-		copied++
+		next <- &parts[i]
 	}
+	close(next)
+	wg.Wait()
 	return copied, errors.Join(errs...)
 }
 

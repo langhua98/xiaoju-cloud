@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -292,5 +294,61 @@ func TestDriveStatsIntegration(t *testing.T) {
 	}
 	if st != want {
 		t.Fatalf("stats = %+v\nwant    %+v", st, want)
+	}
+}
+
+// multiBot 假装是有几个 Bot 的备份频道，记下同时有几个分块在写
+type multiBot struct {
+	storage.Driver
+	bots      int
+	mu        sync.Mutex
+	cur, most int
+}
+
+func (m *multiBot) Bots() int { return m.bots }
+
+func (m *multiBot) Put(ctx context.Context, req storage.PutRequest) (storage.Location, error) {
+	m.mu.Lock()
+	m.cur++
+	m.most = max(m.most, m.cur)
+	m.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	defer func() {
+		m.mu.Lock()
+		m.cur--
+		m.mu.Unlock()
+	}()
+	return m.Driver.Put(ctx, req)
+}
+
+func TestBackupSyncUsesEveryBot(t *testing.T) {
+	url := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool := isolatedDB(t, ctx, url)
+	if _, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	store := meta.NewStore(pool)
+	userID, err := store.EnsureUser(ctx, "backup-bots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, _ := local.New(t.TempDir())
+	inner, _ := local.New(t.TempDir())
+	backup := &multiBot{Driver: inner, bots: 3}
+	master, _ := crypto.NewKey()
+	svc := New(store, primary, Options{MasterKey: master, PartSize: 1000, TempDir: t.TempDir(),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Backup: backup})
+	if _, err := svc.Upload(ctx, UploadRequest{UserID: userID, Name: "a.bin", Body: bytes.NewReader(randBytes(6000))}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := svc.SyncBackupOnce(ctx); err != nil || n != 6 {
+		t.Fatalf("sync: copied %d, err %v", n, err)
+	}
+	if backup.most != 3 {
+		t.Fatalf("copied %d parts at once, want 3 (one per bot)", backup.most)
 	}
 }
