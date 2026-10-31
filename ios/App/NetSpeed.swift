@@ -134,9 +134,9 @@ private struct SpeedTile: View {
                 Text(title).font(.footnote.weight(.semibold)).fixedSize()
                 Spacer(minLength: 4)
                 if let badge {
-                    // 小云朵 + 字，紧挨着；字固定一行不截断
-                    HStack(spacing: 2) {
-                        Image(systemName: "icloud").font(.system(size: 9, weight: .semibold))
+                    // 两行：上面小云朵，下面字；和箭头那一行一样高，字不截断
+                    VStack(spacing: 1) {
+                        Image(systemName: "icloud").font(.system(size: 11, weight: .semibold))
                         Text(badge).font(.system(size: 10))
                     }
                     .foregroundStyle(Palette.sub)
