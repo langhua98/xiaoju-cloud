@@ -297,7 +297,7 @@ Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速
 
 启用后上传的每个分块、下载的每 1MB 交给手上活最少的 Bot，一样少的轮流（`internal/storage/telegram/pool.go`，思路来自 Teldrive 的
 `bot_selector.go` 和 `botgateway/runner.go`）。删除、对账只用主 Bot。额外的 Bot 在服务启动后在后台连接，日志 `extra bot added`；连不上、不是频道管理员的
-只记 `extra bot skipped`，不影响服务。用的时候出错（比如文件在别的数据中心）这一次改用主 Bot，那个 Bot 停用 10 分钟。
+只记 `extra bot skipped`，不影响服务。用的时候出错这一次改用主 Bot：被 Telegram 拒绝（比如没被加成管理员、文件在别的数据中心）的停用 10 分钟，超时、断线这类临时的错只停 30 秒。
 被限速时（日志 `telegram flood wait`，带 `bot`、`method`、`wait`，能看出是哪个 Bot 的哪种请求）那个 Bot（主 Bot 也一样）歇到 Telegram 说的时间，
 活马上交给别的 Bot（日志 `handing work to another bot`）；全都在歇时等最早歇完的那个，最多等 2 分钟。
 发消息（每个分块一条）每个 Bot 在本地排队，平均 3 秒一条（`client.go` 的 `sendEvery`），Bot 越多总的发送速度越快。

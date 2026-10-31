@@ -49,7 +49,7 @@ type bot interface {
 }
 
 const (
-	// benchFor 是出错的额外 Bot 停用多久；benchBrief 是 Telegram 那边临时超时（-503 Timeout）时停用多久：
+	// benchFor 是额外的 Bot 被 Telegram 拒绝时停用多久；benchBrief 是临时出错（超时、断线）时停用多久：
 	// 这种错过一会儿就好，停 10 分钟等于大批上传时少一个 Bot。
 	benchFor   = 10 * time.Minute
 	benchBrief = 30 * time.Second
@@ -155,9 +155,11 @@ func (p *Pool) done(k int) {
 }
 
 func (p *Pool) bench(k int, err error) {
-	pause := benchFor
-	if e, ok := tgerr.As(err); ok && (e.Code == 503 || e.Code == -503) { // Telegram 回的是 -503
-		pause = benchBrief
+	// 只有 Telegram 明确拒绝（3xx、4xx：没被加成管理员、文件在别的数据中心……）才停 10 分钟，这种错过一会儿也不会好；
+	// 超时（-503）、连接断了、重试几次没回应这类临时的错只停一小会儿
+	pause := benchBrief
+	if e, ok := tgerr.As(err); ok && e.Code >= 300 && e.Code < 500 {
+		pause = benchFor
 	}
 	p.mu.Lock()
 	p.benched[k] = time.Now().Add(pause)
