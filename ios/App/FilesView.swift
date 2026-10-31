@@ -150,21 +150,7 @@ struct FolderView: View {
         if item.thumb != nil && !(item.isPrivate ?? false) {
             Thumb(item: item).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            Image(systemName: symbol(item))
-                .font(.title3)
-                .foregroundStyle(item.isFolder ? Color.orange : Color.secondary)
-                .frame(width: 40, height: 40)
-                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
-    private func symbol(_ item: CloudItem) -> String {
-        if item.isFolder { return "folder.fill" }
-        switch item.kind {
-        case .image: return "photo"
-        case .video: return "video"
-        case .archive: return "doc.zipper"
-        default: return item.ext == "pdf" ? "doc.richtext" : "doc"
+            IconTile(symbol: FileTile.symbol(item), color: FileTile.color(item), size: 40)
         }
     }
 
