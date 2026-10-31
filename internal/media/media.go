@@ -31,8 +31,22 @@ func Sniff(b []byte) (ext, mimeType string) {
 		default: // isom、mp41、mp42、M4V、3gp4 …
 			return ".mp4", "video/mp4"
 		}
+	case len(b) >= 8 && quickTimeAtom(b):
+		return ".mov", "video/quicktime"
 	}
 	return "", ""
+}
+
+// quickTimeAtom：开头不是 ftyp、直接是 QuickTime 的顶层盒子（wide、mdat、moov 等）。老格式的 MOV 没有 ftyp，
+// iPhone 上部分视频（实况照片的视频、一些 App 存的）就是这样开头的。
+func quickTimeAtom(b []byte) bool {
+	switch string(b[4:8]) {
+	case "moov", "mdat", "wide", "free", "skip", "pnot":
+	default:
+		return false
+	}
+	size := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	return size == 0 || size == 1 || size >= 8 // 0：一直到文件末尾；1：后面跟 64 位长度
 }
 
 // ByExt 按扩展名猜 MIME 类型（补上标准库不认识的 HEIC、MOV 等）。
