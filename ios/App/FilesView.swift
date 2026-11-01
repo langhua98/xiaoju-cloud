@@ -32,6 +32,7 @@ struct FolderView: View {
     @State private var progress: Double? // 下载进度，nil 时不显示进度条
     @State private var exporting: URL?   // 下载好、等用户在「存储到」里选位置的文件
     @State private var downloading: Task<Void, Never>?
+    @State private var downloadingID: String? // 正在下载的文件，它的下载按钮变成进度环，点一下取消
     @State private var status = ""            // 下载进度、完成提示
 
     // 新建文件夹或重命名时弹出的输入框
@@ -180,19 +181,21 @@ struct FolderView: View {
             }
             .buttonStyle(.plain)
             if !item.isFolder {
-                Button { sharing = item } label: {
-                    Image(systemName: "link").font(.title3).frame(width: 34, height: 34)
+                HStack(spacing: 8) {
+                    Button { sharing = item } label: { RowAction(symbol: "link") }
+                        .accessibilityLabel("分享直链")
+                    Button {
+                        if downloadingID == item.id { downloading?.cancel() } else { startDownload(item, toPhotos: false) }
+                    } label: {
+                        RowAction(symbol: downloadingID == item.id ? "xmark" : "arrow.down",
+                                  progress: downloadingID == item.id ? progress : nil)
+                    }
+                    .accessibilityLabel(downloadingID == item.id ? "取消下载" : "下载到「文件」")
+                    .disabled(downloading != nil && downloadingID != item.id)
                 }
-                .accessibilityLabel("分享直链")
-                Button { startDownload(item, toPhotos: false) } label: {
-                    Image(systemName: "arrow.down.circle").font(.title3).frame(width: 34, height: 34)
-                }
-                .accessibilityLabel("下载到「文件」")
-                .disabled(downloading != nil)
+                .buttonStyle(RowActionPress())
             }
         }
-        .buttonStyle(.borderless)
-        .tint(.brand)
     }
 
     @ViewBuilder
@@ -221,8 +224,9 @@ struct FolderView: View {
         let total = sizeText(item.size)
         status = "正在下载 \(item.name)"
         progress = 0
+        downloadingID = item.id
         downloading = Task {
-            defer { downloading = nil; progress = nil }
+            defer { downloading = nil; downloadingID = nil; progress = nil }
             do {
                 if toPhotos {
                     try await MediaSaver.save(item) { p in
@@ -335,5 +339,41 @@ struct FolderView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+// 文件行右边的小圆按钮：和顶上的返回、＋按钮一个样子，浅橙底（深色模式是深橙棕）配品牌橙图标；
+// 下载中外圈画进度环
+private struct RowAction: View {
+    let symbol: String
+    var progress: Double?
+
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(Color.brand)
+            .frame(width: 32, height: 32)
+            .background(Circle().fill(Color.folderTile))
+            .overlay {
+                if let progress {
+                    Circle().trim(from: 0, to: max(0.02, progress))
+                        .stroke(Color.brand, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .padding(1.25)
+                        .animation(.linear(duration: 0.2), value: progress)
+                }
+            }
+            .opacity(enabled ? 1 : 0.4)
+            .contentShape(Circle())
+    }
+}
+
+private struct RowActionPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .animation(.spring(duration: 0.2), value: configuration.isPressed)
     }
 }
