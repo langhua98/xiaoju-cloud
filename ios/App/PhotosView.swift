@@ -117,7 +117,12 @@ struct MediaGallery: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if selecting { selectionBar }
+            if selecting {
+                selectionBar
+            } else if !working.isEmpty {
+                Text(working).font(.footnote).padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.thinMaterial, in: Capsule()).padding(.bottom, 8)
+            }
         }
         .fullScreenCover(item: $viewing) { item in
             MediaViewer(items: visible, start: item) { gone in removed.insert(gone.id) }
@@ -155,6 +160,7 @@ struct MediaGallery: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button("分享链接", systemImage: "link") { sharing = item }
+            Button("存到手机", systemImage: "square.and.arrow.down") { Task { await saveOne(item) } }
         }
     }
 
@@ -222,6 +228,19 @@ struct MediaGallery: View {
         working = ""
         selected = []
         selecting = false
+    }
+
+    // 长按一张「存到手机」
+    private func saveOne(_ item: CloudItem) async {
+        working = "正在存到手机…"
+        do {
+            try await MediaSaver.save(item) { working = "正在存到手机 \(Int($0 * 100))%" }
+            working = "已存到手机的「照片」"
+        } catch {
+            working = "\(item.name)：\(error.localizedDescription)"
+        }
+        try? await Task.sleep(for: .seconds(2))
+        working = ""
     }
 }
 
@@ -346,7 +365,7 @@ struct MediaViewer: View {
         guard let item else { return }
         note = "正在存到手机…"
         do {
-            try await MediaSaver.save(item)
+            try await MediaSaver.save(item) { note = "正在存到手机 \(Int($0 * 100))%" }
             note = "已存到手机的「照片」"
         } catch {
             note = error.localizedDescription
@@ -419,20 +438,31 @@ struct MediaPage: View {
     }
 }
 
-// 分享链接：有效期、提取码，生成后复制（链接和提取码一起）
+// 分享链接：文件默认生成直链（别人点开就直接下载，不用打开分享页、不要提取码），
+// 也可以改成分享页链接（可设提取码，文件夹只能用这种）。有效期可选，生成后复制或发出去。
 struct ShareLinkSheet: View {
     let item: CloudItem
 
+    enum Kind: Hashable { case direct, page }
+
     @Environment(\.dismiss) private var dismiss
+    @State private var kind: Kind
     @State private var days = 7
     @State private var usePassword = true
     @State private var password = String((0..<4).map { _ in "abcdefghjkmnpqrstuvwxyz23456789".randomElement()! })
     @State private var share: CloudShare?
     @State private var error = ""
     @State private var busy = false
+    @State private var copied = false
+
+    init(item: CloudItem) {
+        self.item = item
+        _kind = State(initialValue: item.isFolder ? .page : .direct)
+    }
 
     private var text: String {
         guard let share else { return "" }
+        if kind == .direct { return Cloud.shared.directURL(share, name: item.name) }
         let url = Cloud.shared.shareURL(share)
         return usePassword ? "\(url) 提取码：\(password)" : url
     }
@@ -442,6 +472,13 @@ struct ShareLinkSheet: View {
             Form {
                 Section {
                     LabeledContent("分享", value: item.name)
+                    if !item.isFolder {
+                        Picker("链接", selection: $kind) {
+                            Text("直链").tag(Kind.direct)
+                            Text("分享页").tag(Kind.page)
+                        }
+                        .pickerStyle(.segmented)
+                    }
                     Picker("有效期", selection: $days) {
                         Text("1 天").tag(1)
                         Text("7 天").tag(7)
@@ -449,14 +486,25 @@ struct ShareLinkSheet: View {
                         Text("永久").tag(0)
                     }
                     .pickerStyle(.segmented)
-                    Toggle("需要提取码", isOn: $usePassword)
-                    if usePassword { TextField("提取码", text: $password).textInputAutocapitalization(.never) }
+                    if kind == .page {
+                        Toggle("需要提取码", isOn: $usePassword)
+                        if usePassword { TextField("提取码", text: $password).textInputAutocapitalization(.never) }
+                    }
+                } footer: {
+                    if share == nil {
+                        Text(kind == .direct ? "直链：别人点开就直接下载，浏览器、下载工具都能用，不需要提取码。"
+                                             : "分享页：别人打开网页看、下载，可以设提取码。")
+                    }
                 }
                 .disabled(share != nil)
                 if let share {
                     Section {
                         Text(text).font(.footnote.monospaced()).textSelection(.enabled)
-                        Button("复制链接和提取码") { UIPasteboard.general.string = text }
+                        Button(copied ? "已复制" : (kind == .direct || !usePassword ? "复制链接" : "复制链接和提取码"),
+                               systemImage: copied ? "checkmark" : "doc.on.doc") {
+                            UIPasteboard.general.string = text
+                            copied = true
+                        }
                         ShareLink(item: text) { Label("发给…", systemImage: "square.and.arrow.up") }
                     } footer: {
                         Text(share.expiresAt.map { "\($0.formatted(date: .abbreviated, time: .omitted)) 失效。" } ?? "永久有效。")
@@ -464,13 +512,13 @@ struct ShareLinkSheet: View {
                     }
                 } else {
                     Section {
-                        Button(busy ? "正在生成…" : "生成链接") { Task { await create() } }.disabled(busy)
+                        Button(busy ? "正在生成…" : (kind == .direct ? "生成直链" : "生成链接")) { Task { await create() } }.disabled(busy)
                     } footer: {
                         if !error.isEmpty { Text(error).foregroundStyle(.red) }
                     }
                 }
             }
-            .navigationTitle("分享链接")
+            .navigationTitle(kind == .direct ? "分享直链" : "分享链接")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("完成") { dismiss() } }
         }
@@ -481,7 +529,12 @@ struct ShareLinkSheet: View {
         busy = true
         defer { busy = false }
         do {
-            share = try await Cloud.shared.createShare(item, days: days, password: usePassword ? password : "")
+            let pw = kind == .page && usePassword ? password : ""
+            share = try await Cloud.shared.createShare(item, days: days, password: pw)
+            if kind == .direct { // 生成好就复制，少点一下
+                UIPasteboard.general.string = text
+                copied = true
+            }
         } catch {
             self.error = error.localizedDescription
         }
@@ -491,13 +544,9 @@ struct ShareLinkSheet: View {
 // 下载原文件存进手机的「照片」
 enum MediaSaver {
     @MainActor
-    static func save(_ item: CloudItem) async throws {
-        let link = try await Cloud.shared.link(for: item)
-        guard let url = Cloud.shared.absolute(link.url) else { throw CloudError.server("下载地址不对") }
-        let (temp, _) = try await URLSession.shared.download(from: url)
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + item.name)
-        try FileManager.default.moveItem(at: temp, to: file)
-        defer { try? FileManager.default.removeItem(at: file) }
+    static func save(_ item: CloudItem, progress: @escaping @MainActor (Double) -> Void = { _ in }) async throws {
+        let file = try await Cloud.shared.download(item, progress: progress)
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         try await PHPhotoLibrary.shared().performChanges {
             let req = PHAssetCreationRequest.forAsset()
             req.addResource(with: item.isVideo ? .video : .photo, fileURL: file, options: nil)
