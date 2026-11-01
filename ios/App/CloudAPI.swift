@@ -150,7 +150,7 @@ final class Cloud: ObservableObject {
 
     // 下载原文件到临时目录（保留文件名，存到「照片」「文件」时按扩展名认格式），边下边报进度 0…1，
     // 下到的字节同时记进网速表（「备份」页的下载卡片），取消了的也算。
-    // 用完由调用方删掉，或交给「存储到」移走。
+    // 网络断了（切网络、服务端重启）就从断开的地方接着下（服务端支持 Range）；连续 5 次一点都没下到才算失败。
     func download(_ item: CloudItem, progress: @escaping @MainActor (Double) -> Void = { _ in }) async throws -> URL {
         let link = try await self.link(for: item)
         guard let url = absolute(link.url) else { throw CloudError.server("下载地址不对") }
@@ -158,9 +158,27 @@ final class Cloud: ObservableObject {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dest = dir.appendingPathComponent(item.name)
         let box = DownloadBox()
-        return try await withTaskCancellationHandler {
+        var resume: Data?
+        var stalls = 0
+        while true {
+            do {
+                return try await downloadOnce(url: url, resume: resume, to: dest, box: box, progress: progress)
+            } catch {
+                guard !Task.isCancelled,
+                      let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data else { throw error }
+                if box.moved { stalls = 0 } else { stalls += 1 }
+                guard stalls < 5 else { throw error }
+                resume = data
+                try await Task.sleep(for: .seconds(min(2 * (stalls + 1), 10)))
+            }
+        }
+    }
+
+    private func downloadOnce(url: URL, resume: Data?, to dest: URL, box: DownloadBox,
+                              progress: @escaping @MainActor (Double) -> Void) async throws -> URL {
+        try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
-                let task = URLSession.shared.downloadTask(with: url) { temp, resp, error in
+                let done: @Sendable (URL?, URLResponse?, Error?) -> Void = { temp, resp, error in
                     box.observation?.invalidate()
                     if let error { return cont.resume(throwing: error) }
                     let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
@@ -176,10 +194,14 @@ final class Cloud: ObservableObject {
                         cont.resume(throwing: error)
                     }
                 }
+                let task = resume.map { URLSession.shared.downloadTask(withResumeData: $0, completionHandler: done) }
+                    ?? URLSession.shared.downloadTask(with: url, completionHandler: done)
                 box.task = task
-                // 看已收到的字节数（服务端没给总大小时 fractionCompleted 不动，字节数照样涨）
+                box.startAttempt()
+                // 看已收到的字节数（服务端没给总大小时 fractionCompleted 不动，字节数照样涨；接着下时从断点算起）
                 box.observation = task.progress.observe(\.completedUnitCount) { p, _ in
                     box.count(upTo: p.completedUnitCount)
+                    box.saw(p.completedUnitCount)
                     let value = p.totalUnitCount > 0 ? p.fractionCompleted : 0
                     Task { @MainActor in progress(value) }
                 }
@@ -387,6 +409,20 @@ private final class DownloadBox: @unchecked Sendable {
     var observation: NSKeyValueObservation?
     private let lock = NSLock()
     private var counted: Int64 = 0
+    private var attemptLast: Int64 = -1
+    private var progressed = false
+
+    // 这一次（接着下的那次）有没有下到新数据：断线重试时判断是不是卡死了
+    var moved: Bool { lock.withLock { progressed } }
+
+    func startAttempt() { lock.withLock { attemptLast = -1; progressed = false } }
+
+    func saw(_ bytes: Int64) {
+        lock.withLock {
+            if attemptLast >= 0 && bytes > attemptLast { progressed = true }
+            attemptLast = bytes
+        }
+    }
 
     // 收到的字节数涨到 bytes：把多出来的记进网速表
     func count(upTo bytes: Int64) {

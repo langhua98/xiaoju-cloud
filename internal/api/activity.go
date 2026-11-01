@@ -6,14 +6,15 @@ import (
 	"time"
 )
 
-// activity 记着正在进行的上传，和最后一次上传活动的时间。部署前先问一下（GET /api/maintenance/activity，
-// 见 deploy/huggingface/deploy.py），等上传停了几分钟再重启服务端，免得打断快捷指令正在传的文件。
+// activity 记着正在进行的上传、下载，和最后一次传输的时间。部署前先问一下（GET /api/maintenance/activity，
+// 见 deploy/huggingface/deploy.py），等传输停了几分钟再重启服务端，免得打断快捷指令正在传的文件、
+// App 正在下的大文件（几百 MB 的安装包要下好几分钟）。
 type activity struct {
 	active atomic.Int64
 	last   atomic.Int64 // Unix 秒；0 表示服务启动后还没有过
 }
 
-// tracked 把一个上传类的请求算进 activity。
+// tracked 把一个上传、下载类的请求算进 activity。
 func (s *Server) tracked(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.act.active.Add(1)
