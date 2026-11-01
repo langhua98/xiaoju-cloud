@@ -148,6 +148,44 @@ final class Cloud: ObservableObject {
         try await send("DELETE", "/api/files/\(item.id)")
     }
 
+    // 下载原文件到临时目录（保留文件名，存到「照片」「文件」时按扩展名认格式），边下边报进度 0…1。
+    // 用完由调用方删掉，或交给「存储到」移走。
+    func download(_ item: CloudItem, progress: @escaping @MainActor (Double) -> Void = { _ in }) async throws -> URL {
+        let link = try await self.link(for: item)
+        guard let url = absolute(link.url) else { throw CloudError.server("下载地址不对") }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(item.name)
+        let box = DownloadBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<URL, Error>) in
+                let task = URLSession.shared.downloadTask(with: url) { temp, resp, error in
+                    box.observation?.invalidate()
+                    if let error { return cont.resume(throwing: error) }
+                    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                    guard let temp, (200..<300).contains(code) else {
+                        return cont.resume(throwing: CloudError.server("下载失败（HTTP \(code)）"))
+                    }
+                    do {
+                        try FileManager.default.moveItem(at: temp, to: dest) // 回调返回后系统会删掉 temp，必须在这里移走
+                        NetMeter.shared.received((try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0)
+                        cont.resume(returning: dest)
+                    } catch {
+                        cont.resume(throwing: error)
+                    }
+                }
+                box.task = task
+                box.observation = task.progress.observe(\.fractionCompleted) { p, _ in
+                    let value = p.fractionCompleted
+                    Task { @MainActor in progress(value) }
+                }
+                task.resume()
+            }
+        } onCancel: {
+            box.task?.cancel()
+        }
+    }
+
     func createShare(_ item: CloudItem, days: Int, password: String) async throws -> CloudShare {
         try await post("/api/shares", json: ["file_id": item.id, "expires_days": days, "password": password], as: CloudShare.self)
     }
@@ -331,4 +369,10 @@ enum Keychain {
                                     kSecAttrAccount as String: key]
         SecItemDelete(query as CFDictionary)
     }
+}
+
+// 下载任务和进度监听，取消时要拿到任务
+private final class DownloadBox: @unchecked Sendable {
+    var task: URLSessionDownloadTask?
+    var observation: NSKeyValueObservation?
 }

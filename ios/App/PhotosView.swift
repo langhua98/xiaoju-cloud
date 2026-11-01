@@ -117,7 +117,12 @@ struct MediaGallery: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if selecting { selectionBar }
+            if selecting {
+                selectionBar
+            } else if !working.isEmpty {
+                Text(working).font(.footnote).padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.thinMaterial, in: Capsule()).padding(.bottom, 8)
+            }
         }
         .fullScreenCover(item: $viewing) { item in
             MediaViewer(items: visible, start: item) { gone in removed.insert(gone.id) }
@@ -155,6 +160,7 @@ struct MediaGallery: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button("分享链接", systemImage: "link") { sharing = item }
+            Button("存到手机", systemImage: "square.and.arrow.down") { Task { await saveOne(item) } }
         }
     }
 
@@ -222,6 +228,19 @@ struct MediaGallery: View {
         working = ""
         selected = []
         selecting = false
+    }
+
+    // 长按一张「存到手机」
+    private func saveOne(_ item: CloudItem) async {
+        working = "正在存到手机…"
+        do {
+            try await MediaSaver.save(item) { working = "正在存到手机 \(Int($0 * 100))%" }
+            working = "已存到手机的「照片」"
+        } catch {
+            working = "\(item.name)：\(error.localizedDescription)"
+        }
+        try? await Task.sleep(for: .seconds(2))
+        working = ""
     }
 }
 
@@ -346,7 +365,7 @@ struct MediaViewer: View {
         guard let item else { return }
         note = "正在存到手机…"
         do {
-            try await MediaSaver.save(item)
+            try await MediaSaver.save(item) { note = "正在存到手机 \(Int($0 * 100))%" }
             note = "已存到手机的「照片」"
         } catch {
             note = error.localizedDescription
@@ -491,13 +510,9 @@ struct ShareLinkSheet: View {
 // 下载原文件存进手机的「照片」
 enum MediaSaver {
     @MainActor
-    static func save(_ item: CloudItem) async throws {
-        let link = try await Cloud.shared.link(for: item)
-        guard let url = Cloud.shared.absolute(link.url) else { throw CloudError.server("下载地址不对") }
-        let (temp, _) = try await URLSession.shared.download(from: url)
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + item.name)
-        try FileManager.default.moveItem(at: temp, to: file)
-        defer { try? FileManager.default.removeItem(at: file) }
+    static func save(_ item: CloudItem, progress: @escaping @MainActor (Double) -> Void = { _ in }) async throws {
+        let file = try await Cloud.shared.download(item, progress: progress)
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         try await PHPhotoLibrary.shared().performChanges {
             let req = PHAssetCreationRequest.forAsset()
             req.addResource(with: item.isVideo ? .video : .photo, fileURL: file, options: nil)
