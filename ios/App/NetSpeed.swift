@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-// 网速：上传（交给服务端的字节）、下载（从 iCloud 取原图、从云盘恢复到手机）各记一个累计数，
+// 网速：上传（交给服务端的字节）、下载（从 iCloud 取原图、从云盘恢复到手机、文件页下载和存到「照片」）各记一个累计数，
 // 界面上每秒取一次，和上一次比算出每秒多少。
 final class NetMeter {
     static let shared = NetMeter()
