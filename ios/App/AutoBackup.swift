@@ -521,6 +521,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                     }
                     let asset = assets.object(at: i)
                     let known = lock.withLock { inCloud.contains("\(target.key)|\(asset.localIdentifier)") }
+                    let taken = asset.creationDate
                     for resource in PHAssetResource.assetResources(for: asset) where [.photo, .video, .pairedVideo].contains(resource.type) {
                         let key = "\(target.key)|\(asset.localIdentifier)|\(resource.type.rawValue)"
                         if busy.contains(key) || lock.withLock({ done.contains(key) }) { continue }
@@ -532,7 +533,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
                         preparing += 1
                         group.addTask { [self] in
                             do {
-                                try await upload(resource, key: key, album: target.album)
+                                try await upload(resource, key: key, album: target.album, taken: taken)
                             } catch {
                                 count { $0.failed += 1 }
                                 fail(resource.originalFilename, error.localizedDescription)
@@ -640,19 +641,22 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         let day = DateFormatter()
         day.locale = Locale(identifier: "en_US_POSIX")
         day.dateFormat = "yyyy-MM-dd"
-        var ids: [String] = [], names: [String] = [], dates: [String] = []
+        var ids: [String] = [], names: [String] = [], dates: [String] = [], times: [String] = []
         for item in items {
             guard let main = item.resources.first(where: { $0.type == .photo || $0.type == .video }) else { continue }
             ids.append(item.id)
             names.append(main.originalFilename.replacingOccurrences(of: "\n", with: " "))
             dates.append(item.date.map(day.string(from:)) ?? "")
+            times.append(item.date.map { String(Int64($0.timeIntervalSince1970)) } ?? "")
         }
         guard !ids.isEmpty else { return }
         var req = URLRequest(url: url, timeoutInterval: 180) // 一万张的清单服务端要比一会儿
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: String] = ["album": album == nil ? "" : "hidden",
-                                      "names": names.joined(separator: "\n"), "dates": dates.joined(separator: "\n")]
+                                      "names": names.joined(separator: "\n"), "dates": dates.joined(separator: "\n"),
+                                      // 创建时间：云盘里认出传过、但不知道拍摄时间的（没有 EXIF），服务端记上，相册按它排
+                                      "times": times.joined(separator: "\n")]
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         struct Plan: Decodable {
             let todo: String
@@ -728,7 +732,14 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         return album.hidden ? ["X-Xiaoju-Album": "hidden"] : ["X-Xiaoju-Album-Name": encodedName(album.title)]
     }
 
-    private func upload(_ resource: PHAssetResource, key: String, album: PhoneAlbum?) async throws {
+    // 拍摄时间（照片在手机相册里的创建时间，Unix 秒）：照片里没有 EXIF（微信存的图、截图）时，云端相册按它排，
+    // 不然这些照片按上传时间排，全挤在最前面
+    static func takenHeader(_ date: Date?) -> [String: String] {
+        guard let date else { return [:] }
+        return ["X-Taken-At": String(Int64(date.timeIntervalSince1970))]
+    }
+
+    private func upload(_ resource: PHAssetResource, key: String, album: PhoneAlbum?, taken: Date?) async throws {
         let opts = PHAssetResourceRequestOptions()
         opts.isNetworkAccessAllowed = true // 原图在 iCloud 上时先下载
         let size = resource.value(forKey: "fileSize") as? Int64 ?? 0
@@ -751,7 +762,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
             }
             self.reportContinued()
         }
-        try await send(name: resource.originalFilename, size: size, key: key, extra: albumHeaders(album)) { dest in
+        let extra = albumHeaders(album).merging(Self.takenHeader(taken)) { a, _ in a }
+        try await send(name: resource.originalFilename, size: size, key: key, extra: extra) { dest in
             try await PHAssetResourceManager.default().writeData(for: resource, toFile: dest, options: opts)
         }
     }

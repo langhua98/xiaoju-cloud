@@ -110,9 +110,9 @@ func (s *Store) CreateUpload(ctx context.Context, f *File) (*File, error) {
 		return nil, ErrConflict
 	}
 	out, err := scanFile(s.db.QueryRow(ctx, `
-		INSERT INTO files (user_id, parent_id, name, type, mime, dek_wrapped, status)
-		VALUES ($1, $2, $3, 'file', $4, $5, 'uploading')
-		RETURNING `+fileColumns, f.UserID, f.ParentID, f.Name, f.Mime, f.DEKWrapped))
+		INSERT INTO files (user_id, parent_id, name, type, mime, dek_wrapped, status, taken_at)
+		VALUES ($1, $2, $3, 'file', $4, $5, 'uploading', $6)
+		RETURNING `+fileColumns, f.UserID, f.ParentID, f.Name, f.Mime, f.DEKWrapped, f.TakenAt))
 	return out, mapErr(err)
 }
 

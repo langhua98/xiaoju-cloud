@@ -114,6 +114,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		if f != nil {
 			io.Copy(io.Discard, body)
+			s.fillTakenAt(ctx, f, ingestTakenAt(r))
 			s.log.Info("ingest skipped: uploaded before", "folder", folder, "name", name, "took", time.Since(start).Round(100*time.Millisecond))
 			writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": f.Name})
 			return
@@ -140,7 +141,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Body: body,
 			Spool: true, OnSpooled: func() { received = time.Now(); hb = startHeartbeat(w) },
 			// 按手机相册传的（子文件夹）照样存一份：同一张照片多半已经在“相册”里了，跳过的话相册文件夹就是空的
-			SkipSameContent: sub == "",
+			SkipSameContent: sub == "", TakenAt: ingestTakenAt(r),
 		})
 		started := hb.end() // 之后只有这里写回复
 		// 重名在读请求体之前就会发现（hb 还没创建），可以换个名字重试
@@ -302,6 +303,7 @@ func (s *Server) ingestExists(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, missing)
 		return
 	}
+	s.fillTakenAt(r.Context(), f, ingestTakenAt(r))
 	writeJSON(w, http.StatusOK, map[string]string{"result": "exists", "name": f.Name})
 }
 
@@ -494,6 +496,33 @@ func (s *Server) subAlbumFolder(r *http.Request, parent *meta.File, name string)
 }
 
 // parseByteCount 读字节数：只允许数字和千位分隔符（“12,345”“12 345”），其他（“1.2 MB”）返回 0。
+// ingestTakenAt 读 App 报的拍摄时间（X-Taken-At：照片在手机相册里的创建时间，Unix 秒，或 RFC 3339）。
+// 没有、看不懂、明显不对（1971 年以前、比现在晚两天以上）时返回 nil。
+// 相册按拍摄时间排：照片里没有 EXIF（微信存的图、截图）时就用它，不再按上传时间排到最前面。
+func ingestTakenAt(r *http.Request) *time.Time {
+	v := strings.TrimSpace(r.Header.Get("X-Taken-At"))
+	if v == "" {
+		return nil
+	}
+	if t := parseUnixTime(v); t != nil {
+		return t
+	}
+	if p, err := time.Parse(time.RFC3339, v); err == nil {
+		return parseUnixTime(strconv.FormatInt(p.Unix(), 10))
+	}
+	return nil
+}
+
+// fillTakenAt 传过的文件还不知道拍摄时间时，记上手机这次报的。
+func (s *Server) fillTakenAt(ctx context.Context, f *meta.File, t *time.Time) {
+	if f == nil || t == nil || f.TakenAt != nil {
+		return
+	}
+	if _, err := s.svc.Store().FillTakenAt(ctx, []uuid.UUID{f.ID}, []time.Time{*t}); err != nil {
+		s.log.Warn("ingest: fill taken_at", "file", f.ID, "err", err)
+	}
+}
+
 func parseByteCount(v string) int64 {
 	v = strings.TrimSpace(v)
 	digits := strings.Map(func(c rune) rune {

@@ -368,6 +368,48 @@ func TestIngest(t *testing.T) {
 		}
 	}
 
+	// 拍摄时间：照片里没有 EXIF 时用 App 报的（X-Taken-At，手机相册里的创建时间），相册才不会按上传时间排
+	takenOf := func(folder, name string) *time.Time {
+		t.Helper()
+		var at *time.Time
+		if err := pool.QueryRow(ctx, `SELECT taken_at FROM files WHERE user_id = $1 AND name = $2
+			AND parent_id = (SELECT id FROM files WHERE user_id = $1 AND name = $3 AND parent_id IS NULL)`,
+			userID, name, folder).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	wx := time.Date(2021, 7, 3, 9, 30, 0, 0, time.UTC)
+	if code, out := call("POST", "/api/ingest", strings.Repeat("w", 2000), "X-File-Name", "WX_0001.jpg", "X-Xiaoju-Album", "",
+		"X-Taken-At", strconv.FormatInt(wx.Unix(), 10)); code != 201 {
+		t.Fatalf("upload with X-Taken-At: %d %v", code, out)
+	}
+	if at := takenOf(AlbumFolder, "WX_0001.jpg"); at == nil || !at.Equal(wx) {
+		t.Fatalf("taken_at from X-Taken-At: %v", at)
+	}
+	// 早就传过、不知道拍摄时间的：核对清单（times）里记上；已经有的不改
+	if takenOf(HiddenAlbumFolder, "IMG_0500.MOV") != nil {
+		t.Fatal("IMG_0500 should start without a capture time")
+	}
+	old := time.Date(2019, 3, 1, 10, 0, 0, 0, time.UTC)
+	planBody, _ := json.Marshal(map[string]string{"album": "hidden", "names": "IMG_0500", "dates": "2019-03-01",
+		"times": strconv.FormatInt(old.Unix(), 10)})
+	if code, out := plan(string(planBody)); code != 200 || out["todo"] != "" {
+		t.Fatalf("plan with times: %d %v", code, out)
+	}
+	if at := takenOf(HiddenAlbumFolder, "IMG_0500.MOV"); at == nil || !at.Equal(old) {
+		t.Fatalf("plan did not fill taken_at: %v", at)
+	}
+	// 再报一个不一样的时间（上传时、问在不在时）也不改
+	call("GET", "/api/ingest/exists", "", "X-File-Name", "WX_0001.jpg", "X-File-Size", "2000", "X-Xiaoju-Album", "",
+		"X-Taken-At", "2020-01-01T00:00:00Z")
+	if at := takenOf(AlbumFolder, "WX_0001.jpg"); at == nil || !at.Equal(wx) {
+		t.Fatalf("taken_at must not be overwritten: %v", at)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM files WHERE user_id = $1 AND name = 'WX_0001.jpg'`, userID); err != nil {
+		t.Fatal(err) // 下面数照片张数，不算它
+	}
+
 	// 列目录时文件夹带上里面有几张照片、几个视频（连同子文件夹）
 	if code, out := call("POST", "/api/folders", `{"name":"子文件夹","parent_id":"`+albumID+`"}`, tokenH...); code != 201 {
 		t.Fatalf("create subfolder: %d %v", code, out)

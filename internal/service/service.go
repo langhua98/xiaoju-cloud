@@ -92,6 +92,8 @@ type UploadRequest struct {
 	// 返回 *SameContentError。要读完整个文件才知道摘要：Spool 时，或文件只有一个分块（照片都是）时，
 	// 在写存储端之前就能发现；分块多的大文件已经写上去的分块会删掉。
 	SkipSameContent bool
+	// TakenAt 是手机报的拍摄时间（照片在手机相册里的创建时间），没有为 nil。缩略图里读出 EXIF 时以 EXIF 为准。
+	TakenAt *time.Time
 }
 
 // SameContentError 表示网盘里已经有内容完全相同的文件 File，这次上传没有存。
@@ -113,7 +115,7 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 		return nil, err
 	}
 	f, err := s.store.CreateUpload(ctx, &meta.File{
-		UserID: req.UserID, ParentID: req.ParentID, Name: req.Name, Mime: req.Mime, DEKWrapped: wrapped,
+		UserID: req.UserID, ParentID: req.ParentID, Name: req.Name, Mime: req.Mime, DEKWrapped: wrapped, TakenAt: req.TakenAt,
 	})
 	if err != nil {
 		return nil, err

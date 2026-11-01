@@ -193,6 +193,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                         req.allowsConstrainedNetworkAccess = true
                         req.setValue(encodedName(resource.originalFilename), forHTTPHeaderField: "X-File-Name")
                         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                        // 拍摄时间：照片里没有 EXIF 时云端相册按它排
+                        if let date = asset.creationDate {
+                            req.setValue(String(Int64(date.timeIntervalSince1970)), forHTTPHeaderField: "X-Taken-At")
+                        }
                         _ = PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: req, resource: resource)
                     }
                 }

@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/google/uuid"
+
 	"github.com/langhua98/xiaoju-cloud/internal/media"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 )
@@ -40,6 +42,9 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		Names string `json:"names"`
 		Sizes string `json:"sizes"`
 		Dates string `json:"dates"`
+		// Times：App 另外报的创建时间（Unix 秒，一行一个，和 names 对齐；没有的空一行）。
+		// 认出传过、但网盘里还不知道拍摄时间的文件（没有 EXIF），记上这个时间，相册才能按拍摄时间排。
+		Times string `json:"times"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "plan request must be JSON with names and sizes")
@@ -82,6 +87,12 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	times := splitLines(req.Times)
+	if len(times) != len(names) {
+		times = nil
+	}
+	var fillIDs []uuid.UUID // 认出传过、还不知道拍摄时间的文件，记上 App 报的时间
+	var fillTimes []time.Time
 	matched, keys, checks := make([]bool, len(names)), make([]string, len(names)), make([]planCheck, len(names))
 	var dateMismatch []int // 名字（和大小）对得上、拍摄日期差得远的：多半是同名的另一张照片
 	nameMatched, dateAgreed, unparsedSizes, unparsedDates := 0, 0, 0, 0
@@ -109,6 +120,12 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 			byName = true
 			if ok, sure := c.dateOK(f, s.loc); ok {
 				matched[i], agreed = true, sure
+				// 同名的只有这一个时才记（同名的几个里分不清是哪一个）
+				if f.TakenAt == nil && !f.Alias && times != nil && len(stored[key]) == 1 {
+					if t := parseUnixTime(times[i]); t != nil {
+						fillIDs, fillTimes = append(fillIDs, f.ID), append(fillTimes, *t)
+					}
+				}
 				break
 			}
 		}
@@ -150,6 +167,14 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		s.log.Info("ingest plan: same name, taken on another day", "phone_name", strconv.Quote(names[i]),
 			"phone_date", strconv.Quote(dates[i]), "stored", takenDays(stored[keys[i]], s.loc))
+	}
+
+	if len(fillIDs) > 0 {
+		if n, err := s.svc.Store().FillTakenAt(r.Context(), fillIDs, fillTimes); err != nil {
+			s.log.Warn("ingest plan: fill taken_at", "err", err)
+		} else if n > 0 {
+			s.log.Info("ingest plan: filled capture times reported by the phone", "files", n)
+		}
 	}
 
 	// 以前被 iOS 截断了名字存进来的（见 cutnames.go）：改回真名，当作传过
@@ -225,6 +250,19 @@ func takenDays(files []meta.NameSize, loc *time.Location) string {
 		}
 	}
 	return strings.Join(out, ",")
+}
+
+// parseUnixTime 读 Unix 秒（可以带小数），明显不对的（1971 年以前、比现在晚两天以上）返回 nil。
+func parseUnixTime(v string) *time.Time {
+	sec, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return nil
+	}
+	t := time.UnixMilli(int64(sec * 1000)).UTC()
+	if t.Before(time.Date(1971, 1, 1, 0, 0, 0, 0, time.UTC)) || t.After(time.Now().Add(48*time.Hour)) {
+		return nil
+	}
+	return &t
 }
 
 func isMediaExt(ext string) bool {
