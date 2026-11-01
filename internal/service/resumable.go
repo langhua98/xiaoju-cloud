@@ -60,6 +60,8 @@ type ResumableRequest struct {
 	Probe string
 	// SkipSameContent 同 UploadRequest：传完时网盘里已经有内容一样的就不存，返回 *SameContentError。
 	SkipSameContent bool
+	// TakenAt 同 UploadRequest。
+	TakenAt *time.Time
 }
 
 // UploadProgress 是断点续传的进度。
@@ -270,7 +272,7 @@ func (s *Service) StartUpload(ctx context.Context, req ResumableRequest) (*Uploa
 		return nil, err
 	}
 	f, err = s.store.CreateUpload(ctx, &meta.File{
-		UserID: req.UserID, ParentID: req.ParentID, Name: req.Name, Mime: req.Mime, DEKWrapped: wrapped,
+		UserID: req.UserID, ParentID: req.ParentID, Name: req.Name, Mime: req.Mime, DEKWrapped: wrapped, TakenAt: req.TakenAt,
 	})
 	if err != nil {
 		return nil, err

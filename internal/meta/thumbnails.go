@@ -37,16 +37,30 @@ func (s *Store) GetThumbnail(ctx context.Context, fileID uuid.UUID) (*Thumbnail,
 }
 
 // PutThumbnail 保存缩略图（已有的覆盖），版本记为 ThumbnailVersion，同时记下拍摄时间。
+// 文件里读不到拍摄时间（微信存的图、没有 EXIF 的截图）时保留原来的：手机上传时报的照片创建时间（FillTakenAt）。
 // 文件在这期间被永久删除时什么也不做。
 func (s *Store) PutThumbnail(ctx context.Context, t *Thumbnail) error {
 	_, err := s.db.Exec(ctx, `
-		WITH f AS (UPDATE files SET taken_at = $4 WHERE id = $1 RETURNING id)
+		WITH f AS (UPDATE files SET taken_at = COALESCE($4, taken_at) WHERE id = $1 RETURNING id)
 		INSERT INTO thumbnails (file_id, data, duration_ms, version)
 		SELECT id, $2, $3, $5 FROM f
 		ON CONFLICT (file_id) DO UPDATE SET data = EXCLUDED.data, duration_ms = EXCLUDED.duration_ms,
 		                                    version = EXCLUDED.version, created_at = now()`,
 		t.FileID, t.Data, t.Duration.Milliseconds(), t.Taken, ThumbnailVersion)
 	return err
+}
+
+// FillTakenAt 给还不知道拍摄时间的文件记上手机报的时间（照片在手机相册里的创建时间）。已经有的不改：
+// 文件里读出来的 EXIF 优先。返回改了几个。
+func (s *Store) FillTakenAt(ctx context.Context, ids []uuid.UUID, times []time.Time) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE files f SET taken_at = v.t
+		FROM unnest($1::uuid[], $2::timestamptz[]) AS v(id, t)
+		WHERE f.id = v.id AND f.taken_at IS NULL`, ids, times)
+	return tag.RowsAffected(), err
 }
 
 // ListThumbnailBackfill 按上传先后列出需要（重新）生成缩略图的照片、视频：还没有缩略图，或者是旧版本生成的。

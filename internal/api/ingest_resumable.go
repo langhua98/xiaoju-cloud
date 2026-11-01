@@ -59,6 +59,7 @@ func (s *Server) startIngestUpload(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	} else if f != nil {
+		s.fillTakenAt(r.Context(), f, ingestTakenAt(r))
 		writeJSON(w, http.StatusOK, map[string]any{"result": "skipped", "name": f.Name})
 		return
 	}
@@ -73,7 +74,7 @@ func (s *Server) startIngestUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		p, err := s.svc.StartUpload(r.Context(), service.ResumableRequest{
 			UserID: s.userID, ParentID: &album.ID, Name: n, Mime: mimeType, Size: size,
-			Probe: r.Header.Get("X-Upload-Probe"), SkipSameContent: sub == "",
+			Probe: r.Header.Get("X-Upload-Probe"), SkipSameContent: sub == "", TakenAt: ingestTakenAt(r),
 		})
 		if errors.Is(err, meta.ErrConflict) { // 同名的已有文件（大小不同）：换个名字
 			continue
