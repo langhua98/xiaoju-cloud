@@ -16,6 +16,9 @@ on:
       - ".github/workflows/diagnose-hf.yml"
       - "shortcuts/**"
       - ".github/workflows/shortcut.yml"
+      # iPhone App 的改动不用重启服务端（重启会打断正在进行的下载）
+      - "ios/**"
+      - ".github/workflows/ios.yml"
 
 concurrency:
   group: deploy-hf

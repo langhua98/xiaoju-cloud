@@ -121,7 +121,7 @@ func (s *Server) Handler() http.Handler {
 	files("GET /api/uploads/{id}", s.uploadStatus)
 	files("PUT /api/uploads/{id}", s.tracked(s.writeUpload))
 	files("GET /api/files/{id}", s.getFile)
-	files("GET /api/files/{id}/content", s.download)
+	files("GET /api/files/{id}/content", s.tracked(s.download))
 	files("POST /api/files/{id}/link", s.createLink)
 	files("DELETE /api/files/{id}", s.deleteFile)
 	files("PATCH /api/files/{id}", s.patchFile)
@@ -178,12 +178,12 @@ func (s *Server) Handler() http.Handler {
 	// MCP（Streamable HTTP）：Claude 等 AI 直接当连接器接上，用 agent 令牌认证（见 mcp.go）
 	mux.Handle("/mcp", s.cors(s.requireAgent(s.mcp)))
 	// 签名下载链接不需要请求头认证，浏览器可以直接打开、<video> 可以直接播放。
-	mux.HandleFunc("GET /dl/{id}", s.signedDownload)
+	mux.HandleFunc("GET /dl/{id}", s.tracked(s.signedDownload))
 	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
 	mux.HandleFunc("GET /pv/{id}", s.signedPreview)
 	// 分享直链：单个文件的分享不用打开分享页，点开就下载（见 shares.go 的 shareDirect）
-	mux.HandleFunc("GET /d/{token}", s.limited(s.shareLimit, s.shareDirect))
-	mux.HandleFunc("GET /d/{token}/{name...}", s.limited(s.shareLimit, s.shareDirect))
+	mux.HandleFunc("GET /d/{token}", s.limited(s.shareLimit, s.tracked(s.shareDirect)))
+	mux.HandleFunc("GET /d/{token}/{name...}", s.limited(s.shareLimit, s.tracked(s.shareDirect)))
 	// 上传链接（给 AI agent 用）：不需要认证，只能往链接的文件夹里传，见 drops.go
 	mux.HandleFunc("GET /u/{token}", s.limited(s.dropAskLimit, s.dropPage))
 	mux.HandleFunc("GET /u/{token}/{$}", s.limited(s.dropAskLimit, s.dropPage))
