@@ -148,7 +148,8 @@ final class Cloud: ObservableObject {
         try await send("DELETE", "/api/files/\(item.id)")
     }
 
-    // 下载原文件到临时目录（保留文件名，存到「照片」「文件」时按扩展名认格式），边下边报进度 0…1。
+    // 下载原文件到临时目录（保留文件名，存到「照片」「文件」时按扩展名认格式），边下边报进度 0…1，
+    // 下到的字节同时记进网速表（「备份」页的下载卡片），取消了的也算。
     // 用完由调用方删掉，或交给「存储到」移走。
     func download(_ item: CloudItem, progress: @escaping @MainActor (Double) -> Void = { _ in }) async throws -> URL {
         let link = try await self.link(for: item)
@@ -168,15 +169,18 @@ final class Cloud: ObservableObject {
                     }
                     do {
                         try FileManager.default.moveItem(at: temp, to: dest) // 回调返回后系统会删掉 temp，必须在这里移走
-                        NetMeter.shared.received((try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0)
+                        let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? 0
+                        box.count(upTo: size) // 补上最后一次进度回调之后到的
                         cont.resume(returning: dest)
                     } catch {
                         cont.resume(throwing: error)
                     }
                 }
                 box.task = task
-                box.observation = task.progress.observe(\.fractionCompleted) { p, _ in
-                    let value = p.fractionCompleted
+                // 看已收到的字节数（服务端没给总大小时 fractionCompleted 不动，字节数照样涨）
+                box.observation = task.progress.observe(\.completedUnitCount) { p, _ in
+                    box.count(upTo: p.completedUnitCount)
+                    let value = p.totalUnitCount > 0 ? p.fractionCompleted : 0
                     Task { @MainActor in progress(value) }
                 }
                 task.resume()
@@ -377,8 +381,20 @@ enum Keychain {
     }
 }
 
-// 下载任务和进度监听，取消时要拿到任务
+// 下载任务和进度监听，取消时要拿到任务；counted 是已经记进网速表的字节数
 private final class DownloadBox: @unchecked Sendable {
     var task: URLSessionDownloadTask?
     var observation: NSKeyValueObservation?
+    private let lock = NSLock()
+    private var counted: Int64 = 0
+
+    // 收到的字节数涨到 bytes：把多出来的记进网速表
+    func count(upTo bytes: Int64) {
+        let delta: Int64 = lock.withLock {
+            let d = bytes - counted
+            if d > 0 { counted = bytes }
+            return d
+        }
+        NetMeter.shared.received(delta)
+    }
 }

@@ -167,7 +167,7 @@ struct FolderView: View {
                     icon(item)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).lineLimit(1).truncationMode(.middle)
-                        Text(detail(item)).font(.caption).foregroundStyle(.secondary)
+                        Text(detail(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                     if item.isPrivate ?? false {
@@ -212,7 +212,12 @@ struct FolderView: View {
             return "\(c.photos + c.videos + c.others) 项"
         }
         if item.isFolder { return item.date.formatted(date: .abbreviated, time: .omitted) }
-        return "\(sizeText(item.size)) · \(item.date.formatted(date: .abbreviated, time: .shortened))"
+        // 右边有两个按钮，日期写短一点（今年的不写年份），一行放得下
+        let sameYear = Calendar.current.isDate(item.date, equalTo: Date(), toGranularity: .year)
+        let date = sameYear
+            ? item.date.formatted(.dateTime.month(.defaultDigits).day().hour().minute())
+            : item.date.formatted(.dateTime.year().month(.defaultDigits).day())
+        return "\(sizeText(item.size)) · \(date)"
     }
 
     // MARK: 动作
