@@ -3,7 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // 「文件」页：像「文件」App 一样一层层浏览云盘。顶上搜索当前文件夹、按类型筛选；
-// 右上角「＋」上传文件、新建文件夹（都放进当前文件夹）；左滑删除，长按重命名、分享链接、下载（存到「照片」「文件」）。
+// 右上角「＋」上传文件、新建文件夹（都放进当前文件夹）；文件右边有分享（直链）、下载（存到「文件」）两个按钮；
+// 左滑删除，长按重命名、分享、存到「照片」「文件」。
 struct FilesView: View {
     var body: some View {
         NavigationStack {
@@ -155,26 +156,43 @@ struct FolderView: View {
         }
     }
 
+    // 一行：点名字打开；文件右边两个按钮，分享（生成直链）、下载（存到「文件」）
     private func row(_ item: CloudItem) -> some View {
-        Button {
-            Task { await open(item) }
-        } label: {
-            HStack(spacing: 12) {
-                icon(item)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.name).lineLimit(1).truncationMode(.middle)
-                    Text(detail(item)).font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            Button {
+                Task { await open(item) }
+            } label: {
+                HStack(spacing: 12) {
+                    icon(item)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name).lineLimit(1).truncationMode(.middle)
+                        Text(detail(item)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    if item.isPrivate ?? false {
+                        Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if item.isFolder {
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
                 }
-                Spacer()
-                if item.isPrivate ?? false {
-                    Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if !item.isFolder {
+                Button { sharing = item } label: {
+                    Image(systemName: "link").font(.title3).frame(width: 34, height: 34)
                 }
-                if item.isFolder {
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                .accessibilityLabel("分享直链")
+                Button { startDownload(item, toPhotos: false) } label: {
+                    Image(systemName: "arrow.down.circle").font(.title3).frame(width: 34, height: 34)
                 }
+                .accessibilityLabel("下载到「文件」")
+                .disabled(downloading != nil)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
+        .tint(.brand)
     }
 
     @ViewBuilder

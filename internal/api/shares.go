@@ -37,6 +37,8 @@ import (
 //	     → {"share": {"name","type","expires_at"}, "folder", "crumbs", "items": [条目，文件带 "url"（下载）和 "preview"]}
 //	     没有 / 撤销了 404，过期 410 share_expired，要密码 401 share_password
 //	POST /api/s/{token}/unlock {"password"} → {"key"}（12 小时内有效，放进 X-Share-Key）；密码不对 403
+//	GET  /d/{token}[/文件名] 直链：单个文件、没设密码的分享直接返回文件（支持 Range，下载工具能断点续传）。
+//	     文件夹 400 share_folder，设了密码 401 share_password；其他和上面一样（撤销、过期就失效）
 
 const (
 	shareKeyTTL        = 12 * time.Hour
@@ -262,4 +264,27 @@ func (s *Server) shareCrumbs(ctx context.Context, sh *meta.Share, folder *meta.F
 		}
 		f = parent
 	}
+}
+
+// shareDirect 是分享的直链：链接末尾的文件名只是为了好看、下载工具好起名，不参与校验。
+// 有密码的分享没有直链（直链带不了密码）；只在第一次请求（不是续传）时记一次查看。
+func (s *Server) shareDirect(w http.ResponseWriter, r *http.Request) {
+	sh := s.shareFor(w, r, false)
+	if sh == nil {
+		return
+	}
+	if sh.File.Type != meta.TypeFile {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a folder has no direct link, open the share page", "code": "share_folder"})
+		return
+	}
+	if sh.HasPassword() {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "this link needs a password, open the share page", "code": "share_password"})
+		return
+	}
+	if rg := r.Header.Get("Range"); rg == "" || strings.HasPrefix(rg, "bytes=0-") {
+		if err := s.svc.Store().CountShareView(r.Context(), sh.ID); err != nil {
+			s.log.Warn("share: count view", "err", err)
+		}
+	}
+	s.serveContent(w, r, sh.FileID)
 }

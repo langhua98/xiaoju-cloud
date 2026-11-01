@@ -147,11 +147,34 @@ func TestShares(t *testing.T) {
 		t.Fatalf("file share: %d %v", code, out)
 	}
 
+	// 直链：单个文件点开就下载，末尾的文件名随便写；文件夹、有密码的没有直链
+	for _, path := range []string{"/d/" + fsh["token"].(string), "/d/" + fsh["token"].(string) + "/s.txt"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || string(b) != "secret" || !strings.HasPrefix(resp.Header.Get("Content-Disposition"), "attachment") {
+			t.Fatalf("direct link %s: %d %q", path, resp.StatusCode, b)
+		}
+	}
+	if code, out := call(false, "GET", "/d/"+token, ""); code != 400 || out["code"] != "share_folder" {
+		t.Fatalf("direct link to a folder: %d %v", code, out)
+	}
+	if code, _ := call(false, "GET", "/d/nope/x.txt", ""); code != 404 {
+		t.Fatalf("direct link, unknown token: %d", code)
+	}
+
 	// 密码
 	psh := share(trip, 1, "芝麻开门")
 	ptoken := psh["token"].(string)
 	if code, out := call(false, "GET", "/api/s/"+ptoken, ""); code != 401 || out["code"] != "share_password" {
 		t.Fatalf("needs password: %d %v", code, out)
+	}
+	pfile := share(secret, 1, "芝麻开门")
+	if code, out := call(false, "GET", "/d/"+pfile["token"].(string), ""); code != 401 || out["code"] != "share_password" {
+		t.Fatalf("direct link with password: %d %v", code, out)
 	}
 	if code, _ := call(false, "POST", "/api/s/"+ptoken+"/unlock", `{"password":"wrong"}`); code != 403 {
 		t.Fatalf("wrong password: %d", code)
@@ -179,7 +202,7 @@ func TestShares(t *testing.T) {
 
 	// 列出、撤销
 	code, out = call(true, "GET", "/api/shares", "")
-	if code != 200 || len(out["items"].([]any)) != 3 {
+	if code != 200 || len(out["items"].([]any)) != 4 {
 		t.Fatalf("list shares: %d %v", code, out)
 	}
 	if code, _ := call(true, "DELETE", "/api/shares/"+fsh["id"].(string), ""); code != 204 {
@@ -187,6 +210,9 @@ func TestShares(t *testing.T) {
 	}
 	if code, _ := call(false, "GET", "/api/s/"+fsh["token"].(string), ""); code != 404 {
 		t.Fatalf("revoked: %d", code)
+	}
+	if code, _ := call(false, "GET", "/d/"+fsh["token"].(string), ""); code != 404 {
+		t.Fatalf("revoked direct link: %d", code)
 	}
 	// 分享的文件夹进了回收站：看不了
 	call(true, "DELETE", "/api/files/"+trip, "")

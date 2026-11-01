@@ -190,6 +190,12 @@ final class Cloud: ObservableObject {
         try await post("/api/shares", json: ["file_id": item.id, "expires_days": days, "password": password], as: CloudShare.self)
     }
 
+    // 直链：点开就下载（服务端 /d/{token}/文件名，没设提取码的单个文件才有）。末尾的文件名只是让下载工具好起名。
+    func directURL(_ share: CloudShare, name: String) -> String {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? "file"
+        return absolute("/d/\(share.token)/\(encoded)")?.absoluteString ?? share.token
+    }
+
     func shareURL(_ share: CloudShare) -> String {
         guard let web = webURL else { return share.token }
         return URL(string: "share.html#\(share.token)", relativeTo: web)?.absoluteString ?? share.token
