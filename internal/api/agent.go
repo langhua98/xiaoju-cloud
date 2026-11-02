@@ -68,7 +68,7 @@ var defaultAgentLimits = map[string]int64{
 	quotaDownloadBytes: 0, // 上传下载默认不限量（2026-10-22 William 要求）；想限的话网页或 PATCH 单独设
 	quotaMedia:         0,
 	quotaUploadBytes:   0,
-	quotaShares:        20,
+	quotaShares:        0, // 分享不限量（2026-11-02 William 要求）
 }
 
 const (
