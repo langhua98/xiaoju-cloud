@@ -27,6 +27,7 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/auth"
 	"github.com/langhua98/xiaoju-cloud/internal/config"
 	"github.com/langhua98/xiaoju-cloud/internal/db"
+	"github.com/langhua98/xiaoju-cloud/internal/gdrive"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 	"github.com/langhua98/xiaoju-cloud/internal/storage"
@@ -173,6 +174,12 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		log.Warn("face / fingerprint login not configured: set XIAOJU_CORS_ORIGINS (or XIAOJU_WEBAUTHN_RP_ID / XIAOJU_WEBAUTHN_ORIGINS)")
 	}
 
+	// 谷歌云盘同步：没配置 OAuth 客户端时不启动，网页上提示怎么配置
+	gsync := gdrive.New(&gdrive.OAuth{ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Endpoints: gdrive.Google},
+		svc, userID, cfg.MasterKey, log.With("component", "gdrive"))
+	log.Info("google drive sync", "configured", gsync.Configured())
+	go gsync.Run(ctx, 3*time.Minute, 2*time.Minute)
+
 	sessions, err := auth.NewSessionsWithStore(ctx, cfg.AdminToken, store)
 	if err != nil {
 		return err
@@ -180,6 +187,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	server := api.New(svc, api.Options{
 		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
 		Passkeys: passkeys, Grid: grid, Sessions: sessions, Location: cfg.Location,
+		GDrive: gsync, PublicURL: cfg.PublicURL,
 	})
 	go server.RunAgentMaintenance(ctx, 6*time.Hour) // 删掉 180 天前的 AI 助手审计日志
 	handler := server.Handler()

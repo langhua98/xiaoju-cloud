@@ -33,6 +33,9 @@ SECRET_KEYS = [
     "TG_BACKUP_EXTRA_BOT_TOKENS",
     # 可选：只给 AI agent 接口用的 Bot（同一个频道的管理员）
     "TG_AGENT_BOT_TOKENS",
+    # 可选：谷歌云盘同步的 OAuth 客户端（Google Cloud Console 里建的“Web 应用”）
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
 ]
 VARIABLE_KEYS = [
     "TG_TRANSPORT",
@@ -44,6 +47,8 @@ VARIABLE_KEYS = [
     "XIAOJU_TIMEZONE",
     # 可选：TG_EXTRA_BOT_TOKENS 里哪几个 Bot 只给 AI agent 接口用（Bot 的数字 ID，不是令牌）
     "TG_AGENT_BOTS",
+    # 可选：服务端对外的地址（谷歌授权完跳回来用），不填按请求的域名算
+    "XIAOJU_PUBLIC_URL",
 ]
 # 这些变量在 GitHub 里删掉后，也要从 Space 上删掉（否则会一直生效）
 REMOVE_WHEN_UNSET = {"XIAOJU_PASSKEY_RESET", "TG_AGENT_BOTS"}
