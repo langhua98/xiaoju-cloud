@@ -4,6 +4,9 @@
 //	xiaoju serve               启动 HTTP 服务（未配置数据库时进入 Telegram 连通性诊断模式）
 //	xiaoju check               只检查 Telegram 登录与频道访问
 //	xiaoju thumb IN OUT.jpg    给本地的照片 / 视频生成缩略图（检查镜像里的 vips、ffmpeg 是否可用）
+//	xiaoju dbbackup OUT.xjdb   把数据库导出成一个加密的备份文件
+//	xiaoju dbrestore [FILE]    把备份恢复进一个空数据库（不给 FILE 时从频道的置顶消息下载最新的备份）
+//	xiaoju dbrestore --check [FILE]  只下载、解密、检查备份文件，不写数据库
 package main
 
 import (
@@ -74,6 +77,10 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 		return serve(ctx, cfg, log)
 	case "check":
 		return checkTelegram(ctx, cfg, log)
+	case "dbbackup":
+		return dbBackupCmd(ctx, cfg, args[1:], log)
+	case "dbrestore":
+		return dbRestoreCmd(ctx, cfg, args[1:], log)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -148,6 +155,9 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	// 定期检查（启动 10 分钟后开始，查完一轮每小时看一次有没有到期要查的）
 	go svc.RunScrub(ctx, 10*time.Minute, time.Hour)
 	go svc.BackfillThumbnails(ctx)
+	// 数据库自动备份：每天一次，存进网盘「数据库备份」文件夹和两个频道的置顶消息（见 service/dbbackup.go）
+	svc.EnableDBBackup(service.DBBackupOptions{UserID: userID, Every: cfg.DBBackupEvery, Location: cfg.Location})
+	go svc.RunDBBackup(ctx, 15*time.Minute)
 
 	passkeys, err := auth.NewPasskeys(ctx, store, userID, auth.PasskeyConfig{RPID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins})
 	if err != nil {

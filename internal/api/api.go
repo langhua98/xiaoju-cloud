@@ -153,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 	s.gdriveRoutes(files, mux)
 
 	ops("GET /api/backup/status", s.backupStatus)
+	ops("POST /api/backup/db", s.startDBBackup)
 	ops("GET /api/stats", s.stats)
 	ops("GET /api/backup/phone", s.phoneBackup)
 	// 对账：GET 只出报告；POST 执行修复和残块清理
@@ -559,6 +560,18 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// POST /api/backup/db 马上备份一次数据库（在后台做，进度看 /api/backup/status 的 db 字段）。
+func (s *Server) startDBBackup(w http.ResponseWriter, r *http.Request) {
+	switch err := s.svc.StartDBBackup(); {
+	case errors.Is(err, service.ErrDBBackupRunning):
+		writeError(w, http.StatusConflict, err.Error())
+	case err != nil:
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	default:
+		writeJSON(w, http.StatusAccepted, map[string]bool{"started": true})
+	}
 }
 
 func (s *Server) reconcile(apply bool) http.HandlerFunc {

@@ -46,6 +46,9 @@ type Config struct {
 	// PublicURL（XIAOJU_PUBLIC_URL，可选）是服务端对外的地址，谷歌授权完跳回 PublicURL/gdrive/callback；不填按请求的 Host 算。
 	PublicURL string
 
+	// DBBackupEvery（XIAOJU_DB_BACKUP_EVERY，默认 24h）是多久自动备份一次数据库。
+	DBBackupEvery time.Duration
+
 	Telegram Telegram
 }
 
@@ -125,6 +128,14 @@ func Load() (*Config, error) {
 		}
 	}
 	c.PasskeyReset, _ = strconv.ParseBool(os.Getenv("XIAOJU_PASSKEY_RESET"))
+	c.DBBackupEvery = 24 * time.Hour
+	if v := strings.TrimSpace(os.Getenv("XIAOJU_DB_BACKUP_EVERY")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Hour {
+			return nil, fmt.Errorf("XIAOJU_DB_BACKUP_EVERY must be a duration of at least 1h, like 24h or 12h")
+		}
+		c.DBBackupEvery = d
+	}
 
 	var err error
 	tz := env("XIAOJU_TIMEZONE", "Asia/Shanghai")

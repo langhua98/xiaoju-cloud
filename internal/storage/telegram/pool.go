@@ -268,3 +268,20 @@ func (p *Pool) Delete(ctx context.Context, locs []storage.Location) error {
 func (p *Pool) List(ctx context.Context, minMessageID int64, fn func(storage.Object) error) error {
 	return p.primary().List(ctx, minMessageID, fn)
 }
+
+// Pin、Pinned 用主 Bot（置顶不常用，不用轮流）。
+func (p *Pool) Pin(ctx context.Context, loc storage.Location, unpin bool) error {
+	pin, ok := p.primary().(storage.Pinner)
+	if !ok {
+		return fmt.Errorf("telegram: primary bot cannot pin")
+	}
+	return pin.Pin(ctx, loc, unpin)
+}
+
+func (p *Pool) Pinned(ctx context.Context) (storage.Object, string, error) {
+	pin, ok := p.primary().(storage.Pinner)
+	if !ok {
+		return storage.Object{}, "", fmt.Errorf("telegram: primary bot cannot pin")
+	}
+	return pin.Pinned(ctx)
+}
