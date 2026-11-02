@@ -2903,6 +2903,7 @@ const ACTIONS = {
   shares: () => openShares(),
   drops: () => openDrops(),
   agents: () => openAgents(),
+  gdrive: () => openGDrive(),
   install: () => installApp(),
   security: () => openSecurity(),
   shortcuts: () => openShortcuts(),
@@ -3236,6 +3237,190 @@ $("#drop-copy").addEventListener("click", async () => {
 $("#drop-copy-prompt").addEventListener("click", async () => {
   toast((await copyText(dropPrompt($("#drop-url").value))) ? "已复制，粘贴给 AI 就行" : "复制不了，长按上面的链接复制");
 });
+
+// ---------- 谷歌云盘同步 ----------
+// 连接谷歌账号（新窗口里点同意），挑一个谷歌云盘文件夹和网盘里的文件夹配对，服务端在后台双向同步（见 internal/gdrive）。
+
+let gdriveTimer = 0;
+
+async function openGDrive() {
+  const dlg = $("#gdrive-dlg");
+  if (!dlg.open) dlg.showModal();
+  renderGDrive();
+}
+
+function gdriveWatch(fn, ms) {
+  clearTimeout(gdriveTimer);
+  gdriveTimer = setTimeout(() => { if ($("#gdrive-dlg").open) fn(); }, ms);
+}
+
+function gdriveResult(l) {
+  const r = l.last_result || {};
+  if (!l.last_sync_at) return "等第一次同步…";
+  const did = [];
+  if (r.down) did.push(`下载 ${r.down}`);
+  if (r.up) did.push(`上传 ${r.up}`);
+  if (r.folders) did.push(`新建文件夹 ${r.folders}`);
+  if (r.renamed) did.push(`改名移动 ${r.renamed}`);
+  if (r.trashed) did.push(`删除 ${r.trashed}`);
+  if (r.conflicts) did.push(`冲突留副本 ${r.conflicts}`);
+  return `${formatDate(l.last_sync_at)} 同步 · 共 ${r.items || 0} 项${did.length ? ` · 这次${did.join("、")}` : ""}${r.skipped ? ` · 跳过谷歌文档 ${r.skipped}` : ""}`;
+}
+
+async function renderGDrive() {
+  const body = $("#gdrive-body");
+  if (!body.childElementCount) body.replaceChildren(mk("p", { className: "hint", textContent: "正在读取…" }));
+  let st;
+  try { st = await request("GET", "/api/gdrive"); } catch (err) {
+    body.replaceChildren(mk("p", { className: "error", textContent: err.status === 404 ? "服务端还是旧版本，没有谷歌云盘同步" : err.message }),
+      mk("div", { className: "dialog-actions" }, agentCloseBtn()));
+    return;
+  }
+  const parts = [];
+  if (!st.configured) {
+    const url = mk("input", { type: "text", readOnly: true, className: "share-url", value: st.redirect_uri });
+    const copy = mk("button", { type: "button" }, icon("copy"), "复制回调地址");
+    copy.addEventListener("click", async () => toast((await copyText(st.redirect_uri)) ? "已复制" : "复制不了，长按上面的地址复制"));
+    parts.push(mk("p", { className: "hint", textContent: "服务端还没配置谷歌授权。在 Google Cloud 建一个 OAuth 客户端（Web 应用），“已获授权的重定向 URI”填下面这个地址，再把客户端 ID 和密钥填进 GitHub Secrets（GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET），重新部署就能用了。" }),
+      url, mk("div", { className: "dialog-actions wrap" }, copy, agentCloseBtn()));
+    body.replaceChildren(...parts);
+    return;
+  }
+  if (!st.connected) {
+    const go = mk("a", { className: "button primary", textContent: "连接谷歌云盘", target: "_blank", rel: "noopener" });
+    go.setAttribute("aria-disabled", "true");
+    request("POST", "/api/gdrive/connect").then((r) => { go.href = r.url; go.removeAttribute("aria-disabled"); }).catch(fail);
+    go.addEventListener("click", () => {
+      toast("在新打开的页面里登录谷歌、点“允许”，完成后回到这里");
+      const poll = async (n) => {
+        if (!$("#gdrive-dlg").open || n > 100) return;
+        try { if ((await request("GET", "/api/gdrive")).connected) { toast("谷歌云盘已连接"); renderGDrive(); return; } } catch { /* 再等等 */ }
+        gdriveWatch(() => poll(n + 1), 3000);
+      };
+      gdriveWatch(() => poll(0), 3000);
+    });
+    parts.push(mk("p", { className: "hint", textContent: "连接你的谷歌账号后，可以把谷歌云盘里的一个文件夹和网盘里的一个文件夹双向同步：哪边新增、改名、移动、删除，另一边都跟着变（删除只进回收站）。" }),
+      mk("div", { className: "dialog-actions wrap" }, agentCloseBtn(), go));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  parts.push(mk("p", { className: "hint", textContent: `已连接 ${st.email || "谷歌账号"}。每 2 分钟看一次两边有没有变化；删除的都在回收站里，30 天内能找回。两边都改了同一个文件时两份都留，名字后面加“(谷歌)”或“(小橘)”。` }));
+  if (st.error) {
+    const again = mk("button", { type: "button", className: "small", textContent: "重新连接" });
+    again.addEventListener("click", async () => {
+      try { const r = await request("POST", "/api/gdrive/connect"); window.open(r.url, "_blank", "noopener"); } catch (err) { fail(err); }
+    });
+    parts.push(mk("p", { className: "error" }, st.error, " ", again));
+  }
+  const list = mk("ul", { className: "trash-list" });
+  if (!st.links.length) list.append(mk("li", { className: "empty", textContent: "还没有同步的文件夹" }));
+  for (const l of st.links) {
+    const btns = [];
+    if (l.paused) {
+      const go = mk("button", { type: "button", className: "small", textContent: "继续" });
+      go.addEventListener("click", async () => {
+        const many = l.last_error.includes("太多");
+        if (many && !confirm(`${l.last_error}\n\n确认要照样删吗？删的都进回收站。`)) return;
+        try { await request("POST", `/api/gdrive/links/${l.id}/resume`, { allow_deletes: many }); toast("已继续"); renderGDrive(); } catch (err) { fail(err); }
+      });
+      btns.push(go);
+    }
+    const stop = mk("button", { type: "button", className: "small danger", textContent: "停止" });
+    stop.addEventListener("click", async () => {
+      if (!confirm(`停止同步“${l.gdrive_name}”？两边的文件都留着不动。`)) return;
+      try { await request("DELETE", `/api/gdrive/links/${l.id}`); toast("已停止同步"); renderGDrive(); } catch (err) { fail(err); }
+    });
+    btns.push(stop);
+    const info = [gdriveResult(l)];
+    if (l.paused) info.unshift("已暂停");
+    const open = mk("b", { textContent: `谷歌「${l.gdrive_name}」⇄ 网盘「${l.folder_path || l.folder_name}」` });
+    open.style.cursor = "pointer";
+    open.addEventListener("click", async () => { await closeDialog($("#gdrive-dlg")); location.hash = `#/f/${l.folder_id}`; });
+    list.append(mk("li", { className: l.paused ? "dim" : "" }, icon("cloud", "ic lead"),
+      mk("div", { className: "info" }, open, mk("small", { textContent: info.join(" · ") }),
+        l.last_error ? mk("small", { className: "error", textContent: l.last_error }) : ""),
+      mk("div", { className: "acts" }, ...btns)));
+  }
+  parts.push(list);
+  const add = mk("button", { type: "button", className: "primary" }, icon("plus"), "添加同步文件夹");
+  add.addEventListener("click", () => renderGDrivePick("root"));
+  const now = mk("button", { type: "button", textContent: st.syncing ? "正在同步…" : "立即同步" });
+  now.disabled = !!st.syncing;
+  now.addEventListener("click", async () => {
+    try { await request("POST", "/api/gdrive/sync"); toast("开始同步"); gdriveWatch(renderGDrive, 1500); } catch (err) { fail(err); }
+  });
+  const off = mk("button", { type: "button", className: "danger", textContent: "断开谷歌账号" });
+  off.addEventListener("click", async () => {
+    if (!confirm("断开谷歌账号？所有同步都会停止，两边的文件都留着不动。")) return;
+    try { await request("DELETE", "/api/gdrive"); toast("已断开"); renderGDrive(); } catch (err) { fail(err); }
+  });
+  parts.push(mk("div", { className: "dialog-actions wrap" }, off, now, add), mk("div", { className: "dialog-actions" }, agentCloseBtn()));
+  body.replaceChildren(...parts);
+  gdriveWatch(renderGDrive, st.syncing ? 4000 : 30000);
+}
+
+// 挑谷歌云盘里的文件夹：点进去看子文件夹，“选这个”配对
+async function renderGDrivePick(id) {
+  clearTimeout(gdriveTimer);
+  const body = $("#gdrive-body");
+  body.replaceChildren(mk("p", { className: "hint", textContent: "正在读取谷歌云盘…" }));
+  let cur;
+  try { cur = await request("GET", `/api/gdrive/folders?parent=${encodeURIComponent(id)}`); } catch (err) {
+    fail(err);
+    renderGDrive();
+    return;
+  }
+  const list = mk("ul", { className: "trash-list" });
+  if (!cur.items.length) list.append(mk("li", { className: "empty", textContent: "没有子文件夹" }));
+  for (const f of cur.items) {
+    const li = mk("li", {}, icon("folder", "ic lead"), mk("div", { className: "info" }, mk("b", { textContent: f.name })), icon("chevron"));
+    li.style.cursor = "pointer";
+    li.addEventListener("click", () => renderGDrivePick(f.id));
+    list.append(li);
+  }
+  const back = mk("button", { type: "button", className: "ghost", textContent: cur.root ? "返回" : "上一级" });
+  back.addEventListener("click", () => (cur.root ? renderGDrive() : renderGDrivePick(cur.parent || "root")));
+  const pick = mk("button", { type: "button", className: "primary", textContent: "同步这个文件夹" });
+  pick.disabled = cur.root;
+  pick.addEventListener("click", () => renderGDriveTarget(cur));
+  body.replaceChildren(
+    mk("p", { className: "hint", textContent: cur.root ? "选一个谷歌云盘里的文件夹（点进去看里面的）。" : `谷歌云盘 › ${cur.name}` }),
+    list, mk("div", { className: "dialog-actions" }, back, pick));
+}
+
+// 网盘这边放在哪：新建同名文件夹（根目录 / 当前文件夹里），或者直接用当前文件夹
+function renderGDriveTarget(g) {
+  const body = $("#gdrive-body");
+  const here = state.chain?.[state.chain.length - 1];
+  const where = mk("select", {}, mk("option", { value: "new-root", textContent: `在根目录新建文件夹“${g.name}”` }));
+  if (here) {
+    where.append(mk("option", { value: "new-here", textContent: `在“${here.name}”里新建文件夹“${g.name}”` }),
+      mk("option", { value: "here", textContent: `直接用当前文件夹“${here.name}”（里面已有的文件会传到谷歌）` }));
+  }
+  const back = mk("button", { type: "button", className: "ghost", textContent: "返回" });
+  back.addEventListener("click", () => renderGDrivePick(g.id));
+  const go = mk("button", { type: "button", className: "primary", textContent: "开始同步" });
+  go.addEventListener("click", async () => {
+    const req = { gdrive_id: g.id };
+    if (where.value === "new-here") req.parent_id = here.id;
+    if (where.value === "here") req.folder_id = here.id;
+    go.disabled = true;
+    try {
+      await request("POST", "/api/gdrive/links", req);
+      toast("已添加，正在第一次同步");
+      renderGDrive();
+      load();
+    } catch (err) {
+      go.disabled = false;
+      toast(err.status === 409 ? "这个文件夹已经在同步了，或者和已经同步的文件夹重叠" : err.message);
+    }
+  });
+  body.replaceChildren(
+    mk("p", { className: "hint", textContent: `谷歌云盘「${g.name}」同步到网盘的哪里？第一次同步会把谷歌那边的文件下载过来，网盘这边已有的传上去；同名同内容的直接配对。` }),
+    mk("label", { className: "field" }, "网盘这边", where),
+    mk("div", { className: "dialog-actions" }, back, go));
+}
 
 // ---------- AI 助手 ----------
 // 给 AI agent 发令牌（REST 接口和 MCP 共用），批准它申请的危险操作，看它做过什么、一键撤销。
