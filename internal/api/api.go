@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/langhua98/xiaoju-cloud/internal/auth"
+	"github.com/langhua98/xiaoju-cloud/internal/gdrive"
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 	"github.com/langhua98/xiaoju-cloud/internal/service"
 	"github.com/langhua98/xiaoju-cloud/internal/storage"
@@ -46,6 +47,10 @@ type Server struct {
 
 	agents *agentState // AI agent：每把令牌的限速、被拒次数、批量预演（见 agent.go）
 
+	gdrive     *gdrive.Syncer // 谷歌云盘同步（见 gdrive.go），nil 时没有这个功能
+	gdriveAuth gdriveStates   // 等着谷歌跳回来的授权
+	publicURL  string
+
 	act     activity // 正在进行的上传（部署前问一下，见 activity.go）
 	started time.Time
 }
@@ -65,6 +70,10 @@ type Options struct {
 	Sessions *auth.Sessions
 	// Location 是用户所在的时区：快捷指令发来的拍摄日期（手机显示的当地时间）按它来比。nil 时用 UTC。
 	Location *time.Location
+	// GDrive 是谷歌云盘同步，nil 时网页上显示“没有配置”。
+	GDrive *gdrive.Syncer
+	// PublicURL 是服务端对外的地址（如 https://xxx.hf.space），谷歌授权完跳回来用；空时按请求的 Host 算。
+	PublicURL string
 }
 
 func New(svc *service.Service, opt Options) *Server {
@@ -84,7 +93,8 @@ func New(svc *service.Service, opt Options) *Server {
 		ingestLimit: newIPLimiter(600, 200), ingestAskLimit: newIPLimiter(600, 200),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
 		dropLimit: newIPLimiter(120, 60), dropAskLimit: newIPLimiter(60, 30),
-		agents:  newAgentState(),
+		agents: newAgentState(),
+		gdrive: opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),
 	}
 }
@@ -140,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 	// AI 助手：网页上管理 agent 令牌（agent_admin.go）；agent 自己用的接口（agent_files.go）带 agent 令牌，不走会话
 	s.agentAdminRoutes(files)
 	s.agentRoutes(api)
+	s.gdriveRoutes(files, mux)
 
 	ops("GET /api/backup/status", s.backupStatus)
 	ops("GET /api/stats", s.stats)

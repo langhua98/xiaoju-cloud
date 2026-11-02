@@ -40,6 +40,12 @@ type Config struct {
 
 	LocalDir string
 
+	// 谷歌云盘同步（可选）：Google Cloud 里建的 OAuth 客户端（“Web 应用”类型）。两项都填了网页上才能连接谷歌云盘。
+	GoogleClientID     string
+	GoogleClientSecret string
+	// PublicURL（XIAOJU_PUBLIC_URL，可选）是服务端对外的地址，谷歌授权完跳回 PublicURL/gdrive/callback；不填按请求的 Host 算。
+	PublicURL string
+
 	Telegram Telegram
 }
 
@@ -77,6 +83,10 @@ func Load() (*Config, error) {
 		Storage:     env("XIAOJU_STORAGE", "telegram"),
 		TempDir:     env("XIAOJU_TMP_DIR", os.TempDir()),
 		LocalDir:    env("XIAOJU_LOCAL_DIR", "./data/blobs"),
+
+		GoogleClientID:     strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID")),
+		GoogleClientSecret: strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_SECRET")),
+		PublicURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("XIAOJU_PUBLIC_URL")), "/"),
 		Telegram: Telegram{
 			AppHash:     os.Getenv("TG_APP_HASH"),
 			BotToken:    os.Getenv("TG_BOT_TOKEN"),

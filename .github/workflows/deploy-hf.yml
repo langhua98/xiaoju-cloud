@@ -84,6 +84,8 @@ jobs:
           TG_EXTRA_BOT_TOKENS: ${{ secrets.TG_EXTRA_BOT_TOKENS }}
           TG_BACKUP_EXTRA_BOT_TOKENS: ${{ secrets.TG_BACKUP_EXTRA_BOT_TOKENS }}
           TG_AGENT_BOT_TOKENS: ${{ secrets.TG_AGENT_BOT_TOKENS }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           TG_TRANSPORT: ${{ vars.TG_TRANSPORT }}
           TG_AGENT_BOTS: ${{ vars.TG_AGENT_BOTS }}
           DEPLOY_MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes || '60' }}
@@ -93,3 +95,4 @@ jobs:
           XIAOJU_WEBAUTHN_ORIGINS: ${{ vars.XIAOJU_WEBAUTHN_ORIGINS }}
           XIAOJU_PASSKEY_RESET: ${{ vars.XIAOJU_PASSKEY_RESET }}
           XIAOJU_TIMEZONE: ${{ vars.XIAOJU_TIMEZONE }}
+          XIAOJU_PUBLIC_URL: ${{ vars.XIAOJU_PUBLIC_URL }}
