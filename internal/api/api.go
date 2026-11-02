@@ -177,6 +177,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /api/ingest/uploads/{id}", s.limited(s.ingestLimit, s.tracked(s.writeUpload)))
 	api.HandleFunc("GET /api/ingest/names", s.limited(s.ingestAskLimit, s.ingestNames))
 	api.HandleFunc("POST /api/ingest/plan", s.limited(s.ingestAskLimit, s.tracked(s.ingestPlan)))
+	api.HandleFunc("POST /api/ingest/known", s.limited(s.ingestAskLimit, s.ingestKnown))
 	// 分享链接：不需要认证，见 shares.go
 	// 恢复到手机（App 用网页签发的恢复凭证），见 restore.go
 	api.HandleFunc("GET /api/restore/list", s.requireRestore(s.restoreList))

@@ -91,6 +91,12 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 	if len(times) != len(names) {
 		times = nil
 	}
+	// 手机上同名的有几张：同名的不止一张时不记拍摄时间（网盘里那一个是其中哪一张分不清，记错了，
+	// 真正的那张以后就对不上，没传的那张反而一直算传过）
+	phoneNames := map[string]int{}
+	for _, name := range names {
+		phoneNames[planKey(name, isMediaExt(filepath.Ext(name)))]++
+	}
 	var fillIDs []uuid.UUID // 认出传过、还不知道拍摄时间的文件，记上 App 报的时间
 	var fillTimes []time.Time
 	matched, keys, checks := make([]bool, len(names)), make([]string, len(names)), make([]planCheck, len(names))
@@ -120,8 +126,8 @@ func (s *Server) ingestPlan(w http.ResponseWriter, r *http.Request) {
 			byName = true
 			if ok, sure := c.dateOK(f, s.loc); ok {
 				matched[i], agreed = true, sure
-				// 同名的只有这一个时才记（同名的几个里分不清是哪一个）
-				if f.TakenAt == nil && !f.Alias && times != nil && len(stored[key]) == 1 {
+				// 网盘里、手机上同名的都只有这一个时才记（同名的几个里分不清是哪一个）
+				if f.TakenAt == nil && !f.Alias && times != nil && len(stored[key]) == 1 && phoneNames[key] == 1 {
 					if t := parseUnixTime(times[i]); t != nil {
 						fillIDs, fillTimes = append(fillIDs, f.ID), append(fillTimes, *t)
 					}

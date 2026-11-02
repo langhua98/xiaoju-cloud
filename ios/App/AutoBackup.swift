@@ -92,6 +92,8 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     private var job: Task<Void, Never>?
     private var done: Set<String> = []
     private var inCloud: Set<String> = [] // "target|assetLocalID"：按名字 + 拍摄日期认出云盘里已经有的（见 planMatch）
+    // 原件的指纹（整个文件的 SHA-256），"target|assetLocalID|资源类型" → 十六进制。原件不会变，算过一次就记下（见 verifyFingerprints）
+    private var fingerprints: [String: String] = [:]
     private var doneDirty = 0
     // 这一轮的统计。几张照片同时在准备、上传（见 backupPhotos），改的时候拿着 lock（用 count）
     private var tally = (uploaded: 0, skipped: 0, failed: 0)
@@ -137,6 +139,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
     }
     private var doneFile: URL { support.appendingPathComponent("uploaded.json") }
     private var inCloudFile: URL { support.appendingPathComponent("incloud.json") }
+    private var fingerprintFile: URL { support.appendingPathComponent("fingerprints.json") }
     private var spool: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("upload")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -154,6 +157,9 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         if let data = try? Data(contentsOf: inCloudFile), let keys = try? JSONDecoder().decode([String].self, from: data) {
             inCloud = Set(keys)
+        }
+        if let data = try? Data(contentsOf: fingerprintFile), let sums = try? JSONDecoder().decode([String: String].self, from: data) {
+            fingerprints = sums
         }
         if let data = defaults.data(forKey: Keys.failures), let list = try? JSONDecoder().decode([Failure].self, from: data) {
             failed = list
@@ -593,6 +599,7 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         await MainActor.run { checkedPhotos = start + assets.count }
         if let known = await names.value { matchNames(target: target, items: items, known: known) }
         await planMatch(target: target, items: items, album: album)
+        await verifyFingerprints(target: target, items: items, album: album)
     }
 
     // 云盘里已经有的（快捷指令、网页、之前装的 App 传过的）：取一次这个相册里每个文件“名字|大小”的摘要
@@ -674,6 +681,102 @@ final class AutoBackup: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         if let data = try? JSONEncoder().encode(keys) { try? data.write(to: inCloudFile, options: .atomic) }
         await MainActor.run { matched += 1 }
+    }
+
+    // 按名字 + 拍摄日期认出来的只是“像”：同名的不一定是同一张（换过手机编号从头来、微信存的图名字一样），
+    // 以前就有两百多张这样被当成传过。所以这些照片再按指纹核对：把原件整个算一遍 SHA-256，问服务端
+    // （POST /api/ingest/known，和上传时按内容去重同一个规则）。对得上的记成传过（done），
+    // 对不上的从 inCloud 拿掉：不算传过，备份时传原件。指纹算过就记下，以后只问一下服务端。
+    // 原件在 iCloud 上时要先下载；没算出来的（没网、下载失败）这次先照旧，下次再算。
+    private func verifyFingerprints(target: String, items: [Item], album: PhoneAlbum?) async {
+        guard album?.hidden ?? true, let url = URL(string: server + "/api/ingest/known") else { return }
+        let prefix = target + "|"
+        typealias Todo = (key: String, asset: String, resource: PHAssetResource)
+        let todo: [Todo] = lock.withLock {
+            items.filter { inCloud.contains(prefix + $0.id) }.flatMap { item in
+                item.resources.compactMap { r -> Todo? in
+                    let key = "\(target)|\(item.id)|\(r.type.rawValue)"
+                    return done.contains(key) ? nil : (key, item.id, r)
+                }
+            }
+        }
+        guard !todo.isEmpty else { return }
+        var sums: [String: String] = [:] // key → 指纹
+        await withTaskGroup(of: (String, String?).self) { group in
+            var running = 0
+            for t in todo {
+                if Task.isCancelled { break }
+                if let cached = lock.withLock({ fingerprints[t.key] }) {
+                    sums[t.key] = cached
+                    continue
+                }
+                if running >= 3, let (key, sum) = await group.next() {
+                    running -= 1
+                    if let sum { sums[key] = sum }
+                }
+                running += 1
+                group.addTask { (t.key, await Self.fingerprint(t.resource)) }
+            }
+            for await (key, sum) in group {
+                if let sum { sums[key] = sum }
+            }
+        }
+        let cache: [String: String] = lock.withLock {
+            fingerprints.merge(sums) { _, new in new }
+            return fingerprints
+        }
+        if let data = try? JSONEncoder().encode(cache) { try? data.write(to: fingerprintFile, options: .atomic) }
+
+        struct Known: Decodable {
+            let found: String
+            let files: Int
+        }
+        let keys = Array(sums.keys)
+        var asked: Set<String> = [], found: Set<String> = []
+        for start in stride(from: 0, to: keys.count, by: 2000) {
+            let chunk = Array(keys[start..<min(start + 2000, keys.count)])
+            var req = URLRequest(url: url, timeoutInterval: 60)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "album": album == nil ? "" : "hidden",
+                "sha256": chunk.compactMap { sums[$0] }.joined(separator: "\n"),
+            ])
+            guard let reply = try? await URLSession.shared.data(for: req),
+                  (reply.1 as? HTTPURLResponse)?.statusCode == 200,
+                  let known = try? JSONDecoder().decode(Known.self, from: reply.0), known.files == chunk.count else { continue }
+            asked.formUnion(chunk)
+            for line in known.found.split(separator: "\n") {
+                if let i = Int(line), i >= 1, i <= chunk.count { found.insert(chunk[i - 1]) }
+            }
+        }
+        guard !asked.isEmpty else { return }
+        for key in found { markDone(key) }
+        // 原件有一个对不上（照片或实况照片的视频）：这张不算传过，备份时把对不上的传上去
+        let assetOf = Dictionary(todo.map { ($0.key, $0.asset) }, uniquingKeysWith: { a, _ in a })
+        let wrong = Set(asked.subtracting(found).compactMap { assetOf[$0] })
+        let kept: [String] = lock.withLock {
+            for id in wrong { inCloud.remove(prefix + id) }
+            return Array(inCloud)
+        }
+        if let data = try? JSONEncoder().encode(kept) { try? data.write(to: inCloudFile, options: .atomic) }
+        saveDone(force: true)
+        if !wrong.isEmpty || !found.isEmpty { await MainActor.run { matched += 1 } }
+    }
+
+    // 一个原件的指纹：整个文件的 SHA-256（和服务端存的一样，上传时传的就是这些字节）。原件在 iCloud 上时先下载
+    private static func fingerprint(_ resource: PHAssetResource) async -> String? {
+        final class Hasher: @unchecked Sendable { var sha = SHA256() }
+        let hasher = Hasher()
+        let opts = PHAssetResourceRequestOptions()
+        opts.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { done in
+            PHAssetResourceManager.default().requestData(for: resource, options: opts) { data in
+                hasher.sha.update(data: data)
+            } completionHandler: { error in
+                done.resume(returning: error == nil ? hasher.sha.finalize().map { String(format: "%02x", $0) }.joined() : nil)
+            }
+        }
     }
 
     // 把每个要备份的相册都和云盘核对一遍：「备份」页打开时、每一轮备份开始传之前。
