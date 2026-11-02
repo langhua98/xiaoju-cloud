@@ -1344,6 +1344,7 @@ const ICONS = {
   user: '<circle cx="12" cy="8.5" r="3.6"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   shield: '<path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9.5z"/><path d="M9.5 13.5l2 2 3.5-3.5"/>',
+  database: '<ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6"/><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/>',
   bolt: '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
   logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M16 17l5-5-5-5M21 12H9"/>',
   more: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
@@ -3883,7 +3884,7 @@ async function openBackup() {
   const [st, stats, phone] = await Promise.all(["/api/backup/status", "/api/stats", "/api/backup/phone"]
     .map((p) => request("GET", p).catch(() => null)));
   if (st) renderBackupDot(st, stats);
-  body.replaceChildren(telegramCard(st, stats), ...(phone?.albums || []).map(albumCard));
+  body.replaceChildren(telegramCard(st, stats), ...(st?.db ? [dbBackupCard(st.db)] : []), ...(phone?.albums || []).map(albumCard));
   if (!phone) body.append(mk("p", { className: "hint", textContent: "服务端还不支持手机备份记录（等服务端更新后再看）。" }));
 }
 
@@ -3913,6 +3914,40 @@ function telegramCard(st, stats) {
     card.append(meterEl(pct), mk("p", { textContent: `正在把新文件复制到备份账号：${files}（${formatSize(st.backed_up_bytes)} / ${formatSize(st.bytes)}）。后台自动进行，关掉页面也会继续。` }));
   }
   if (checks) card.append(checks);
+  return card;
+}
+
+// 数据库备份：服务端每天把数据库加密导出，存进网盘「数据库备份」文件夹和两个频道的置顶消息
+function dbBackupCard(db) {
+  const card = mk("section", { className: "bk-card" });
+  const head = mk("div", { className: "bk-head" }, icon("database"), mk("b", { textContent: "数据库备份" }));
+  card.append(head);
+  const last = db.last;
+  if (db.running) head.append(mk("span", { className: "pill busy", textContent: "备份中" }));
+  else if (!last || db.error) head.append(mk("span", { className: "pill bad", textContent: last ? "异常" : "还没有" }));
+  else if (last.error) head.append(mk("span", { className: "pill busy", textContent: "部分成功" }));
+  else head.append(mk("span", { className: "pill ok", textContent: "正常" }));
+  if (last) {
+    const where = [last.file_id && `网盘「${db.folder}」文件夹`, last.main_message && "主频道置顶", last.backup_message && "备份频道置顶"].filter(Boolean);
+    card.append(mk("p", { textContent: `最近一次：${relTime(last.created_at)}，${formatSize(last.size)}，存在${where.join("、")}。` }));
+    if (last.error) card.append(mk("p", { className: "hint warn", textContent: `没存成的：${last.error}` }));
+  }
+  if (db.error) card.append(mk("p", { className: "hint warn", textContent: `上次备份失败：${db.error}` }));
+  card.append(mk("p", { className: "hint", textContent: "每天自动备份一次（目录、文件名、分块位置都在数据库里）。用主密钥加密，备份里没有主密钥：主密钥要另外保管好。数据库丢了也能从频道的置顶消息恢复。" }));
+  const btn = mk("button", { className: "button", type: "button", textContent: db.running ? "正在备份…" : "立即备份", disabled: db.running });
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "正在备份…";
+    try {
+      await request("POST", "/api/backup/db");
+      toast("开始备份数据库，一两分钟后再打开看结果");
+    } catch (err) {
+      toast(err.message);
+      btn.disabled = false;
+      btn.textContent = "立即备份";
+    }
+  });
+  card.append(btn);
   return card;
 }
 

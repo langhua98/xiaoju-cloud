@@ -31,6 +31,15 @@ const ensureTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
 
 // MigrateUp 依次执行所有未执行过的 *.up.sql，每个文件一个事务。返回本次执行的版本。
 func MigrateUp(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS) ([]string, error) {
+	return MigrateUpTo(ctx, pool, migrations, nil)
+}
+
+// Versions 返回程序里所有迁移的版本，按顺序。
+func Versions(migrations fs.FS) ([]string, error) { return listVersions(migrations) }
+
+// MigrateUpTo 和 MigrateUp 一样，但只执行 only 里列出的版本（only 为 nil 时全部执行）。恢复数据库备份时用：
+// 先建出和备份时一样的表。
+func MigrateUpTo(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS, only []string) ([]string, error) {
 	if _, err := pool.Exec(ctx, ensureTable); err != nil {
 		return nil, err
 	}
@@ -44,8 +53,15 @@ func MigrateUp(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS) ([]str
 	}
 
 	var done []string
+	var allowed map[string]bool
+	if only != nil {
+		allowed = make(map[string]bool, len(only))
+		for _, v := range only {
+			allowed[v] = true
+		}
+	}
 	for _, v := range versions {
-		if applied[v] {
+		if applied[v] || (allowed != nil && !allowed[v]) {
 			continue
 		}
 		sql, err := fs.ReadFile(migrations, v+".up.sql")

@@ -69,3 +69,12 @@ func LaneOf(ctx context.Context) Lane {
 	l, _ := ctx.Value(laneKey{}).(Lane)
 	return l
 }
+
+// Pinner 是能置顶消息的驱动（Telegram）。数据库备份文件直接发进频道并置顶：数据库丢了，
+// 不靠数据库也能从置顶消息找到最新的备份。
+type Pinner interface {
+	// Pin 置顶一条消息（不通知频道成员）；unpin 为 true 时取消置顶。
+	Pin(ctx context.Context, loc Location, unpin bool) error
+	// Pinned 返回最新置顶的那条文档消息和它的说明；没有置顶的文档消息时返回 ErrNotFound。
+	Pinned(ctx context.Context) (Object, string, error)
+}

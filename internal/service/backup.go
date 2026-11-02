@@ -23,12 +23,17 @@ type BackupStatus struct {
 	Enabled bool   `json:"enabled"`
 	Error   string `json:"error,omitempty"`
 	meta.BackupStats
+	DB *DBBackupStatus `json:"db,omitempty"` // 数据库自动备份
 }
 
 // BackupStatus 返回备份是否启用以及备份进度。
 func (s *Service) BackupStatus(ctx context.Context) (BackupStatus, error) {
 	st, err := s.store.BackupStats(ctx)
-	return BackupStatus{Enabled: s.backup != nil, Error: s.backupErr, BackupStats: st}, err
+	if err != nil {
+		return BackupStatus{}, err
+	}
+	db, err := s.DBBackupStatus(ctx)
+	return BackupStatus{Enabled: s.backup != nil, Error: s.backupErr, BackupStats: st, DB: db}, err
 }
 
 // RunBackupSync 在后台把还没有备份的分块（包括启用备份之前上传的旧文件、上传时备份失败的分块）

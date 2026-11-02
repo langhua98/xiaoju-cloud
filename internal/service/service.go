@@ -39,6 +39,8 @@ type Service struct {
 	uploads   map[uuid.UUID]*resumable // 断点续传中的上传（见 resumable.go）
 
 	backupKick chan struct{} // 有新分块要备份：叫醒后台备份同步（见 RunBackupSync）
+
+	dbBackup *dbBackups // 数据库自动备份（见 dbbackup.go）；nil 时没打开
 }
 
 type Options struct {

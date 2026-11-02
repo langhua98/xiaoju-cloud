@@ -410,3 +410,52 @@ func randomInt64() (int64, error) {
 	}
 	return int64(binary.LittleEndian.Uint64(b[:])), nil
 }
+
+// Pin 置顶（或取消置顶）一条消息，不通知频道成员。
+func (d *Driver) Pin(ctx context.Context, loc storage.Location, unpin bool) error {
+	_, err := d.api.MessagesUpdatePinnedMessage(ctx, &tg.MessagesUpdatePinnedMessageRequest{
+		Silent: true,
+		Unpin:  unpin,
+		Peer:   &tg.InputPeerChannel{ChannelID: d.channel.ChannelID, AccessHash: d.channel.AccessHash},
+		ID:     int(loc.MessageID),
+	})
+	if err != nil && unpin && tgerr.Is(err, "MESSAGE_ID_INVALID") {
+		return nil // 消息已经删了
+	}
+	return err
+}
+
+// Pinned 返回频道最新置顶的文档消息和它的说明。
+func (d *Driver) Pinned(ctx context.Context) (storage.Object, string, error) {
+	full, err := d.api.ChannelsGetFullChannel(ctx, d.channel)
+	if err != nil {
+		return storage.Object{}, "", fmt.Errorf("get channel: %w", err)
+	}
+	cf, ok := full.FullChat.(*tg.ChannelFull)
+	if !ok {
+		return storage.Object{}, "", fmt.Errorf("unexpected full chat %T", full.FullChat)
+	}
+	id, ok := cf.GetPinnedMsgID()
+	if !ok || id == 0 {
+		return storage.Object{}, "", storage.ErrNotFound
+	}
+	res, err := d.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+		Channel: d.channel, ID: []tg.InputMessageClass{&tg.InputMessageID{ID: id}},
+	})
+	if err != nil {
+		return storage.Object{}, "", fmt.Errorf("get message %d: %w", id, err)
+	}
+	msgs, ok := res.(*tg.MessagesChannelMessages)
+	if !ok || len(msgs.Messages) == 0 {
+		return storage.Object{}, "", storage.ErrNotFound
+	}
+	msg, ok := msgs.Messages[0].(*tg.Message)
+	if !ok {
+		return storage.Object{}, "", storage.ErrNotFound
+	}
+	obj, ok := documentObject(d.channel.ChannelID, msg)
+	if !ok {
+		return storage.Object{}, "", storage.ErrNotFound
+	}
+	return obj, msg.Message, nil
+}
