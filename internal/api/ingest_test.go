@@ -315,6 +315,26 @@ func TestIngest(t *testing.T) {
 	if code, out := plan(`{"album":"","names":"IMG_0001","sizes":"5 KB"}`); code != 200 || out["todo"] != "1" {
 		t.Fatalf("plan for the other album: %d %v", code, out)
 	}
+	// 按指纹问：隐藏相册里的照片（jpeg）有，没传过的内容没有。规则和上传去重一样：
+	// 传进相册时，网盘里任何地方有同样内容都算有
+	sumOf := func(b string) string { h := sha256.Sum256([]byte(b)); return hex.EncodeToString(h[:]) }
+	known := func(album string, sums ...string) (int, map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"album": album, "sha256": strings.Join(sums, "\n")})
+		return call("POST", "/api/ingest/known", string(body), "Content-Type", "application/json")
+	}
+	if code, out := known("hidden", sumOf("never uploaded"), sumOf(jpeg)); code != 200 || out["found"] != "2" || out["files"] != 2.0 {
+		t.Fatalf("known in hidden: %d %v", code, out)
+	}
+	if code, out := known("", sumOf(jpeg), sumOf("never uploaded")); code != 200 || out["found"] != "1" {
+		t.Fatalf("known in album: %d %v", code, out)
+	}
+	if code, _ := known("", "not-hex"); code != 400 {
+		t.Errorf("bad sha256 must be rejected: %d", code)
+	}
+	if code, _ := known("data", sumOf(jpeg)); code != 400 {
+		t.Errorf("known for 手机数据 must be rejected: %d", code)
+	}
 	// 名字里有制表符：上传时存成“clip_.mov”；清单里原样带着制表符，或者制表符丢了，都要认出是传过的
 	clip := "\x00\x00\x00\x14ftypqt  " + strings.Repeat("c", 3000)
 	if code, out := call("POST", "/api/ingest", clip, "X-File-Name", "clip\t.mov", "X-Xiaoju-Album", "hidden"); code != 201 || out["name"] != "clip_.mov" {
@@ -392,6 +412,15 @@ func TestIngest(t *testing.T) {
 		t.Fatal("IMG_0500 should start without a capture time")
 	}
 	old := time.Date(2019, 3, 1, 10, 0, 0, 0, time.UTC)
+	// 手机上同名的有两张（换过手机，编号重新开始）：分不清网盘里那个是哪一张，不记拍摄时间
+	twoBody, _ := json.Marshal(map[string]string{"album": "hidden", "names": "IMG_0500\nIMG_0500", "dates": "2024-05-06\n2019-03-01",
+		"times": strconv.FormatInt(old.AddDate(5, 2, 5).Unix(), 10) + "\n" + strconv.FormatInt(old.Unix(), 10)})
+	if code, out := plan(string(twoBody)); code != 200 || out["todo"] != "" {
+		t.Fatalf("plan with two same-name photos: %d %v", code, out)
+	}
+	if at := takenOf(HiddenAlbumFolder, "IMG_0500.MOV"); at != nil {
+		t.Fatalf("taken_at must not be filled when the phone has two photos with that name: %v", at)
+	}
 	planBody, _ := json.Marshal(map[string]string{"album": "hidden", "names": "IMG_0500", "dates": "2019-03-01",
 		"times": strconv.FormatInt(old.Unix(), 10)})
 	if code, out := plan(string(planBody)); code != 200 || out["todo"] != "" {
