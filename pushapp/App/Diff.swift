@@ -55,39 +55,68 @@ struct FileDiff {
 
     private enum Op { case same(Int, Int), add(Int), del(Int) }
 
+    /// Myers 差分（和 git diff 一样的算法），只存每一步用到的那段，内存约 D² 个数。
+    /// 改动超过 maxD 行时返回 nil。
+    private static func myers(_ a: [String], _ b: [String], maxD: Int = 4000) -> [Op]? {
+        var ids: [String: Int] = [:]
+        let x = a.map { s -> Int in if let i = ids[s] { return i }; ids[s] = ids.count; return ids.count - 1 }
+        let y = b.map { s -> Int in if let i = ids[s] { return i }; ids[s] = ids.count; return ids.count - 1 }
+        let n = x.count, m = y.count
+        let off = n + m + 1
+        var v = [Int](repeating: 0, count: 2 * (n + m) + 3)
+        var trace: [(lo: Int, v: [Int])] = []
+        var found = -1
+        search: for d in 0...(n + m) {
+            if d > maxD { return nil }
+            let lo = max(0, off - d - 1)
+            trace.append((lo, Array(v[lo...min(v.count - 1, off + d + 1)])))
+            for k in stride(from: -d, through: d, by: 2) {
+                var px: Int
+                if k == -d || (k != d && v[off + k - 1] < v[off + k + 1]) { px = v[off + k + 1] } else { px = v[off + k - 1] + 1 }
+                var py = px - k
+                while px < n, py < m, x[px] == y[py] { px += 1; py += 1 }
+                v[off + k] = px
+                if px >= n && py >= m { found = d; break search }
+            }
+        }
+        guard found >= 0 else { return nil }
+        var ops: [Op] = []
+        var i = n, j = m
+        for d in stride(from: found, through: 0, by: -1) {
+            let t = trace[d]
+            func at(_ k: Int) -> Int { t.v[off + k - t.lo] }
+            let k = i - j
+            let pk = (k == -d || (k != d && at(k - 1) < at(k + 1))) ? k + 1 : k - 1
+            let pi = at(pk), pj = pi - pk
+            while i > pi && j > pj { i -= 1; j -= 1; ops.append(.same(i, j)) }
+            if d > 0 {
+                if i == pi { ops.append(.add(j - 1)) } else { ops.append(.del(i - 1)) }
+            }
+            i = pi; j = pj
+        }
+        return ops.reversed()
+    }
+
     private static func diff(_ a: [String], _ b: [String]) -> FileDiff {
-        // 去掉相同的开头和结尾，中间做 LCS
+        // 去掉相同的开头和结尾，中间用 Myers 差分
         var pre = 0
         while pre < a.count, pre < b.count, a[pre] == b[pre] { pre += 1 }
         var suf = 0
         while suf < a.count - pre, suf < b.count - pre, a[a.count - 1 - suf] == b[b.count - 1 - suf] { suf += 1 }
         let x = Array(a[pre..<(a.count - suf)]), y = Array(b[pre..<(b.count - suf)])
         var ops: [Op] = (0..<pre).map { Op.same($0, $0) }
-        let n = x.count, m = y.count
-        if n * m > 4_000_000 {
-            // 太大了：整段当成删了再加
-            ops += (0..<n).map { Op.del(pre + $0) }
-            ops += (0..<m).map { Op.add(pre + $0) }
+        if let mid = myers(x, y) {
+            for op in mid {
+                switch op {
+                case let .same(i, j): ops.append(.same(pre + i, pre + j))
+                case let .add(j): ops.append(.add(pre + j))
+                case let .del(i): ops.append(.del(pre + i))
+                }
+            }
         } else {
-            var t = [Int32](repeating: 0, count: (n + 1) * (m + 1))
-            let w = m + 1
-            if n > 0 && m > 0 {
-                for i in stride(from: n - 1, through: 0, by: -1) {
-                    for j in stride(from: m - 1, through: 0, by: -1) {
-                        t[i * w + j] = x[i] == y[j] ? t[(i + 1) * w + j + 1] + 1 : max(t[(i + 1) * w + j], t[i * w + j + 1])
-                    }
-                }
-            }
-            var i = 0, j = 0
-            while i < n || j < m {
-                if i < n, j < m, x[i] == y[j] {
-                    ops.append(.same(pre + i, pre + j)); i += 1; j += 1
-                } else if j < m, i == n || t[i * w + j + 1] >= t[(i + 1) * w + j] {
-                    ops.append(.add(pre + j)); j += 1
-                } else {
-                    ops.append(.del(pre + i)); i += 1
-                }
-            }
+            // 改得太多：整段当成删了再加
+            ops += (0..<x.count).map { Op.del(pre + $0) }
+            ops += (0..<y.count).map { Op.add(pre + $0) }
         }
         ops += (0..<suf).map { Op.same(a.count - suf + $0, b.count - suf + $0) }
 
