@@ -48,7 +48,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
-      - run: go test ./...
+      # -p 1：各个包的测试共用同一个测试数据库，并行跑会同时执行迁移、互相改表（偶发失败），所以一个包一个包地跑
+      - run: go test -p 1 ./...
         env:
           XIAOJU_TEST_DATABASE_URL: postgres://xiaoju:xiaoju@localhost:5432/xiaoju?sslmode=disable
 
