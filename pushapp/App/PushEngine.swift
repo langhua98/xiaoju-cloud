@@ -80,6 +80,7 @@ final class PushEngine {
     private func send(_ req: URLRequest, what: String) async throws -> Data {
         var lastError: Error?
         for attempt in 0..<3 {
+            if Task.isCancelled { throw PushError("已取消") }
             do {
                 let (data, resp) = try await session.data(for: req)
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
@@ -93,6 +94,7 @@ final class PushEngine {
             } catch let e as HTTPFailure {
                 throw PushError("\(what)失败（\(e.code)）：\(e.text)")
             } catch {
+                if Task.isCancelled { throw PushError("已取消") }
                 lastError = error
                 if attempt < 2 { try await Task.sleep(nanoseconds: 3_000_000_000) }
             }
@@ -286,6 +288,7 @@ final class PushEngine {
                 skipped.append(rp + "（超过 50MB）")
                 continue
             }
+            if Task.isCancelled { throw PushError("已取消") }
             progress("比较 \(i + 1)/\(files.count)：\(rel)")
             let data = try await download(item)
             let blob = Self.gitBlobSHA(data)

@@ -11,6 +11,8 @@ struct PushView: View {
     @State private var working = false
     @State private var message = ""
     @State private var result: (sha: String, url: String)?
+    @State private var selected: Set<String> = []
+    @State private var job: Task<Void, Never>?
 
     var body: some View {
         List {
@@ -19,7 +21,10 @@ struct PushView: View {
                 LabeledContent("推到", value: mapping.target)
             }
             if working {
-                Section { HStack { ProgressView(); Text(status).font(.footnote).foregroundStyle(.secondary) } }
+                Section {
+                    HStack { ProgressView(); Text(status).font(.footnote).foregroundStyle(.secondary) }
+                    Button("取消", role: .destructive) { job?.cancel() }
+                }
             }
             if !error.isEmpty {
                 Section { Text(error).foregroundStyle(.red) }
@@ -39,9 +44,10 @@ struct PushView: View {
                         Button {
                             push(plan)
                         } label: {
-                            Label("提交并推送 \(plan.changes.count) 个文件", systemImage: "arrow.up.circle.fill")
+                            Label("提交并推送 \(selected.count) 个文件", systemImage: "arrow.up.circle.fill")
                         }
-                        .disabled(working || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(working || selected.isEmpty
+                                  || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     } header: { Text("提交说明") } footer: {
                         Text("推到 \(plan.repo) 的 \(plan.branch) 分支。")
                     }
@@ -57,6 +63,10 @@ struct PushView: View {
         }
         .refreshable { check() }
         .task { if plan == nil && !working { check() } }
+        .onChange(of: selected) {
+            if let plan { message = Self.defaultMessage(plan, only: selected) }
+        }
+        .onDisappear { job?.cancel() }
     }
 
     @ViewBuilder
@@ -68,7 +78,17 @@ struct PushView: View {
                 Text("没有改动，和 GitHub 上一样（\(plan.unchanged) 个文件）。").foregroundStyle(.secondary)
             }
             ForEach(plan.changes) { c in
-                NavigationLink { DiffView(change: c) } label: { ChangeRow(change: c) }
+                HStack {
+                    Button {
+                        if selected.contains(c.repoPath) { selected.remove(c.repoPath) } else { selected.insert(c.repoPath) }
+                    } label: {
+                        Image(systemName: selected.contains(c.repoPath) ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .foregroundStyle(selected.contains(c.repoPath) ? Color.accentColor : Color.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    NavigationLink { DiffView(change: c) } label: { ChangeRow(change: c) }
+                }
             }
             ForEach(plan.skipped, id: \.self) { Text("跳过 \($0)").font(.footnote).foregroundStyle(.orange) }
         } header: {
@@ -76,7 +96,7 @@ struct PushView: View {
                 Text("改了 \(plan.changes.count) 个文件  +\(added) −\(removed)")
             }
         } footer: {
-            if !plan.changes.isEmpty { Text("另有 \(plan.unchanged) 个文件没变。点文件看具体改了哪几行。") }
+            if !plan.changes.isEmpty { Text("另有 \(plan.unchanged) 个文件没变。点文件看具体改了哪几行；点左边的圆圈可以不推某个文件。") }
         }
     }
 
@@ -88,12 +108,13 @@ struct PushView: View {
         status = "检查改动…"
         let engine = store.engine()
         let pushed = store.pushed
-        Task {
+        job = Task {
             do {
                 let p = try await engine.plan(mapping, pushed: pushed) { s in Task { @MainActor in status = s } }
                 store.record(p.confirmed)
                 plan = p
-                message = Self.defaultMessage(p)
+                selected = Set(p.changes.map(\.repoPath))
+                message = Self.defaultMessage(p, only: selected)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -106,11 +127,14 @@ struct PushView: View {
         error = ""
         let engine = store.engine()
         let msg = message
-        Task {
+        let chosen = Plan(repo: plan.repo, branch: plan.branch, head: plan.head,
+                          changes: plan.changes.filter { selected.contains($0.repoPath) },
+                          unchanged: plan.unchanged, skipped: plan.skipped, confirmed: [:])
+        job = Task {
             do {
-                let r = try await engine.commit(plan, message: msg) { s in Task { @MainActor in status = s } }
+                let r = try await engine.commit(chosen, message: msg) { s in Task { @MainActor in status = s } }
                 var rec: [String: Pushed] = [:]
-                for c in plan.changes { rec[plan.recordKey(c.repoPath)] = Pushed(sha256: c.sha256, blob: c.blob) }
+                for c in chosen.changes { rec[chosen.recordKey(c.repoPath)] = Pushed(sha256: c.sha256, blob: c.blob) }
                 store.record(rec)
                 result = r
             } catch {
@@ -121,12 +145,13 @@ struct PushView: View {
     }
 
     /// 默认提交说明：第一行是摘要，下面列出每个文件和加减行数。
-    static func defaultMessage(_ p: Plan) -> String {
-        guard !p.changes.isEmpty else { return "" }
-        let names = p.changes.prefix(3).map { ($0.repoPath as NSString).lastPathComponent }.joined(separator: "、")
+    static func defaultMessage(_ plan: Plan, only: Set<String>) -> String {
+        let changes = plan.changes.filter { only.contains($0.repoPath) }
+        guard !changes.isEmpty else { return "" }
+        let names = changes.prefix(3).map { ($0.repoPath as NSString).lastPathComponent }.joined(separator: "、")
         var title = "从小橘云盘更新 \(names)"
-        if p.changes.count > 3 { title += " 等 \(p.changes.count) 个文件" }
-        let lines = p.changes.map { c -> String in
+        if changes.count > 3 { title += " 等 \(changes.count) 个文件" }
+        let lines = changes.map { c -> String in
             let kind = c.isNew ? "新增" : "修改"
             let stat = c.diff.note == nil || c.diff.added + c.diff.removed > 0
                 ? "（+\(c.diff.added) −\(c.diff.removed)）" : ""
