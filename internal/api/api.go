@@ -43,7 +43,7 @@ type Server struct {
 	loc         *time.Location
 
 	// 不需要认证的接口按 IP 限速（见 ratelimit.go）
-	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit, dropLimit, dropAskLimit *ipLimiter
+	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit, dropLimit, dropAskLimit, speedLimit *ipLimiter
 
 	agents *agentState // AI agent：每把令牌的限速、被拒次数、批量预演（见 agent.go）
 
@@ -93,8 +93,10 @@ func New(svc *service.Service, opt Options) *Server {
 		ingestLimit: newIPLimiter(600, 200), ingestAskLimit: newIPLimiter(600, 200),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
 		dropLimit: newIPLimiter(120, 60), dropAskLimit: newIPLimiter(60, 30),
-		agents: newAgentState(),
-		gdrive: opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
+		// 测速一次 5 个请求（3 次延迟 + 下载 + 上传）
+		speedLimit: newIPLimiter(30, 10),
+		agents:     newAgentState(),
+		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),
 	}
 }
@@ -183,6 +185,8 @@ func (s *Server) Handler() http.Handler {
 	// 恢复到手机（App 用网页签发的恢复凭证），见 restore.go
 	api.HandleFunc("GET /api/restore/list", s.requireRestore(s.restoreList))
 	api.HandleFunc("GET /api/restore/files/{id}", s.requireRestore(s.restoreDownload))
+
+	s.speedTestRoutes(api)
 
 	api.HandleFunc("GET /api/s/{token}", s.limited(s.shareLimit, s.openShare))
 	api.HandleFunc("POST /api/s/{token}/unlock", s.limited(s.shareUnlockLimit, s.unlockShare))

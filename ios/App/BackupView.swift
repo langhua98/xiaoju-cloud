@@ -204,7 +204,10 @@ struct BackupView: View {
                     Text(subline).font(.footnote).foregroundStyle(Palette.sub).monospacedDigit()
                 }
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
+                // 右边：自动测速 / 实时网速（SpeedTest.swift）
+                SpeedBadge()
             }
             HStack(spacing: 0) {
                 stat("本地相册", tally?.total)

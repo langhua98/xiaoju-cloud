@@ -11,7 +11,7 @@ final class NetMeter {
 
     func sent(_ bytes: Int64) {
         guard bytes > 0 else { return }
-        lock.withLock { up += bytes }
+        lock.withLock { up += bytes; movedAt = Date() }
     }
 
     // fromICloud：备份时先从苹果 iCloud 取原图（开了「优化 iPhone 储存空间」的照片）
@@ -19,11 +19,15 @@ final class NetMeter {
         guard bytes > 0 else { return }
         lock.withLock {
             down += bytes
+            movedAt = Date()
             if fromICloud { iCloudAt = Date() }
         }
     }
 
     private var iCloudAt: Date?
+    private var movedAt: Date?
+    // 最近 5 秒有没有在上传、下载：有的话不自动测速（见 SpeedTest.swift）
+    var busy: Bool { lock.withLock { movedAt.map { Date().timeIntervalSince($0) < 5 } ?? false } }
     // 最近 3 秒有没有在从 iCloud 取原图：下载卡片右上角显示「访问 iCloud」
     var iCloudActive: Bool { lock.withLock { iCloudAt.map { Date().timeIntervalSince($0) < 3 } ?? false } }
 
