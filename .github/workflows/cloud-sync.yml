@@ -1,0 +1,46 @@
+name: 云盘同步到 GitHub
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只看会推哪些文件，不提交"
+        type: boolean
+        default: false
+
+concurrency:
+  group: cloud-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # 记录上次推送过的文件 sha256，没变的文件不用重新下载
+      - uses: actions/cache/restore@v4
+        with:
+          path: .cloud-sync-state.json
+          key: cloud-sync-state-${{ github.run_id }}
+          restore-keys: cloud-sync-state-
+      - name: 同步
+        env:
+          XIAOJU_TOKEN: ${{ secrets.XIAOJU_TOKEN }}
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+          XIAOJU_URL: ${{ vars.XIAOJU_URL }}
+        run: |
+          if [ -z "$XIAOJU_TOKEN" ] || [ -z "$GH_PUSH_TOKEN" ]; then
+            echo "还没设置 XIAOJU_TOKEN / GH_PUSH_TOKEN，跳过"; exit 0
+          fi
+          python3 tools/cloud-sync/sync.py tools/cloud-sync/config.json .cloud-sync-state.json ${{ inputs.dry_run && '--dry-run' || '' }}
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('.cloud-sync-state.json') != ''
+        with:
+          path: .cloud-sync-state.json
+          key: cloud-sync-state-${{ github.run_id }}
