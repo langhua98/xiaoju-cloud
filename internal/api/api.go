@@ -93,8 +93,8 @@ func New(svc *service.Service, opt Options) *Server {
 		ingestLimit: newIPLimiter(600, 200), ingestAskLimit: newIPLimiter(600, 200),
 		shareLimit: newIPLimiter(120, 60), shareUnlockLimit: newIPLimiter(10, 5),
 		dropLimit: newIPLimiter(120, 60), dropAskLimit: newIPLimiter(60, 30),
-		// 测速一次 5 个请求（3 次延迟 + 下载 + 上传）
-		speedLimit: newIPLimiter(30, 10),
+		// 测速一次最多 8 个请求（4 次延迟 + 下载、上传各一到两次），连点几次也不被拦
+		speedLimit: newIPLimiter(60, 30),
 		agents:     newAgentState(),
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),

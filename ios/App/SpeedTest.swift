@@ -99,24 +99,16 @@ final class SpeedTest: ObservableObject {
             }
             let ping = pings.min() ?? 0
 
-            // 下载、上传：总时间减去一次来回，剩下的算传数据的时间
+            // 下载、上传：总时间减去一次来回，剩下的算传数据的时间。
+            // 网很快时（不到 1.5 秒就传完）数据太少测不准，换 25MB / 20MB 再测一次
             phase = .down
-            var req = URLRequest(url: base.appending(path: "/api/speedtest/down")
-                .appending(queryItems: [URLQueryItem(name: "bytes", value: String(downBytes))]))
-            var t = Date()
-            let got = try await fetch(session, req)
-            let down = Double(got) / max(Date().timeIntervalSince(t) - ping / 1000, 0.05)
+            var (down, took) = try await downTest(session, base, downBytes, ping: ping)
+            if !small && took < 1.5 { (down, took) = try await downTest(session, base, 25 << 20, ping: ping) }
 
             phase = .up
-            req = URLRequest(url: base.appending(path: "/api/speedtest/up"))
-            req.httpMethod = "POST"
-            req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            var payload = Data(count: upBytes)
-            payload.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, upBytes, $0.baseAddress!) }
-            t = Date()
-            let (_, resp) = try await session.upload(for: req, from: payload)
-            try Self.check(resp)
-            let up = Double(upBytes) / max(Date().timeIntervalSince(t) - ping / 1000, 0.05)
+            var up: Double
+            (up, took) = try await upTest(session, base, upBytes, ping: ping)
+            if !small && took < 1.5 { (up, took) = try await upTest(session, base, 20 << 20, ping: ping) }
 
             let result = Result(down: down, up: up, ping: ping, at: Date(), network: network ?? "网络")
             last = result
@@ -125,6 +117,29 @@ final class SpeedTest: ObservableObject {
             failed = true
         }
         phase = nil
+    }
+
+    // 返回（每秒字节数, 用了几秒）
+    private func downTest(_ session: URLSession, _ base: URL, _ bytes: Int, ping: Double) async throws -> (Double, Double) {
+        let req = URLRequest(url: base.appending(path: "/api/speedtest/down")
+            .appending(queryItems: [URLQueryItem(name: "bytes", value: String(bytes))]))
+        let t = Date()
+        let got = try await fetch(session, req)
+        let took = max(Date().timeIntervalSince(t) - ping / 1000, 0.05)
+        return (Double(got) / took, took)
+    }
+
+    private func upTest(_ session: URLSession, _ base: URL, _ bytes: Int, ping: Double) async throws -> (Double, Double) {
+        var req = URLRequest(url: base.appending(path: "/api/speedtest/up"))
+        req.httpMethod = "POST"
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        var payload = Data(count: bytes)
+        payload.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, bytes, $0.baseAddress!) }
+        let t = Date()
+        let (_, resp) = try await session.upload(for: req, from: payload)
+        try Self.check(resp)
+        let took = max(Date().timeIntervalSince(t) - ping / 1000, 0.05)
+        return (Double(bytes) / took, took)
     }
 
     @discardableResult
@@ -176,7 +191,7 @@ struct SpeedBadge: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .frame(width: 104, alignment: .leading)
+            .frame(width: 116, alignment: .leading)
             .background(Palette.well, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }
@@ -211,6 +226,8 @@ struct SpeedBadge: View {
             if let phase = test.phase {
                 ProgressView().controlSize(.mini)
                 Text(phase.rawValue)
+            } else if test.failed && live == nil {
+                Text("测速失败，点重试")
             } else if live != nil {
                 Circle().fill(Palette.up).frame(width: 6, height: 6)
                 Text("实时")
@@ -219,7 +236,7 @@ struct SpeedBadge: View {
                     Text("测速 · " + Self.ago(at, now: context.date))
                 }
             } else {
-                Text(test.failed ? "测速失败" : "测速")
+                Text("测速")
             }
         }
         .font(.caption2)
@@ -233,7 +250,7 @@ struct SpeedBadge: View {
             Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(color).frame(width: 14)
             if let speed {
                 let t = SpeedView.text(speed)
-                Text(t.number).font(.subheadline.bold()).monospacedDigit()
+                Text(t.number).font(.subheadline.bold()).monospacedDigit().layoutPriority(1)
                     .contentTransition(.numericText())
                     .animation(.default, value: t.number)
                 Text(t.unit).font(.system(size: 9)).foregroundStyle(Palette.sub)
@@ -242,6 +259,7 @@ struct SpeedBadge: View {
             }
         }
         .lineLimit(1)
+        .minimumScaleFactor(0.5) // 字号调大了也不出现「…」，整行缩小
     }
 
     // 「刚刚」「5 分钟前」「3 小时前」「2 天前」
