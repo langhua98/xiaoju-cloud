@@ -9,6 +9,18 @@ struct DiffLine: Identifiable {
     let text: String
     let oldNo: Int?
     let newNo: Int?
+
+    /// 压缩过的代码一行可能有几万个字符，显示时截断，不然手机会卡住
+    static let maxChars = 300
+
+    init(id: Int, kind: Kind, text: String, oldNo: Int?, newNo: Int?) {
+        self.id = id
+        self.kind = kind
+        let utf16 = text.utf16.count
+        self.text = utf16 > Self.maxChars ? String(text.prefix(Self.maxChars)) + " …（这行共 \(utf16) 个字符）" : text
+        self.oldNo = oldNo
+        self.newNo = newNo
+    }
 }
 
 struct FileDiff {
