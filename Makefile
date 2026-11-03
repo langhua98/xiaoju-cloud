@@ -8,7 +8,7 @@ test:
 
 # 需要可用的 PostgreSQL，例如 make db 启动的实例
 test-integration:
-	XIAOJU_TEST_DATABASE_URL=postgres://xiaoju:xiaoju@localhost:5432/xiaoju?sslmode=disable go test ./...
+	XIAOJU_TEST_DATABASE_URL=postgres://xiaoju:xiaoju@localhost:5432/xiaoju?sslmode=disable go test -p 1 ./...
 
 db:
 	docker compose up -d postgres
