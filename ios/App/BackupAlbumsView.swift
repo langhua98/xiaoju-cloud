@@ -32,6 +32,10 @@ struct BackupAlbumsView: View {
                             row(album, on: hidden, icon: "lock.fill")
                         }
                     }
+                    // 读到 0 张：多半是 iPhone 锁着隐藏相册，App 读不到
+                    NavigationLink { HiddenBackupView() } label: {
+                        Text(hiddenAlbums.allSatisfy { $0.count == 0 } ? "读到 0 张？点这里看怎么办" : "手动选隐藏照片备份")
+                    }
                 } header: {
                     Text("私密")
                 } footer: {

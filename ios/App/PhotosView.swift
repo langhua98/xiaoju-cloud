@@ -244,32 +244,7 @@ struct MediaGallery: View {
     }
 }
 
-// 缩略图：服务端给的签名地址（/thumb/…，6–12 小时有效），系统的网络缓存会存着，来回滑不用重下
-struct Thumb: View {
-    let item: CloudItem
-
-    var body: some View {
-        Color.secondary.opacity(0.15)
-            .overlay {
-                AsyncImage(url: Cloud.shared.absolute(item.thumb ?? item.cover)) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else if item.isFolder {
-                        Image(systemName: "folder.fill").font(.largeTitle).foregroundStyle(Color.brand)
-                    } else if phase.error != nil || item.thumb == nil {
-                        Image(systemName: item.isVideo ? "video" : "photo").foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .clipped()
-            .overlay(alignment: .bottomLeading) {
-                if item.isVideo, let d = item.duration, d > 0 {
-                    Text(Duration.seconds(d).formatted(.time(pattern: .minuteSecond)))
-                        .font(.caption2.bold()).foregroundStyle(.white).shadow(radius: 2).padding(4)
-                }
-            }
-    }
-}
+// 缩略图格子 Thumb 在 RateGate.swift（限流时排队、等一会儿再下）
 
 // 右上角的备份进度环：备份中转圈，完成变绿，有没传上去的变红；点开是备份中心
 struct BackupRing: View {

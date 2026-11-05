@@ -78,6 +78,7 @@ struct BackupView: View {
                         TileLabel("备份哪些照片", symbol: "photo.on.rectangle.angled", color: .filePhoto)
                     }
                 }
+                NavigationLink { HiddenBackupView() } label: { TileLabel("隐藏相册", symbol: "lock.fill", color: .fileArchive) }
                 NavigationLink { PhoneDataView() } label: { TileLabel("手机数据", symbol: "person.text.rectangle.fill", color: .fileVideo) }
                 NavigationLink {
                     SyncFoldersView()
@@ -218,9 +219,12 @@ struct BackupView: View {
             }
             .padding(.vertical, 10)
             .background(Palette.well, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            if let hiddenTally, hiddenTally.total > 0 {
-                Text("隐藏相册 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())")
-                    .font(.caption).foregroundStyle(Palette.sub)
+            if let hiddenTally {
+                // 读到 0 张多半是 iPhone 锁着隐藏相册（见 HiddenBackupView），别让人以为都备份过了
+                Text(hiddenTally.total > 0
+                    ? "隐藏相册 \(hiddenTally.done.formatted()) / \(hiddenTally.total.formatted())"
+                    : "隐藏相册：iPhone 锁着，读不到（看下面「隐藏相册」）")
+                    .font(.caption).foregroundStyle(hiddenTally.total > 0 ? Palette.sub : Palette.down)
             }
         }
         .padding(.vertical, 6)
