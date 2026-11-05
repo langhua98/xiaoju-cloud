@@ -67,9 +67,21 @@ final class Cloud: ObservableObject {
             req.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
         }
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        try check(data, resp)
-        return data
+        // 被 Hugging Face 限流（429）：大家一起等一会儿再试（见 RateGate.swift），几次都不行才报错
+        var attempt = 0
+        while true {
+            try await RateGate.shared.wait()
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let http = resp as? HTTPURLResponse
+            if http?.statusCode == 429 && attempt < 3 {
+                attempt += 1
+                await RateGate.shared.limited(retryAfter: http?.value(forHTTPHeaderField: "Retry-After"))
+                continue
+            }
+            if http.map({ (200..<300).contains($0.statusCode) }) ?? false { await RateGate.shared.ok() }
+            try check(data, resp)
+            return data
+        }
     }
 
     // 上传文件（流式，从文件读）：POST /api/files?name=&parent_id=
@@ -90,7 +102,8 @@ final class Cloud: ObservableObject {
         if (200..<300).contains(status) { return }
         let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let code = body["code"] as? String ?? ""
-        let message = body["error"] as? String ?? "HTTP \(status)"
+        let message = body["error"] as? String
+            ?? (status == 429 ? "服务器这会儿请求太多，被限流了（HTTP 429）。等一两分钟再下拉刷新。" : "HTTP \(status)")
         switch (status, code) {
         case (403, "grid_required"):
             throw CloudError.gridRequired
