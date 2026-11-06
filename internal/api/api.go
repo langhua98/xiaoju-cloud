@@ -45,6 +45,7 @@ type Server struct {
 	// 不需要认证的接口按 IP 限速（见 ratelimit.go）
 	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit, dropLimit, dropAskLimit, speedLimit *ipLimiter
 
+	relay  *relayHub   // 即时信箱（小橘遥控用，见 relay.go）
 	agents *agentState // AI agent：每把令牌的限速、被拒次数、批量预演（见 agent.go）
 
 	gdrive     *gdrive.Syncer // 谷歌云盘同步（见 gdrive.go），nil 时没有这个功能
@@ -96,6 +97,7 @@ func New(svc *service.Service, opt Options) *Server {
 		// 测速一次最多 8 个请求（4 次延迟 + 下载、上传各一到两次），连点几次也不被拦
 		speedLimit: newIPLimiter(60, 30),
 		agents:     newAgentState(),
+		relay:      newRelayHub(),
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),
 	}
