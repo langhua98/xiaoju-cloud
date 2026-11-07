@@ -85,7 +85,6 @@ jobs:
           TG_EXTRA_BOT_TOKENS: ${{ secrets.TG_EXTRA_BOT_TOKENS }}
           TG_BACKUP_EXTRA_BOT_TOKENS: ${{ secrets.TG_BACKUP_EXTRA_BOT_TOKENS }}
           TG_AGENT_BOT_TOKENS: ${{ secrets.TG_AGENT_BOT_TOKENS }}
-          TG_NOTIFY_BOT_TOKEN: ${{ secrets.TG_NOTIFY_BOT_TOKEN }}
           TG_NOTIFY_CHAT_ID: ${{ secrets.TG_NOTIFY_CHAT_ID }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}

@@ -1,61 +1,58 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 )
 
-// 提醒（给「小橘遥控」的移动侦测用）：被控端发现有动静时，经服务端用 Telegram 机器人给主人发一条消息，可以带一张截图。
-// 服务端本来就连得上 Telegram：老手机不用自己连 Telegram，手机上也不用存机器人令牌。
+// 提醒（给「小橘遥控」的移动侦测用）：被控端发现有动静时，经服务端用存储的 Telegram Bot 给主人发一条私信，可以带一张截图。
+// 服务端本来就连得上 Telegram：老手机不用自己连 Telegram，手机上也不用存 Bot 令牌。
 //
 //	POST /api/agent/v1/notify   要 upload 权限
 //	{"text": "有动静", "photo": "<JPEG 的 base64，可选>", "chat": 123456（可选）}
 //	→ {"ok": true, "chat": 123456}
 //
-// 用哪个机器人：TG_NOTIFY_BOT_TOKEN（专门发提醒的），没设就用存文件的 TG_BOT_TOKEN。走 Bot API（HTTPS），不碰存储用的连接。
-// 发给谁：请求里的 chat → TG_NOTIFY_CHAT_ID → 最近给这个机器人发过消息（比如 /start）的私聊。
-// 找到的 chat 在回复里带回去，被控端记下来以后每次都带上（服务端重启了、Telegram 那边的消息过期了也不怕）。
-// 机器人只能给对它发过 /start 的人发消息（Telegram 的规矩），所以 chat 填成别人的也发不出去。
-// 整个服务端每 10 分钟最多发 notifyBurst 条（被控端自己也有冷却），出问题时不会刷屏、也不会让机器人被 Telegram 限流。
+// 走存文件的那条 MTProto 连接（见 telegram.Messenger）：Hugging Face 屏蔽了 Telegram 的域名，Bot API 连不上。
+// 发给谁：请求里的 chat → TG_NOTIFY_CHAT_ID → 存储频道的创建者（网盘的主人）。对方都要在存储频道里。
+// 找到的 chat 在回复里带回去，被控端记下来以后每次都带上。
+// Bot 只能给对它发过 /start 的人发消息（Telegram 的规矩），没发过时回 409，提示给哪个 Bot 发。
+// 整个服务端每 10 分钟最多 notifyBurst 条（被控端自己也有冷却），出问题时不会刷屏、也不会让 Bot 被 Telegram 限流。
 const (
-	notifyBurst     = 30
-	notifyWindow    = 10 * time.Minute
-	notifyMaxPhoto  = 2 << 20
-	notifyMaxText   = 1000 // 图片说明最多 1024 个字
-	notifyTelegram  = "https://api.telegram.org"
-	notifyCallLimit = 30 * time.Second
+	notifyBurst    = 30
+	notifyWindow   = 10 * time.Minute
+	notifyMaxPhoto = 2 << 20
+	notifyMaxText  = 1000 // 图片说明最多 1024 个字
+	notifyTimeout  = 60 * time.Second
 )
 
-type notifier struct {
-	api    string // Bot API 地址（测试时换成假的）
-	token  string
-	chat   int64 // TG_NOTIFY_CHAT_ID，0 = 没设
-	client *http.Client
-
-	mu    sync.Mutex
-	found int64       // 从 getUpdates 找到的私聊
-	bot   string      // 机器人的用户名（提示「给 @xxx 发 /start」用）
-	sent  []time.Time // 最近发过的时间（限流）
+// TelegramSender 发 Telegram 私信（main 里用存储 Bot 的 MTProto 连接，见 telegram.Messenger）。
+type TelegramSender interface {
+	BotName(ctx context.Context) string
+	Owner(ctx context.Context) (int64, error)
+	Send(ctx context.Context, user int64, text string, photo []byte) error
+	// NeedStart：Send 的错误是不是「对方还没给 Bot 发过 /start」
+	NeedStart(err error) bool
 }
 
-func newNotifier(token string, chat int64) *notifier {
-	if token == "" {
+type notifier struct {
+	tg   TelegramSender
+	chat int64 // TG_NOTIFY_CHAT_ID，0 = 发给存储频道的创建者
+
+	mu   sync.Mutex
+	sent []time.Time // 最近发过的时间（限流）
+}
+
+func newNotifier(tg TelegramSender, chat int64) *notifier {
+	if tg == nil {
 		return nil
 	}
-	return &notifier{api: notifyTelegram, token: token, chat: chat, client: &http.Client{Timeout: notifyCallLimit}}
+	return &notifier{tg: tg, chat: chat}
 }
 
 // allow 限流：最近 notifyWindow 里发了 notifyBurst 条就先不发。
@@ -76,135 +73,14 @@ func (n *notifier) allow(now time.Time) bool {
 	return true
 }
 
-// tgResult 是 Bot API 的回复。
-type tgResult struct {
-	OK          bool            `json:"ok"`
-	Description string          `json:"description"`
-	Result      json.RawMessage `json:"result"`
-}
-
-func (n *notifier) call(ctx context.Context, method, contentType string, body io.Reader) (json.RawMessage, error) {
-	u := n.api + "/bot" + n.token + "/" + method
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
-	if err != nil {
-		return nil, err
-	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	resp, err := n.client.Do(req)
-	if err != nil {
-		// 错误信息里有完整网址（带令牌），不能原样传出去
-		return nil, errors.New("连不上 Telegram")
-	}
-	defer resp.Body.Close()
-	var r tgResult
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
-		return nil, fmt.Errorf("Telegram 回了看不懂的内容（HTTP %d）", resp.StatusCode)
-	}
-	if !r.OK {
-		return nil, fmt.Errorf("Telegram：%s", r.Description)
-	}
-	return r.Result, nil
-}
-
-// botName 机器人的用户名，取一次记住；取不到返回空。
-func (n *notifier) botName(ctx context.Context) string {
-	n.mu.Lock()
-	name := n.bot
-	n.mu.Unlock()
-	if name != "" {
-		return name
-	}
-	raw, err := n.call(ctx, "getMe", "", nil)
-	if err != nil {
-		return ""
-	}
-	var me struct {
-		Username string `json:"username"`
-	}
-	if json.Unmarshal(raw, &me) != nil || me.Username == "" {
-		return ""
-	}
-	n.mu.Lock()
-	n.bot = me.Username
-	n.mu.Unlock()
-	return me.Username
-}
-
-// target 发给谁。0 = 还没人给机器人发过消息。
-func (n *notifier) target(ctx context.Context, want int64) (int64, error) {
-	if want != 0 {
-		return want, nil
-	}
-	if n.chat != 0 {
-		return n.chat, nil
-	}
-	n.mu.Lock()
-	found := n.found
-	n.mu.Unlock()
-	if found != 0 {
-		return found, nil
-	}
-	// 不带 offset：只看不确认，别的程序（如果有）照样收得到这些消息
-	raw, err := n.call(ctx, "getUpdates", "application/x-www-form-urlencoded",
-		strings.NewReader(url.Values{"allowed_updates": {`["message"]`}, "timeout": {"0"}}.Encode()))
-	if err != nil {
-		return 0, err
-	}
-	var ups []struct {
-		Message *struct {
-			Chat struct {
-				ID   int64  `json:"id"`
-				Type string `json:"type"`
-			} `json:"chat"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(raw, &ups); err != nil {
-		return 0, errors.New("Telegram 回了看不懂的内容")
-	}
-	for i := len(ups) - 1; i >= 0; i-- { // 最近的那个私聊
-		if m := ups[i].Message; m != nil && m.Chat.Type == "private" {
-			n.mu.Lock()
-			n.found = m.Chat.ID
-			n.mu.Unlock()
-			return m.Chat.ID, nil
-		}
-	}
-	return 0, nil
-}
-
-func (n *notifier) send(ctx context.Context, chat int64, text string, photo []byte) error {
-	id := strconv.FormatInt(chat, 10)
-	if len(photo) == 0 {
-		_, err := n.call(ctx, "sendMessage", "application/x-www-form-urlencoded",
-			strings.NewReader(url.Values{"chat_id": {id}, "text": {text}}.Encode()))
-		return err
-	}
-	var b bytes.Buffer
-	mw := multipart.NewWriter(&b)
-	mw.WriteField("chat_id", id)
-	if text != "" {
-		mw.WriteField("caption", text)
-	}
-	fw, err := mw.CreateFormFile("photo", "snapshot.jpg")
-	if err != nil {
-		return err
-	}
-	fw.Write(photo)
-	mw.Close()
-	_, err = n.call(ctx, "sendPhoto", mw.FormDataContentType(), &b)
-	return err
-}
-
 func (s *Server) notify(w http.ResponseWriter, r *http.Request) {
 	if !s.need(w, r, ScopeUpload) {
 		return
 	}
 	n := s.notifier
 	if n == nil {
-		agentError(w, http.StatusNotImplemented, "notify_unconfigured", "no Telegram bot is configured",
-			"服务端要有 TG_NOTIFY_BOT_TOKEN 或 TG_BOT_TOKEN。")
+		agentError(w, http.StatusNotImplemented, "notify_unconfigured", "Telegram is not connected",
+			"存储用的是 Telegram 时才能发提醒。")
 		return
 	}
 	var req struct {
@@ -217,7 +93,7 @@ func (s *Server) notify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := strings.TrimSpace(req.Text)
-	for utf8.RuneCountInString(text) > notifyMaxText {
+	if utf8.RuneCountInString(text) > notifyMaxText {
 		text = string([]rune(text)[:notifyMaxText])
 	}
 	var photo []byte
@@ -236,28 +112,34 @@ func (s *Server) notify(w http.ResponseWriter, r *http.Request) {
 		agentError(w, http.StatusBadRequest, "empty", "text or photo is required", "")
 		return
 	}
-	ctx := r.Context()
-	chat, err := n.target(ctx, req.Chat)
-	if err != nil {
-		agentError(w, http.StatusBadGateway, "telegram_error", err.Error(), "")
-		return
+	ctx, cancel := context.WithTimeout(r.Context(), notifyTimeout)
+	defer cancel()
+	chat := req.Chat
+	if chat == 0 {
+		chat = n.chat
 	}
 	if chat == 0 {
-		hint := "先在 Telegram 里给云盘的机器人发一句 /start。"
-		if name := n.botName(ctx); name != "" {
-			hint = "先在 Telegram 里给 @" + name + " 发一句 /start。"
+		var err error
+		if chat, err = n.tg.Owner(ctx); err != nil {
+			agentError(w, http.StatusBadGateway, "telegram_error", "cannot find the owner of the storage channel: "+err.Error(),
+				"设置 TG_NOTIFY_CHAT_ID（你的 Telegram 数字 ID），而且你要在存储频道里。")
+			return
 		}
-		agentError(w, http.StatusConflict, "need_start", "nobody has messaged the bot yet", hint)
-		return
 	}
 	if !n.allow(time.Now()) {
-		agentError(w, http.StatusTooManyRequests, "too_many", "too many notifications, try again later",
-			"每 10 分钟最多 30 条。")
+		agentError(w, http.StatusTooManyRequests, "too_many", "too many notifications, try again later", "每 10 分钟最多 30 条。")
 		return
 	}
-	if err := n.send(ctx, chat, text, photo); err != nil {
-		agentError(w, http.StatusBadGateway, "telegram_error", err.Error(),
-			"机器人只能给对它发过 /start 的人发消息。")
+	if err := n.tg.Send(ctx, chat, text, photo); err != nil {
+		if n.tg.NeedStart(err) {
+			hint := "先在 Telegram 里给云盘的 Bot 发一句 /start。"
+			if name := n.tg.BotName(ctx); name != "" {
+				hint = "先在 Telegram 里给 @" + name + " 发一句 /start。"
+			}
+			agentError(w, http.StatusConflict, "need_start", "the bot cannot message you yet", hint)
+			return
+		}
+		agentError(w, http.StatusBadGateway, "telegram_error", err.Error(), "")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chat": chat})
