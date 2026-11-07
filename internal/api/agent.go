@@ -72,11 +72,11 @@ var defaultAgentLimits = map[string]int64{
 }
 
 const (
-	agentTokenPrefix  = "xa_"
-	agentPlanFiles    = 50 // 一次改动超过这么多文件要先预演
-	agentFreezeAfter  = 50 // 连续被拒这么多次自动冻结
-	agentMaxShareDays = 7
-	agentAuditKeep    = 180 * 24 * time.Hour
+	agentTokenPrefix      = "xa_"
+	agentPlanFiles        = 50 // 一次改动超过这么多文件要先预演
+	agentFreezeAfter      = 50 // 连续被拒这么多次自动冻结
+	agentDefaultShareDays = 7  // 建分享不填有效期时是 7 天
+	agentAuditKeep        = 180 * 24 * time.Hour
 )
 
 // 令牌的有效期可选几天；0 是永久（默认）。

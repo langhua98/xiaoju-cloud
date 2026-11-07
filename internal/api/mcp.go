@@ -240,8 +240,8 @@ var mcpTools = []mcpTool{
 		call: func(s *Server, r *http.Request, args map[string]any) mcpResult {
 			return textResult(s.rest(r, s.agentBatch, "POST", "/api/agent/v1/batch", jsonBody(pick(args, "ops", "dry_run", "plan_id")), nil, nil))
 		}},
-	{Name: "create_share", Title: "Create a share link", Description: "Make a link that lets anyone with it view a file or folder, for 1–7 days, optionally with a password. Not allowed for private folders.",
-		InputSchema: obj(map[string]any{"id": str("Item id"), "expires_days": num("1–7, default 7"), "password": str("Optional")}, "id"),
+	{Name: "create_share", Title: "Create a share link", Description: "Make a link that lets anyone with it view a file or folder, for some days or forever, optionally with a password. Not allowed for private folders.",
+		InputSchema: obj(map[string]any{"id": str("Item id"), "expires_days": num("Days the link works: 1–3650, or 0 for a link that never expires. Default 7"), "password": str("Optional")}, "id"),
 		Annotations: sharing, scope: ScopeShares,
 		call: func(s *Server, r *http.Request, args map[string]any) mcpResult {
 			return textResult(s.rest(r, s.agentCreateShare, "POST", "/api/agent/v1/shares", jsonBody(pick(args, "id", "expires_days", "password")), nil, nil))

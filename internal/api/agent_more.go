@@ -21,7 +21,8 @@ import (
 
 // agent 接口的其余部分：分享链接、危险操作申请、自己的审计日志、运维状态。
 
-// POST /shares {"id", "expires_days": 1–7（默认 7）, "password"}：分享一个文件或文件夹。私密文件夹里的不能分享。
+// POST /shares {"id", "expires_days": 0 永久、1–3650 天（不填是 7 天）, "password"}：分享一个文件或文件夹。私密文件夹里的不能分享。
+// 以前 AI 令牌最长只能建 7 天的分享，2026-11-07 William 要求放开成和网页一样，可以建永久的。
 func (s *Server) agentCreateShare(w http.ResponseWriter, r *http.Request) {
 	if !s.need(w, r, ScopeShares) {
 		return
@@ -31,18 +32,19 @@ func (s *Server) agentCreateShare(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID          uuid.UUID `json:"id"`
 		Path        string    `json:"path"`
-		ExpiresDays int       `json:"expires_days"`
+		ExpiresDays *int      `json:"expires_days"`
 		Password    string    `json:"password"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
 		agentError(w, http.StatusBadRequest, "invalid_json", "invalid JSON", "")
 		return
 	}
-	if req.ExpiresDays == 0 {
-		req.ExpiresDays = agentMaxShareDays
+	days := agentDefaultShareDays // 不填是 7 天；明确写 0 是永久
+	if req.ExpiresDays != nil {
+		days = *req.ExpiresDays
 	}
-	if req.ExpiresDays < 1 || req.ExpiresDays > agentMaxShareDays {
-		agentError(w, http.StatusBadRequest, "invalid_expiry", fmt.Sprintf("expires_days must be 1–%d", agentMaxShareDays), "Agents cannot create permanent share links.")
+	if days < 0 || days > maxShareExpiryDays {
+		agentError(w, http.StatusBadRequest, "invalid_expiry", fmt.Sprintf("expires_days must be 0 (never expires) or 1–%d", maxShareExpiryDays), "Leave it out for 7 days.")
 		return
 	}
 	var f *meta.File
@@ -72,8 +74,11 @@ func (s *Server) agentCreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := make([]byte, 16)
 	rand.Read(raw)
-	t := time.Now().Add(time.Duration(req.ExpiresDays) * 24 * time.Hour)
-	sh := &meta.Share{UserID: s.userID, FileID: f.ID, Token: base64.RawURLEncoding.EncodeToString(raw), ExpiresAt: &t, AgentTokenID: &a.tok.ID}
+	sh := &meta.Share{UserID: s.userID, FileID: f.ID, Token: base64.RawURLEncoding.EncodeToString(raw), AgentTokenID: &a.tok.ID}
+	if days > 0 {
+		t := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+		sh.ExpiresAt = &t
+	}
 	if pw := strings.TrimSpace(req.Password); pw != "" {
 		sh.PasswordSalt = make([]byte, 16)
 		rand.Read(sh.PasswordSalt)
@@ -87,7 +92,7 @@ func (s *Server) agentCreateShare(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.audit(ctx, a, "share", []*meta.File{f}, []string{path}, map[string]any{"share_id": out.ID, "expires_days": req.ExpiresDays, "password": sh.HasPassword()}, "ok", "", 0)
+	s.audit(ctx, a, "share", []*meta.File{f}, []string{path}, map[string]any{"share_id": out.ID, "expires_days": days, "password": sh.HasPassword()}, "ok", "", 0)
 	writeJSON(w, http.StatusCreated, agentShareView(out, path))
 }
 
