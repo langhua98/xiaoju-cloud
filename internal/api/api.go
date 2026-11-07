@@ -46,6 +46,7 @@ type Server struct {
 	ingestLimit, ingestAskLimit, shareLimit, shareUnlockLimit, dropLimit, dropAskLimit, speedLimit *ipLimiter
 
 	relay  *relayHub   // 即时信箱（小橘遥控用，见 relay.go）
+	stream *streamHub  // 直播通道（小橘遥控的实时画面，见 stream.go）
 	agents *agentState // AI agent：每把令牌的限速、被拒次数、批量预演（见 agent.go）
 
 	gdrive     *gdrive.Syncer // 谷歌云盘同步（见 gdrive.go），nil 时没有这个功能
@@ -98,6 +99,7 @@ func New(svc *service.Service, opt Options) *Server {
 		speedLimit: newIPLimiter(60, 30),
 		agents:     newAgentState(),
 		relay:      newRelayHub(),
+		stream:     newStreamHub(),
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),
 	}
