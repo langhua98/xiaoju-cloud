@@ -216,7 +216,7 @@ AI 拿到的下载链接（`POST /items/{id}/link`）也不过期，令牌被撤
 | 只读 `readonly` | `files:read`（列目录、搜索、统计、找重复、缩略图）、`ops:read`（备份状态） |
 | 只读 + 下载 + 上传 `upload` | `files:read`、`files:download`、`files:upload` |
 | 整理 `organize` | 再加 `files:organize`：建文件夹、改名、移动、移进回收站、放回、批量 |
-| 全部 `admin` | 再加 `shares:manage`（1–7 天的分享链接）、`ops:read`（备份状态）、`danger:request`（申请危险操作） |
+| 全部 `admin` | 再加 `shares:manage`（分享链接，不填有效期是 7 天，`expires_days: 0` 是永久）、`ops:read`（备份状态）、`danger:request`（申请危险操作） |
 
 网页上也可以不用预设，直接勾选要给的权限（比如只读 + 申请危险操作）；接口是 `POST /api/agents {"scopes": [...]}`。
 
@@ -245,7 +245,7 @@ AI 拿到的下载链接（`POST /items/{id}/link`）也不过期，令牌被撤
 | `PATCH` | `/items/{id}` `{"name"}` / `{"to":"/目标"}` / `{"parent_id"}` | 改名、移动 |
 | `DELETE` | `/items/{id}`；`POST /items/{id}/restore` | 移进回收站、放回 |
 | `POST` | `/batch` `{"ops":[{"op":"move","id","to"},…],"dry_run":true}`，再 `{"plan_id"}` | 批量（最多 500 条） |
-| `GET` / `POST` / `DELETE` | `/shares`、`/shares/{id}` | 这把令牌建的分享 |
+| `GET` / `POST` / `PATCH` / `DELETE` | `/shares`、`/shares/{id}` | 这把令牌建的分享；`PATCH {"expires_days"}` 改有效期（0 是永久，链接不变） |
 | `POST` / `GET` | `/requests`、`/requests/{id}` | 申请危险操作 `{"action":"purge","ids":[…],"reason"}`、查结果 |
 | `GET` | `/audit`、`/ops/backup`、`/ops/activity` | 自己的操作记录、备份状态 |
 

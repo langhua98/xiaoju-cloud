@@ -3439,7 +3439,7 @@ const AGENT_SCOPES = {
   "files:download": "下载原文件、预览",
   "files:upload": "上传、新建文件夹",
   "files:organize": "改名、移动、移进回收站",
-  "shares:manage": "建分享链接（1–7 天）",
+  "shares:manage": "建分享链接（可以永久）",
   "ops:read": "看备份状态",
   "danger:request": "申请永久删除等（要你批准）",
 };

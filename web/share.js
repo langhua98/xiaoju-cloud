@@ -9,6 +9,26 @@ const route = () => {
   return { token, folder };
 };
 const keyName = (token) => `xiaoju.share.${token}`;
+
+// 老浏览器补丁：安卓 4.x 上只能装 Firefox 68，它没有 replaceChildren（78 才有）和 <dialog>（98 才有）。
+// 缺了 replaceChildren，列表画到一半就报错，只看得到标题，看不到文件。新浏览器不受影响。
+if (!Element.prototype.replaceChildren) {
+  Element.prototype.replaceChildren = function (...nodes) {
+    while (this.firstChild) this.removeChild(this.firstChild);
+    this.append(...nodes);
+  };
+}
+function dialogFallback(dlg) {
+  if (typeof dlg.showModal === "function") return;
+  document.documentElement.classList.add("no-dialog");
+  Object.defineProperty(dlg, "open", { get: () => dlg.hasAttribute("open") });
+  dlg.showModal = () => dlg.setAttribute("open", "");
+  dlg.close = () => {
+    if (!dlg.hasAttribute("open")) return;
+    dlg.removeAttribute("open");
+    dlg.dispatchEvent(new Event("close"));
+  };
+}
 let items = []; // 当前文件夹里的文件（不含子文件夹）
 let viewing = -1; // 大图看的是 items 里的第几个
 
@@ -200,6 +220,7 @@ $("#sh-pass").addEventListener("submit", async (e) => {
 // ---------- 大图 ----------
 
 const viewer = $("#sh-viewer");
+dialogFallback(viewer);
 const media = () => items.filter(isMedia);
 
 function openViewer(i) {

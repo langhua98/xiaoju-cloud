@@ -44,6 +44,7 @@ func (s *Server) agentRoutes(api *http.ServeMux) {
 	h("POST /api/agent/v1/batch", s.agentBatch)
 	h("POST /api/agent/v1/shares", s.agentCreateShare)
 	h("GET /api/agent/v1/shares", s.agentListShares)
+	h("PATCH /api/agent/v1/shares/{id}", s.agentUpdateShare)
 	h("DELETE /api/agent/v1/shares/{id}", s.agentDeleteShare)
 	h("POST /api/agent/v1/requests", s.agentCreateRequest)
 	h("GET /api/agent/v1/requests/{id}", s.agentGetRequest)
