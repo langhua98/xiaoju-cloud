@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,63 +15,47 @@ import (
 	"github.com/langhua98/xiaoju-cloud/internal/meta"
 )
 
-// fakeTelegram 假的 Bot API：记下收到的请求，getUpdates 返回 updates。
-type fakeTelegram struct {
+var errFakeNeedStart = errors.New("need start")
+
+// fakeSender 假的 Telegram：记下发了什么；started 里的人才发得出去。
+type fakeSender struct {
 	mu      sync.Mutex
-	updates string
-	calls   []string // 方法名
-	last    map[string]string
-	photo   []byte
-	fail    string
+	owner   int64
+	started map[int64]bool
+	sent    []sentMsg
+	fail    error
 }
 
-func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+type sentMsg struct {
+	to    int64
+	text  string
+	photo []byte
+}
+
+func (f *fakeSender) BotName(context.Context) string { return "xiaoju_cloud_bot" }
+func (f *fakeSender) Owner(context.Context) (int64, error) {
+	if f.owner == 0 {
+		return 0, errors.New("no creator")
+	}
+	return f.owner, nil
+}
+func (f *fakeSender) Send(_ context.Context, to int64, text string, photo []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !strings.HasPrefix(r.URL.Path, "/botTOKEN/") {
-		w.Write([]byte(`{"ok":false,"description":"Unauthorized"}`))
-		return
+	if f.fail != nil {
+		return f.fail
 	}
-	method := strings.TrimPrefix(r.URL.Path, "/botTOKEN/")
-	f.calls = append(f.calls, method)
-	f.last = map[string]string{}
-	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
-		r.ParseMultipartForm(4 << 20)
-		for k, v := range r.MultipartForm.Value {
-			f.last[k] = v[0]
-		}
-		if fh := r.MultipartForm.File["photo"]; len(fh) > 0 {
-			p, _ := fh[0].Open()
-			f.photo, _ = io.ReadAll(p)
-		}
-	} else {
-		r.ParseForm()
-		for k, v := range r.PostForm {
-			f.last[k] = v[0]
-		}
+	if !f.started[to] {
+		return errFakeNeedStart
 	}
-	if f.fail != "" && (method == "sendMessage" || method == "sendPhoto") {
-		w.Write([]byte(`{"ok":false,"description":"` + f.fail + `"}`))
-		return
-	}
-	switch method {
-	case "getMe":
-		w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"xiaoju_cloud_bot"}}`))
-	case "getUpdates":
-		w.Write([]byte(`{"ok":true,"result":` + f.updates + `}`))
-	default:
-		w.Write([]byte(`{"ok":true,"result":{"message_id":7}}`))
-	}
+	f.sent = append(f.sent, sentMsg{to, text, photo})
+	return nil
 }
+func (f *fakeSender) NeedStart(err error) bool { return errors.Is(err, errFakeNeedStart) }
 
-func notifyTestServer(t *testing.T, tg *fakeTelegram, chat int64) (*httptest.Server, *Server) {
+func notifyTestServer(t *testing.T, tg TelegramSender, chat int64) *httptest.Server {
 	t.Helper()
-	tgs := httptest.NewServer(tg)
-	t.Cleanup(tgs.Close)
-	s := &Server{notifier: newNotifier("TOKEN", chat)}
-	if s.notifier != nil {
-		s.notifier.api = tgs.URL
-	}
+	s := &Server{notifier: newNotifier(tg, chat)}
 	a := &agentCall{tok: &meta.AgentToken{Scopes: []string{ScopeRead, ScopeUpload}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/agent/v1/notify", func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +63,7 @@ func notifyTestServer(t *testing.T, tg *fakeTelegram, chat int64) (*httptest.Ser
 	})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-	return ts, s
+	return ts
 }
 
 func postNotify(t *testing.T, ts *httptest.Server, body any) (int, map[string]any) {
@@ -95,44 +79,30 @@ func postNotify(t *testing.T, ts *httptest.Server, body any) (int, map[string]an
 	return resp.StatusCode, m
 }
 
-func TestNotifyFindsChatFromStartAndSendsPhoto(t *testing.T) {
-	tg := &fakeTelegram{updates: `[]`}
-	ts, _ := notifyTestServer(t, tg, 0)
+func TestNotifySendsToChannelOwnerAfterStart(t *testing.T) {
+	tg := &fakeSender{owner: 555, started: map[int64]bool{}}
+	ts := notifyTestServer(t, tg, 0)
 
-	// 还没人给机器人发过 /start：409，提示里带机器人的名字
+	// 主人还没给 Bot 发过 /start：409，提示里带 Bot 的名字
 	code, m := postNotify(t, ts, map[string]any{"text": "有动静"})
 	if code != http.StatusConflict || m["code"] != "need_start" || !strings.Contains(m["hint"].(string), "@xiaoju_cloud_bot") {
 		t.Fatalf("before /start: %d %v", code, m)
 	}
 
-	// 发过 /start 了（最近的私聊是 555，群聊不算）
-	tg.mu.Lock()
-	tg.updates = `[{"message":{"chat":{"id":111,"type":"private"}}},{"message":{"chat":{"id":555,"type":"private"}}},{"message":{"chat":{"id":-9,"type":"group"}}}]`
-	tg.mu.Unlock()
+	tg.started[555] = true
 	jpg := []byte{0xff, 0xd8, 1, 2, 3}
 	code, m = postNotify(t, ts, map[string]any{"text": "客厅有动静", "photo": base64.StdEncoding.EncodeToString(jpg)})
 	if code != 200 || m["chat"] != float64(555) {
 		t.Fatalf("send: %d %v", code, m)
 	}
-	tg.mu.Lock()
-	if tg.calls[len(tg.calls)-1] != "sendPhoto" || tg.last["chat_id"] != "555" || tg.last["caption"] != "客厅有动静" || !bytes.Equal(tg.photo, jpg) {
-		t.Fatalf("telegram got %v %v %v", tg.calls, tg.last, tg.photo)
+	if len(tg.sent) != 1 || tg.sent[0].to != 555 || tg.sent[0].text != "客厅有动静" || !bytes.Equal(tg.sent[0].photo, jpg) {
+		t.Fatalf("sent: %+v", tg.sent)
 	}
-	n := len(tg.calls)
-	tg.mu.Unlock()
-
-	// 找到过一次就记住，不用每次 getUpdates
-	postNotify(t, ts, map[string]any{"text": "又有动静"})
-	tg.mu.Lock()
-	if got := tg.calls[n:]; len(got) != 1 || got[0] != "sendMessage" || tg.last["text"] != "又有动静" {
-		t.Fatalf("second send: %v %v", got, tg.last)
-	}
-	tg.mu.Unlock()
 }
 
 func TestNotifyChatFromRequestOrEnv(t *testing.T) {
-	tg := &fakeTelegram{updates: `[]`}
-	ts, _ := notifyTestServer(t, tg, 42) // TG_NOTIFY_CHAT_ID=42
+	tg := &fakeSender{owner: 555, started: map[int64]bool{42: true, 77: true}}
+	ts := notifyTestServer(t, tg, 42) // TG_NOTIFY_CHAT_ID=42
 	if code, m := postNotify(t, ts, map[string]any{"text": "a"}); code != 200 || m["chat"] != float64(42) {
 		t.Fatalf("env chat: %d %v", code, m)
 	}
@@ -140,50 +110,40 @@ func TestNotifyChatFromRequestOrEnv(t *testing.T) {
 	if code, m := postNotify(t, ts, map[string]any{"text": "b", "chat": 77}); code != 200 || m["chat"] != float64(77) {
 		t.Fatalf("request chat: %d %v", code, m)
 	}
-	tg.mu.Lock()
-	defer tg.mu.Unlock()
-	for _, c := range tg.calls {
-		if c == "getUpdates" {
-			t.Fatal("getUpdates should not be needed when the chat is known")
-		}
-	}
 }
 
 func TestNotifyErrorsAndLimits(t *testing.T) {
-	tg := &fakeTelegram{updates: `[]`}
-	ts, s := notifyTestServer(t, tg, 42)
+	tg := &fakeSender{owner: 42, started: map[int64]bool{42: true}}
+	ts := notifyTestServer(t, tg, 0)
 	if code, _ := postNotify(t, ts, map[string]any{}); code != http.StatusBadRequest {
 		t.Fatalf("empty: %d", code)
 	}
 	if code, _ := postNotify(t, ts, map[string]any{"photo": "not base64!!"}); code != http.StatusBadRequest {
 		t.Fatalf("bad photo: %d", code)
 	}
-	tg.mu.Lock()
-	tg.fail = "Forbidden: bot can't initiate conversation with a user"
-	tg.mu.Unlock()
-	code, m := postNotify(t, ts, map[string]any{"text": "x"})
-	if code != http.StatusBadGateway || !strings.Contains(m["error"].(string), "Forbidden") {
+	tg.fail = errors.New("FLOOD_WAIT")
+	if code, m := postNotify(t, ts, map[string]any{"text": "x"}); code != http.StatusBadGateway || !strings.Contains(m["error"].(string), "FLOOD") {
 		t.Fatalf("telegram error: %d %v", code, m)
 	}
-	if strings.Contains(m["error"].(string), "TOKEN") {
-		t.Fatal("bot token leaked in error")
-	}
-	tg.mu.Lock()
-	tg.fail = ""
-	tg.mu.Unlock()
+	tg.fail = nil
 	// 限流：已经发了 1 条（失败的也算），再发 notifyBurst-1 条就满了
 	for i := 0; i < notifyBurst-1; i++ {
 		if code, _ := postNotify(t, ts, map[string]any{"text": "x"}); code != 200 {
 			t.Fatalf("send %d: %d", i, code)
 		}
 	}
-	if code, m := postNotify(t, ts, map[string]any{"text": "x"}); code != http.StatusTooManyRequests {
-		t.Fatalf("want 429 after %d sends, got %d %v", notifyBurst, code, m)
+	if code, _ := postNotify(t, ts, map[string]any{"text": "x"}); code != http.StatusTooManyRequests {
+		t.Fatalf("want 429 after %d sends, got %d", notifyBurst, code)
 	}
-	_ = s
 
-	// 没配机器人：501
-	s2 := &Server{notifier: newNotifier("", 0)}
+	// 找不到频道主人：502 + 提示设 TG_NOTIFY_CHAT_ID
+	ts2 := notifyTestServer(t, &fakeSender{started: map[int64]bool{}}, 0)
+	if code, m := postNotify(t, ts2, map[string]any{"text": "x"}); code != http.StatusBadGateway || !strings.Contains(m["hint"].(string), "TG_NOTIFY_CHAT_ID") {
+		t.Fatalf("no owner: %d %v", code, m)
+	}
+
+	// 没连 Telegram（本地存储）：501
+	s2 := &Server{notifier: newNotifier(nil, 0)}
 	rec := httptest.NewRecorder()
 	a := &agentCall{tok: &meta.AgentToken{Scopes: []string{ScopeUpload}}}
 	req := httptest.NewRequest("POST", "/api/agent/v1/notify", strings.NewReader(`{"text":"x"}`))

@@ -33,8 +33,7 @@ SECRET_KEYS = [
     "TG_BACKUP_EXTRA_BOT_TOKENS",
     # 可选：只给 AI agent 接口用的 Bot（同一个频道的管理员）
     "TG_AGENT_BOT_TOKENS",
-    # 可选：小橘遥控移动侦测发提醒用的 Bot（不填就用 TG_BOT_TOKEN）、发给谁（不填就发给最近给 Bot 发过 /start 的人）
-    "TG_NOTIFY_BOT_TOKEN",
+    # 可选：小橘遥控移动侦测的提醒发给谁（Telegram 数字 ID，不填就发给存储频道的创建者）
     "TG_NOTIFY_CHAT_ID",
     # 可选：谷歌云盘同步的 OAuth 客户端（Google Cloud Console 里建的“Web 应用”）
     "GOOGLE_CLIENT_ID",

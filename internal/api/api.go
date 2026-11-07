@@ -47,7 +47,7 @@ type Server struct {
 
 	relay    *relayHub   // 即时信箱（小橘遥控用，见 relay.go）
 	stream   *streamHub  // 直播通道（小橘遥控的实时画面，见 stream.go）
-	notifier *notifier   // Telegram 提醒（小橘遥控的移动侦测，见 notify.go），nil = 没有机器人
+	notifier *notifier   // Telegram 提醒（小橘遥控的移动侦测，见 notify.go），nil = 没连 Telegram
 	agents   *agentState // AI agent：每把令牌的限速、被拒次数、批量预演（见 agent.go）
 
 	gdrive     *gdrive.Syncer // 谷歌云盘同步（见 gdrive.go），nil 时没有这个功能
@@ -77,9 +77,9 @@ type Options struct {
 	GDrive *gdrive.Syncer
 	// PublicURL 是服务端对外的地址（如 https://xxx.hf.space），谷歌授权完跳回来用；空时按请求的 Host 算。
 	PublicURL string
-	// NotifyBotToken / NotifyChatID：发 Telegram 提醒用的机器人和默认聊天（见 notify.go）。令牌空 = 没有提醒功能。
-	NotifyBotToken string
-	NotifyChatID   int64
+	// Notify 发 Telegram 提醒（见 notify.go），nil = 没有提醒功能；NotifyChatID 默认发给谁（0 = 存储频道的创建者）。
+	Notify       TelegramSender
+	NotifyChatID int64
 }
 
 func New(svc *service.Service, opt Options) *Server {
@@ -104,7 +104,7 @@ func New(svc *service.Service, opt Options) *Server {
 		agents:     newAgentState(),
 		relay:      newRelayHub(),
 		stream:     newStreamHub(),
-		notifier:   newNotifier(opt.NotifyBotToken, opt.NotifyChatID),
+		notifier:   newNotifier(opt.Notify, opt.NotifyChatID),
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),
 	}

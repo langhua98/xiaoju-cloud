@@ -124,7 +124,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		log.Info("applied migrations", "versions", done)
 	}
 
-	driver, tgDone, err := newDriver(ctx, cfg, log)
+	driver, tgDone, messenger, err := newDriver(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -194,11 +194,15 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	var notify api.TelegramSender // 接口里放 nil 指针会变成「不是 nil」，只有真有 Messenger 时才放
+	if messenger != nil {
+		notify = messenger
+	}
 	server := api.New(svc, api.Options{
 		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
 		Passkeys: passkeys, Grid: grid, Sessions: sessions, Location: cfg.Location,
 		GDrive: gsync, PublicURL: cfg.PublicURL,
-		NotifyBotToken: cfg.Telegram.NotifyBotToken, NotifyChatID: cfg.Telegram.NotifyChatID,
+		Notify: notify, NotifyChatID: cfg.Telegram.NotifyChatID,
 	})
 	go server.RunAgentMaintenance(ctx, 6*time.Hour) // 删掉 180 天前的 AI 助手审计日志
 	handler := server.Handler()
@@ -292,11 +296,12 @@ func diagnose(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	return nil
 }
 
-// newDriver 创建存储驱动。telegram 驱动额外返回客户端退出通知；local 驱动返回 nil channel（永不触发）。
-func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (storage.Driver, <-chan error, error) {
+// newDriver 创建存储驱动。telegram 驱动额外返回客户端退出通知、用主 Bot 发私信的 Messenger（发提醒用）；
+// local 驱动返回 nil channel（永不触发）、nil Messenger。
+func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (storage.Driver, <-chan error, *telegram.Messenger, error) {
 	if cfg.Storage == "local" {
 		d, err := local.New(cfg.LocalDir)
-		return d, nil, err
+		return d, nil, nil, err
 	}
 	t := cfg.Telegram
 	tgAPI, done, err := telegram.Start(ctx, telegram.ClientConfig{
@@ -304,13 +309,13 @@ func newDriver(ctx context.Context, cfg *config.Config, log *slog.Logger) (stora
 		Transport: t.Transport,
 	}, log.With("bot", botID(t.BotToken)))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	d, err := telegram.New(ctx, tgAPI, t.ChannelID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return withExtraBots(ctx, cfg, d, t.ChannelID, t.SessionFile, t.ExtraBotTokens, t.AgentBots, log), done, nil
+	return withExtraBots(ctx, cfg, d, t.ChannelID, t.SessionFile, t.ExtraBotTokens, t.AgentBots, log), done, d.Messenger(), nil
 }
 
 // newBackupDriver 用另一个账号的 Bot 连接备份频道；未配置备份时返回 nil。

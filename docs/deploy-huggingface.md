@@ -34,8 +34,7 @@ GitHub Actions ──上传源码 + 写入 Secrets──▶ HF 私有 Space（xi
 | `TG_APP_ID` / `TG_APP_HASH` | my.telegram.org 获取 |
 | `TG_BOT_TOKEN` | @BotFather 获取 |
 | `TG_CHANNEL_ID` | 私有频道 ID，如 `-100xxxxxxxxxx`（Bot 需为管理员） |
-| `TG_NOTIFY_BOT_TOKEN`（可选） | 小橘遥控移动侦测发提醒用的 Bot；不填就用 `TG_BOT_TOKEN`。在 Telegram 里给这个 Bot 发一句 `/start`，提醒就发给你 |
-| `TG_NOTIFY_CHAT_ID`（可选） | 提醒发给谁（数字 ID）；不填就发给最近给 Bot 发过 `/start` 的人 |
+| `TG_NOTIFY_CHAT_ID`（可选） | 小橘遥控移动侦测的提醒发给谁（Telegram 数字 ID，要在存储频道里）；不填就发给存储频道的创建者。提醒用 `TG_BOT_TOKEN` 那个 Bot 发，先在 Telegram 里给它发一句 `/start` |
 
 然后 **Actions → Deploy to Hugging Face Space → Run workflow**。工作流会：
 
