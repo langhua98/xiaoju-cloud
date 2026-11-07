@@ -198,6 +198,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		UserID: userID, Token: cfg.AdminToken, CORSOrigins: cfg.CORSOrigins, Log: log,
 		Passkeys: passkeys, Grid: grid, Sessions: sessions, Location: cfg.Location,
 		GDrive: gsync, PublicURL: cfg.PublicURL,
+		NotifyBotToken: cfg.Telegram.NotifyBotToken, NotifyChatID: cfg.Telegram.NotifyChatID,
 	})
 	go server.RunAgentMaintenance(ctx, 6*time.Hour) // 删掉 180 天前的 AI 助手审计日志
 	handler := server.Handler()
