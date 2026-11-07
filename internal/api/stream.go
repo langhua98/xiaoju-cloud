@@ -18,23 +18,29 @@ import (
 //	GET /api/agent/v1/stream?room=<房间名>&role=pub   推流（被控端），要 upload 权限
 //	GET /api/agent/v1/stream?room=<房间名>&role=sub   观看（控制端），要 read 权限
 //
-// 推流端发二进制消息，一条就是一帧。服务端原样转发，不看内容（小橘遥控的帧格式：第 1 字节是类型，
-// 第 2 字节是画面要转的角度/90，后面是 JPEG）。
+// 推流端发二进制消息，服务端原样转发，只看第 1 个字节（类型）：
+//   - 2 = 声音：一包都不丢，按顺序发给每个观看端（最多攒 streamAudioQueue 包，再多丢最旧的），不占 ack 名额；
+//   - 其他 = 一帧画面：每个观看端只留最新一帧，慢了就丢旧帧。
+//
+// 小橘遥控的格式见安卓 StreamClient.kt（画面 1/3、声音 2，带采集时间戳，观看端用它对齐声音和画面）。
 // 服务端发给推流端的文字消息 {"subs":N}：观看人数变了就发，推流端没人看了就自己停。
 // 服务端发给观看端的文字消息 {"pub":true|false}：推流端连上了 / 断开了。
 // 观看端加 &ack=1：每处理完一帧回一条任意文字消息（比如 "ok"），服务端最多让 streamInFlight 帧在路上。
 // 不加的话，帧会先堆在系统的网络缓冲区里，观看端慢的时候看到的是好几秒前的画面。
 // 房间名由观看端每次随机生成（遥控/<设备名>/视频/<随机串>），放在发给被控端的指令里，别人猜不到。
 const (
-	streamMaxRoom   = 200                   // 房间名最长多少字节
-	streamMaxFrame  = 1 << 20               // 一帧最大 1 MB（480p 的 JPEG 一般几十 KB）
-	streamMaxRooms  = 50                    // 同时最多几个房间
-	streamMaxSubs   = 4                     // 一个房间最多几个人同时看
-	streamMinGap    = 33 * time.Millisecond // 最多每秒 30 帧，再快的直接丢
-	streamMaxConn   = 4 * time.Hour         // 一条连接最长连多久（忘了关的直播也会断）
-	streamPing      = 20 * time.Second      // 心跳，免得中间的代理把安静的连接断掉
-	streamWriteWait = 10 * time.Second      // 一帧写了这么久还没写完，就当对面掉线了
-	streamInFlight  = 2                     // ack=1 时最多几帧发出去了还没收到回话
+	streamMaxRoom    = 200                   // 房间名最长多少字节
+	streamMaxFrame   = 1 << 20               // 一帧最大 1 MB（480p 的 JPEG 一般几十 KB）
+	streamMaxRooms   = 50                    // 同时最多几个房间
+	streamMaxSubs    = 4                     // 一个房间最多几个人同时看
+	streamMinGap     = 33 * time.Millisecond // 最多每秒 30 帧，再快的直接丢
+	streamMaxConn    = 4 * time.Hour         // 一条连接最长连多久（忘了关的直播也会断）
+	streamPing       = 20 * time.Second      // 心跳，免得中间的代理把安静的连接断掉
+	streamWriteWait  = 10 * time.Second      // 一帧写了这么久还没写完，就当对面掉线了
+	streamInFlight   = 2                     // ack=1 时最多几帧发出去了还没收到回话
+	streamKindAudio  = 2                     // 第 1 字节是 2 的消息是声音
+	streamAudioQueue = 64                    // 每个观看端最多攒多少包声音（100 ms 一包，约 6 秒）
+	streamAudioGap   = 10 * time.Millisecond // 声音包最快每 10 ms 一包
 )
 
 type streamHub struct {
@@ -49,15 +55,18 @@ type streamRoom struct {
 
 // streamPeer 是一条连接。frame 只放最新一帧（缓冲 1，新帧来了旧的还没写出去就扔掉），ctrl 放文字消息。
 type streamPeer struct {
-	frame chan []byte
-	ctrl  chan []byte
-	acks  chan struct{}      // ack=1 的观看端：处理完一帧回的话
-	stop  context.CancelFunc // 推流端被新的推流端顶掉时用来断开它
-	last  time.Time          // 推流端：上一帧转发的时间（限帧率，只在它自己的读循环里用）
+	frame     chan []byte
+	ctrl      chan []byte
+	acks      chan struct{}      // ack=1 的观看端：处理完一帧回的话
+	audio     chan []byte        // 声音包，按顺序发
+	stop      context.CancelFunc // 推流端被新的推流端顶掉时用来断开它
+	last      time.Time          // 推流端：上一帧转发的时间（限帧率，只在它自己的读循环里用）
+	lastAudio time.Time          // 推流端：上一包声音转发的时间
 }
 
 func newStreamPeer() *streamPeer {
-	return &streamPeer{frame: make(chan []byte, 1), ctrl: make(chan []byte, 8), acks: make(chan struct{}, 16)}
+	return &streamPeer{frame: make(chan []byte, 1), ctrl: make(chan []byte, 8), acks: make(chan struct{}, 16),
+		audio: make(chan []byte, streamAudioQueue)}
 }
 
 // offer 放一帧；上一帧还没写出去就换成这一帧。只有房间的推流端会调用它（持有 hub 锁），不会同时有两个人放。
@@ -70,6 +79,21 @@ func (p *streamPeer) offer(f []byte) {
 		}
 		select {
 		case <-p.frame: // 扔掉没来得及发的旧帧
+		default:
+		}
+	}
+}
+
+// offerAudio 放一包声音；攒满了（观看端很久没收）丢最旧的一包。
+func (p *streamPeer) offerAudio(a []byte) {
+	for {
+		select {
+		case p.audio <- a:
+			return
+		default:
+		}
+		select {
+		case <-p.audio:
 		default:
 		}
 	}
@@ -152,8 +176,13 @@ func (h *streamHub) forward(name string, p *streamPeer, f []byte) {
 	if r == nil || r.pub != p {
 		return
 	}
+	audio := len(f) > 0 && f[0] == streamKindAudio
 	for s := range r.subs {
-		s.offer(f)
+		if audio {
+			s.offerAudio(f)
+		} else {
+			s.offer(f)
+		}
 	}
 }
 
@@ -222,6 +251,8 @@ func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
 				err = streamWrite(ctx, c, websocket.MessageText, b)
 			case <-p.acks:
 				credits = min(credits+1, streamInFlight)
+			case a := <-p.audio:
+				err = streamWrite(ctx, c, websocket.MessageBinary, a)
 			case f := <-frames:
 				err = streamWrite(ctx, c, websocket.MessageBinary, f)
 				credits--
@@ -264,7 +295,13 @@ func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
 		if typ != websocket.MessageBinary {
 			continue
 		}
-		if now := time.Now(); now.Sub(p.last) >= streamMinGap {
+		now := time.Now()
+		if len(data) > 0 && data[0] == streamKindAudio {
+			if now.Sub(p.lastAudio) >= streamAudioGap {
+				p.lastAudio = now
+				s.stream.forward(name, p, data)
+			}
+		} else if now.Sub(p.last) >= streamMinGap {
 			p.last = now
 			s.stream.forward(name, p, data)
 		}

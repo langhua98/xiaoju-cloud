@@ -347,3 +347,57 @@ func TestStreamWebSocketAckLimitsFramesInFlight(t *testing.T) {
 		t.Fatalf("after ack want newest frame 29, got %d", b[2])
 	}
 }
+
+func TestStreamPeerAudioKeepsOrderDropsOldestWhenFull(t *testing.T) {
+	p := newStreamPeer()
+	for i := 0; i < streamAudioQueue+3; i++ {
+		p.offerAudio([]byte{2, byte(i)})
+	}
+	for i := 3; i < streamAudioQueue+3; i++ {
+		if a := <-p.audio; a[1] != byte(i) {
+			t.Fatalf("audio %d out of order: got %d", i, a[1])
+		}
+	}
+}
+
+func TestStreamWebSocketAudioInOrderAndNotBlockedByAck(t *testing.T) {
+	ts := streamTestServer(t)
+	room := "遥控/测试机/视频/audio"
+	u := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/agent/v1/stream?role=sub&ack=1&room=" + url.QueryEscape(room)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sub, _, err := websocket.Dial(ctx, u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.CloseNow()
+	readText(t, sub)
+	pub := dialStream(t, ts, room, "pub")
+	readText(t, pub)
+	readText(t, sub) // pub:true
+
+	// 两帧画面用完 ack 名额（观看端一直不回话）
+	for i := 0; i < streamInFlight; i++ {
+		send(t, pub, []byte{3, 0, byte(i)})
+		time.Sleep(40 * time.Millisecond)
+	}
+	for i := 0; i < streamInFlight; i++ {
+		if _, b := readMsg(t, sub); b[0] != 3 {
+			t.Fatalf("want video, got kind %d", b[0])
+		}
+	}
+	// 画面被 ack 卡住，声音照样按顺序过来，一包不丢（中间夹的画面不该出现）
+	for i := 0; i < 20; i++ {
+		send(t, pub, []byte{2, 0, byte(i)})
+		if i == 10 {
+			send(t, pub, []byte{3, 0, 99})
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	for i := 0; i < 20; i++ {
+		_, b := readMsg(t, sub)
+		if b[0] != 2 || b[2] != byte(i) {
+			t.Fatalf("audio #%d: got kind %d seq %d", i, b[0], b[2])
+		}
+	}
+}
