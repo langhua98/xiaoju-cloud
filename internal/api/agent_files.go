@@ -54,6 +54,7 @@ func (s *Server) agentRoutes(api *http.ServeMux) {
 	h("POST /api/agent/v1/relay", s.relayPost)
 	h("GET /api/agent/v1/relay", s.relayGet)
 	h("GET /api/agent/v1/stream", s.streamWS)
+	h("POST /api/agent/v1/notify", s.notify)
 }
 
 // page 读 ?limit=&cursor=。

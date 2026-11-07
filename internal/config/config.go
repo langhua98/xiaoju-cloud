@@ -73,6 +73,11 @@ type Telegram struct {
 	// （TG_AGENT_BOT_TOKENS 里的 Bot 不用写，自动算进来）
 	// （令牌冒号前面那段）；AI 的请求只用它们，手机备份、网页不用它们（见 telegram.Pool）。
 	AgentBots []string
+
+	// 提醒（小橘遥控的移动侦测）：TG_NOTIFY_BOT_TOKEN 专门发提醒的 Bot，没设就用 BotToken；
+	// TG_NOTIFY_CHAT_ID 发给谁，没设就发给最近给 Bot 发过 /start 的人。
+	NotifyBotToken string
+	NotifyChatID   int64
 }
 
 // BackupEnabled 报告是否配置了备份频道。
@@ -102,6 +107,7 @@ func Load() (*Config, error) {
 			ExtraBotTokens:       strings.Fields(strings.ReplaceAll(os.Getenv("TG_EXTRA_BOT_TOKENS"), ",", " ")),
 			BackupExtraBotTokens: strings.Fields(strings.ReplaceAll(os.Getenv("TG_BACKUP_EXTRA_BOT_TOKENS"), ",", " ")),
 			AgentBots:            agentBotIDs(os.Getenv("TG_AGENT_BOTS")),
+			NotifyBotToken:       strings.TrimSpace(os.Getenv("TG_NOTIFY_BOT_TOKEN")),
 		},
 	}
 
@@ -153,6 +159,14 @@ func Load() (*Config, error) {
 	if v := os.Getenv("TG_CHANNEL_ID"); v != "" {
 		if c.Telegram.ChannelID, err = strconv.ParseInt(v, 10, 64); err != nil {
 			return nil, fmt.Errorf("TG_CHANNEL_ID: %w", err)
+		}
+	}
+	if c.Telegram.NotifyBotToken == "" {
+		c.Telegram.NotifyBotToken = c.Telegram.BotToken
+	}
+	if v := strings.TrimSpace(os.Getenv("TG_NOTIFY_CHAT_ID")); v != "" {
+		if c.Telegram.NotifyChatID, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return nil, fmt.Errorf("TG_NOTIFY_CHAT_ID: %w", err)
 		}
 	}
 	if v := os.Getenv("TG_BACKUP_CHANNEL_ID"); v != "" {
