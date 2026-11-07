@@ -43,8 +43,7 @@ func (s *Server) agentCreateShare(w http.ResponseWriter, r *http.Request) {
 	if req.ExpiresDays != nil {
 		days = *req.ExpiresDays
 	}
-	if days < 0 || days > maxShareExpiryDays {
-		agentError(w, http.StatusBadRequest, "invalid_expiry", fmt.Sprintf("expires_days must be 0 (never expires) or 1–%d", maxShareExpiryDays), "Leave it out for 7 days.")
+	if !validShareDays(w, days) {
 		return
 	}
 	var f *meta.File
@@ -74,11 +73,7 @@ func (s *Server) agentCreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := make([]byte, 16)
 	rand.Read(raw)
-	sh := &meta.Share{UserID: s.userID, FileID: f.ID, Token: base64.RawURLEncoding.EncodeToString(raw), AgentTokenID: &a.tok.ID}
-	if days > 0 {
-		t := time.Now().Add(time.Duration(days) * 24 * time.Hour)
-		sh.ExpiresAt = &t
-	}
+	sh := &meta.Share{UserID: s.userID, FileID: f.ID, Token: base64.RawURLEncoding.EncodeToString(raw), ExpiresAt: shareExpiry(days), AgentTokenID: &a.tok.ID}
 	if pw := strings.TrimSpace(req.Password); pw != "" {
 		sh.PasswordSalt = make([]byte, 16)
 		rand.Read(sh.PasswordSalt)
@@ -122,6 +117,57 @@ func (s *Server) agentListShares(w http.ResponseWriter, r *http.Request) {
 		out[i] = agentShareView(sh, "")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+func validShareDays(w http.ResponseWriter, days int) bool {
+	if days < 0 || days > maxShareExpiryDays {
+		agentError(w, http.StatusBadRequest, "invalid_expiry", fmt.Sprintf("expires_days must be 0 (never expires) or 1–%d", maxShareExpiryDays), "Leave it out for 7 days.")
+		return false
+	}
+	return true
+}
+
+// shareExpiry 把天数换成过期时间；0 是永久（nil）。
+func shareExpiry(days int) *time.Time {
+	if days == 0 {
+		return nil
+	}
+	t := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+	return &t
+}
+
+// PATCH /shares/{id} {"expires_days": 0 永久、1–3650 天（从现在算）}：改这把令牌自己建的分享链接的有效期。
+// 链接不变，已经发出去的网址继续能用；已经过期的也能这样续上。
+func (s *Server) agentUpdateShare(w http.ResponseWriter, r *http.Request) {
+	if !s.need(w, r, ScopeShares) {
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		ExpiresDays *int `json:"expires_days"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
+		agentError(w, http.StatusBadRequest, "invalid_json", "invalid JSON", "")
+		return
+	}
+	if req.ExpiresDays == nil {
+		agentError(w, http.StatusBadRequest, "invalid_expiry", "expires_days is required", "Use 0 for a link that never expires.")
+		return
+	}
+	if !validShareDays(w, *req.ExpiresDays) {
+		return
+	}
+	a := agentFrom(r)
+	sh, err := s.svc.Store().SetAgentShareExpiry(r.Context(), s.userID, a.tok.ID, id, shareExpiry(*req.ExpiresDays))
+	if err != nil {
+		s.agentFail(w, r, err)
+		return
+	}
+	s.audit(r.Context(), a, "share_expiry", []*meta.File{sh.File}, nil, map[string]any{"share_id": id, "expires_days": *req.ExpiresDays}, "ok", "", 0)
+	writeJSON(w, http.StatusOK, agentShareView(sh, ""))
 }
 
 // DELETE /shares/{id}：撤销这把令牌自己建的分享链接。

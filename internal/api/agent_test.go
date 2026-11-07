@@ -375,6 +375,18 @@ func TestAgentAPI(t *testing.T) {
 	if code, out := call("", "GET", "/api/s/"+strings.TrimPrefix(forever["web_path"].(string), "share.html#"), ""); code != 200 {
 		t.Fatalf("open permanent share: %d %v", code, out)
 	}
+	// 改有效期：3 天的改成永久，链接不变；不填、负数不行；别的令牌改不了
+	shPath := "/api/agent/v1/shares/" + sh["id"].(string)
+	mustCall(400, adm, "PATCH", shPath, `{}`)
+	mustCall(400, adm, "PATCH", shPath, `{"expires_days":-1}`)
+	mustCall(403, org, "PATCH", shPath, `{"expires_days":0}`) // 没有分享权限
+	mustCall(404, newAgent(map[string]any{"name": "另一个管家", "preset": "admin"}), "PATCH", shPath, `{"expires_days":0}`)
+	if up := mustCall(200, adm, "PATCH", shPath, `{"expires_days":0}`); shareDays(up) != -1 || up["web_path"] != sh["web_path"] {
+		t.Fatalf("make permanent: %v", up)
+	}
+	if up := mustCall(200, adm, "PATCH", shPath, `{"expires_days":30}`); shareDays(up) != 30 {
+		t.Fatalf("back to 30 days: %v", up)
+	}
 	mustCall(404, adm, "POST", "/api/agent/v1/shares", `{"id":"`+hidden+`"}`) // 看不到私密的
 	for _, it := range mustCall(200, adm, "GET", "/api/agent/v1/shares", "")["items"].([]any) {
 		mustCall(204, adm, "DELETE", "/api/agent/v1/shares/"+it.(map[string]any)["id"].(string), "")
@@ -506,7 +518,7 @@ func TestAgentAPI(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 401 {
 		t.Fatalf("admin token changed: %v %v", err, resp.StatusCode)
 	}
-	if out := mustCall(200, "admin", "POST", "/api/agents/revoke-all", ""); out["revoked"].(float64) != 5 {
+	if out := mustCall(200, "admin", "POST", "/api/agents/revoke-all", ""); out["revoked"].(float64) != 6 { // 包括改分享有效期时建的“另一个管家”
 		t.Fatalf("revoke all: %v", out)
 	}
 	mustCall(401, org, "GET", "/api/agent/v1/me", "")

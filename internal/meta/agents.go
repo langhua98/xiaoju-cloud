@@ -611,6 +611,18 @@ func (s *Store) ListAgentShares(ctx context.Context, userID, tokenID uuid.UUID) 
 	return out, rows.Err()
 }
 
+// SetAgentShareExpiry 改一把 agent 令牌自己建的分享链接的有效期（nil 是永久）。链接里的随机串不变，原来的网址照样能用。
+func (s *Store) SetAgentShareExpiry(ctx context.Context, userID, tokenID, id uuid.UUID, at *time.Time) (*Share, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE shares SET expires_at = $4 WHERE id = $1 AND user_id = $2 AND agent_token_id = $3`, id, userID, tokenID, at)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound
+	}
+	return s.getShare(ctx, `s.id = $1`, id)
+}
+
 // DeleteAgentShare 撤销一把 agent 令牌自己建的分享链接。
 func (s *Store) DeleteAgentShare(ctx context.Context, userID, tokenID, id uuid.UUID) error {
 	tag, err := s.db.Exec(ctx, `DELETE FROM shares WHERE id = $1 AND user_id = $2 AND agent_token_id = $3`, id, userID, tokenID)

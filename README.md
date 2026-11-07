@@ -245,7 +245,7 @@ AI 拿到的下载链接（`POST /items/{id}/link`）也不过期，令牌被撤
 | `PATCH` | `/items/{id}` `{"name"}` / `{"to":"/目标"}` / `{"parent_id"}` | 改名、移动 |
 | `DELETE` | `/items/{id}`；`POST /items/{id}/restore` | 移进回收站、放回 |
 | `POST` | `/batch` `{"ops":[{"op":"move","id","to"},…],"dry_run":true}`，再 `{"plan_id"}` | 批量（最多 500 条） |
-| `GET` / `POST` / `DELETE` | `/shares`、`/shares/{id}` | 这把令牌建的分享 |
+| `GET` / `POST` / `PATCH` / `DELETE` | `/shares`、`/shares/{id}` | 这把令牌建的分享；`PATCH {"expires_days"}` 改有效期（0 是永久，链接不变） |
 | `POST` / `GET` | `/requests`、`/requests/{id}` | 申请危险操作 `{"action":"purge","ids":[…],"reason"}`、查结果 |
 | `GET` | `/audit`、`/ops/backup`、`/ops/activity` | 自己的操作记录、备份状态 |
 
