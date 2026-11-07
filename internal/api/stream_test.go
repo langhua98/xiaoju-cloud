@@ -401,3 +401,195 @@ func TestStreamWebSocketAudioInOrderAndNotBlockedByAck(t *testing.T) {
 		}
 	}
 }
+
+// h264Msg 拼一条 H.264 消息：[4][角度][时间 8 字节][标志][数据]，数据第 1 字节放序号方便验证。
+func h264Msg(seq byte, key bool) []byte {
+	m := make([]byte, 12)
+	m[0] = streamKindH264
+	if key {
+		m[10] = 1
+	}
+	m[11] = seq
+	return m
+}
+
+func drainH264(p *streamPeer) []byte {
+	var got []byte
+	for f := p.nextH264(); f != nil; f = p.nextH264() {
+		got = append(got, f[11])
+	}
+	return got
+}
+
+func TestStreamPeerH264KeepsOrderAndSkipsToKeyframe(t *testing.T) {
+	p := newStreamPeer()
+	now := time.Now()
+	p.offerH264(h264Msg(1, true), now)
+	p.offerH264(h264Msg(2, false), now)
+	p.offerH264(h264Msg(3, false), now)
+	if got := drainH264(p); !bytes.Equal(got, []byte{1, 2, 3}) {
+		t.Fatalf("want every frame in order, got %v", got)
+	}
+	// 排着的帧还没发出去时来了关键帧：前面的不要了，从关键帧接着发
+	p.offerH264(h264Msg(4, false), now)
+	p.offerH264(h264Msg(5, false), now)
+	p.offerH264(h264Msg(6, true), now)
+	p.offerH264(h264Msg(7, false), now)
+	if got := drainH264(p); !bytes.Equal(got, []byte{6, 7}) {
+		t.Fatalf("keyframe should replace the waiting frames, got %v", got)
+	}
+	// 观看端跟不上：排队最早的一帧超过 streamH264MaxLag → 全扔，普通帧也不要了，等关键帧
+	p.offerH264(h264Msg(8, false), now)
+	later := now.Add(streamH264MaxLag + time.Millisecond)
+	p.offerH264(h264Msg(9, false), later)
+	p.offerH264(h264Msg(10, false), later)
+	if got := drainH264(p); len(got) != 0 {
+		t.Fatalf("after falling behind nothing but a keyframe may go out, got %v", got)
+	}
+	p.offerH264(h264Msg(11, true), later)
+	p.offerH264(h264Msg(12, false), later)
+	if got := drainH264(p); !bytes.Equal(got, []byte{11, 12}) {
+		t.Fatalf("want to resume at the keyframe, got %v", got)
+	}
+}
+
+func TestStreamHubH264LateViewerStartsAtLastKeyframe(t *testing.T) {
+	h := newStreamHub()
+	pub, early := newStreamPeer(), newStreamPeer()
+	h.join("r", pub, true)
+	h.join("r", early, false)
+	if m := ctrlMsg(t, early); m["h264"] != true {
+		t.Fatalf("viewer should be told the server forwards H.264: %v", m)
+	}
+	h.forward("r", pub, h264Msg(1, false)) // 还没有关键帧：先进来的观看端也得等关键帧
+	h.forward("r", pub, h264Msg(2, true))
+	h.forward("r", pub, h264Msg(3, false))
+	h.forward("r", pub, h264Msg(4, false))
+	if got := drainH264(early); !bytes.Equal(got, []byte{2, 3, 4}) {
+		t.Fatalf("early viewer: %v", got)
+	}
+	late := newStreamPeer()
+	h.join("r", late, false)
+	if got := drainH264(late); !bytes.Equal(got, []byte{2, 3, 4}) {
+		t.Fatalf("late viewer should get the last keyframe and what followed, got %v", got)
+	}
+	h.forward("r", pub, h264Msg(5, false))
+	if got := drainH264(late); !bytes.Equal(got, []byte{5}) {
+		t.Fatalf("late viewer then follows live: %v", got)
+	}
+	// 新推流端（比如被控端重连）：记着的帧作废
+	pub2 := newStreamPeer()
+	h.join("r", pub2, true)
+	late2 := newStreamPeer()
+	h.join("r", late2, false)
+	h.forward("r", pub2, h264Msg(6, false))
+	if got := drainH264(late2); len(got) != 0 {
+		t.Fatalf("frames from before the new publisher must not be replayed: %v", got)
+	}
+}
+
+func TestStreamRoomGOPLimit(t *testing.T) {
+	r := &streamRoom{}
+	r.remember(h264Msg(0, true), true)
+	for i := 1; i < streamGOPFrames; i++ {
+		r.remember(h264Msg(byte(i), false), false)
+	}
+	if len(r.gop) != streamGOPFrames {
+		t.Fatalf("gop: %d", len(r.gop))
+	}
+	r.remember(h264Msg(0, false), false) // 关键帧隔太久：不记了
+	if len(r.gop) != 0 || r.gopBytes != 0 {
+		t.Fatalf("gop should be dropped when too long, has %d", len(r.gop))
+	}
+	r.remember(h264Msg(0, false), false)
+	if len(r.gop) != 0 {
+		t.Fatal("without a keyframe nothing is remembered")
+	}
+}
+
+func dialSub(t *testing.T, ts *httptest.Server, room, extra string) *websocket.Conn {
+	t.Helper()
+	u := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/agent/v1/stream?role=sub&room=" + url.QueryEscape(room) + extra
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetReadLimit(streamMaxFrame + 1024)
+	t.Cleanup(func() { c.CloseNow() })
+	return c
+}
+
+func TestStreamWebSocketH264InOrderWithWindow(t *testing.T) {
+	ts := streamTestServer(t)
+	room := "遥控/测试机/视频/h264"
+	sub := dialSub(t, ts, room, "&ack=1&window=5")
+	if m := readText(t, sub); m["h264"] != true || m["pub"] != false {
+		t.Fatalf("hello: %v", m)
+	}
+	pub := dialStream(t, ts, room, "pub")
+	readText(t, pub)
+	readText(t, sub) // pub:true
+
+	// 一口气推 5 帧（比 30 帧/秒快得多）：H.264 一帧不丢、按顺序；window=5 → 不回话也能收 5 帧
+	send(t, pub, h264Msg(0, true))
+	for i := 1; i < 5; i++ {
+		send(t, pub, h264Msg(byte(i), false))
+	}
+	for i := 0; i < 5; i++ {
+		if _, b := readMsg(t, sub); b[0] != streamKindH264 || b[11] != byte(i) {
+			t.Fatalf("frame %d: got kind %d seq %d", i, b[0], b[11])
+		}
+	}
+	// 名额用完：再推的排着，回一句 ok 放一帧
+	send(t, pub, h264Msg(5, false))
+	send(t, pub, h264Msg(6, false))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub.Write(ctx, websocket.MessageText, []byte("ok"))
+	if _, b := readMsg(t, sub); b[11] != 5 {
+		t.Fatalf("after one ack want frame 5, got %d", b[11])
+	}
+	sub.Write(ctx, websocket.MessageText, []byte("ok"))
+	if _, b := readMsg(t, sub); b[11] != 6 {
+		t.Fatalf("after another ack want frame 6, got %d", b[11])
+	}
+
+	// 中途进来的观看端（不带 ack）：马上收到关键帧 0 起的所有帧
+	late := dialSub(t, ts, room, "")
+	readText(t, late)
+	for i := 0; i < 7; i++ {
+		if _, b := readMsg(t, late); b[11] != byte(i) {
+			t.Fatalf("late viewer frame %d: got %d", i, b[11])
+		}
+	}
+}
+
+func TestStreamWebSocketAckLimitsBytesInFlight(t *testing.T) {
+	ts := streamTestServer(t)
+	room := "遥控/测试机/视频/bytes"
+	sub := dialSub(t, ts, room, "&ack=1&window=8")
+	readText(t, sub)
+	pub := dialStream(t, ts, room, "pub")
+	readText(t, pub)
+	readText(t, sub)
+	// 50 KB 的大帧：两帧 100 KB 还没到 128 KB，第三帧能发，第四帧要等回话（window=8 也一样）
+	big := func(i byte) []byte { f := make([]byte, 50<<10); f[0] = streamKindH264; f[11] = i; return f }
+	k := big(0)
+	k[10] = 1
+	send(t, pub, k)
+	for i := 1; i < 6; i++ {
+		send(t, pub, big(byte(i)))
+	}
+	for i := 0; i < 3; i++ {
+		if _, b := readMsg(t, sub); b[11] != byte(i) {
+			t.Fatalf("frame %d: got %d", i, b[11])
+		}
+	}
+	short, scancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer scancel()
+	if _, b, err := sub.Read(short); err == nil {
+		t.Fatalf("a fourth big frame went out with 150 KB in flight: %d", b[11])
+	}
+}
