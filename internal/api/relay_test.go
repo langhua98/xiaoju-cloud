@@ -100,6 +100,7 @@ func relayTestServer(t *testing.T, scopes ...string) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/agent/v1/relay", with(s.relayPost))
 	mux.HandleFunc("GET /api/agent/v1/relay", with(s.relayGet))
+	mux.HandleFunc("GET /api/agent/v1/relay/ws", with(s.relayWS))
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts
