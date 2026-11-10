@@ -22,6 +22,30 @@ Start-Service -Name w32time -ErrorAction SilentlyContinue
 w32tm /config /manualpeerlist:"time.windows.com,0x9 pool.ntp.org,0x9" /syncfromflags:manual /update | Out-Null
 w32tm /resync /force | Out-Null
 Write-Host '已开启自动对时。'
+# 关屏后别断网：网卡不许 Windows 为省电关掉，Wi-Fi 驱动自己的省电也关掉，
+# 支持「S0 低电量待机」的电脑（多数新电脑）插电待机时保持联网。
+foreach ($a in Get-NetAdapter -Physical | Where-Object { $_.InterfaceDescription -notmatch 'Bluetooth' }) {
+    # 设备管理器「允许计算机关闭此设备以节约电源」：有这个开关的网卡立刻关掉；注册表那份重启后也生效
+    Get-CimInstance -Namespace root/wmi -ClassName MSPower_DeviceEnable -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceName -like "$($a.PnPDeviceID)*" } |
+        ForEach-Object { Set-CimInstance -InputObject $_ -Property @{ Enable = $false } }
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue |
+        Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).NetCfgInstanceId -eq $a.InterfaceGuid } |
+        ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name PnPCapabilities -Value 0x18 -Type DWord }
+    # 驱动高级属性里的省电（联发科叫 Power Saving / LowPowerEnable，英特尔叫 MIMO 省电等）：能选 Disabled 的都关掉。
+    # 改了网卡会重启一下，断网几秒。
+    Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -match 'Power Sav|省电|节能|Energy.Efficient|Green Ethernet' -and
+                       $_.ValidDisplayValues -contains 'Disabled' -and $_.DisplayValue -ne 'Disabled' } |
+        ForEach-Object { Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $_.RegistryKeyword -DisplayValue 'Disabled' }
+}
+# 无线适配器省电模式：最高性能（S0 待机的电脑上这项被系统隐藏了，设不上就算了）
+# （交给 cmd 吞掉输出：powercfg 设不上时写 stderr，PowerShell 5.1 会当成出错让脚本中断）
+cmd /c 'powercfg /setacvalueindex SCHEME_CURRENT 19cafa3d-c9d5-4b0e-a7c3-2c1daedb5a10 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>&1'
+# 待机时的网络连接：插电时启用
+cmd /c 'powercfg /setacvalueindex SCHEME_CURRENT SUB_NONE F15576E8-98B7-4186-B944-EAFA664402D9 1 >nul 2>&1'
+powercfg /setactive SCHEME_CURRENT
+Write-Host '已关掉网卡省电，关屏后保持联网。'
 
 Step '2/8 建目录'
 foreach ($d in @($Root, $Bin, $Tools, $Config, $DataDir, $TmpDir, $Logs, $Backups, $Scripts)) {
