@@ -91,7 +91,7 @@ func New(svc *service.Service, opt Options) *Server {
 	if loc == nil {
 		loc = time.UTC
 	}
-	return &Server{
+	s := &Server{
 		svc: svc, userID: opt.UserID, token: opt.Token, corsOrigins: opt.CORSOrigins, log: opt.Log,
 		passkeys: opt.Passkeys, grid: opt.Grid, sessions: sessions, views: auth.NewViews(), loc: loc,
 		// App 备份时每个文件先问一次“传过没有”再传（实况照片算两个），同时传好几个；以前每分钟 60 次、120 次，
@@ -108,6 +108,10 @@ func New(svc *service.Service, opt Options) *Server {
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
 		started: time.Now(),
 	}
+	if svc != nil {
+		svc.SetOnUploaded(s.packageUploaded)
+	}
+	return s
 }
 
 // 接口按访问级别分三组：
