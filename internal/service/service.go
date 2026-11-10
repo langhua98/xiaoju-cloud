@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,18 @@ type Service struct {
 	backupKick chan struct{} // 有新分块要备份：叫醒后台备份同步（见 RunBackupSync）
 
 	dbBackup *dbBackups // 数据库自动备份（见 dbbackup.go）；nil 时没打开
+
+	onUploaded atomic.Pointer[func(*meta.File)] // 文件传完后叫一下（见 SetOnUploaded）
+}
+
+// SetOnUploaded 设一个回调：每个文件传完（不管从哪个接口传的）都在新的 goroutine 里叫它一次。
+// 用来做「软件包里来了新 APK 就通知被控端」这类事。
+func (s *Service) SetOnUploaded(fn func(*meta.File)) {
+	if fn == nil {
+		s.onUploaded.Store(nil)
+		return
+	}
+	s.onUploaded.Store(&fn)
 }
 
 type Options struct {
@@ -239,6 +252,9 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (_ *meta.File, 
 	done, err := s.store.ActivateFile(ctx, f.ID, total, fileHash.Sum(nil))
 	if err == nil {
 		s.queueThumbnail(done)
+		if fn := s.onUploaded.Load(); fn != nil && done != nil {
+			go (*fn)(done)
+		}
 	}
 	return done, err
 }

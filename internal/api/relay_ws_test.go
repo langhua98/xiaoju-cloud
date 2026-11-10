@@ -13,11 +13,11 @@ import (
 	"github.com/coder/websocket"
 )
 
-func relayDial(t *testing.T, base, box string) *websocket.Conn {
+func relayDial(t *testing.T, base, box string, query ...string) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	u := "ws" + strings.TrimPrefix(base, "http") + "/api/agent/v1/relay/ws?box=" + url.QueryEscape(box)
+	u := "ws" + strings.TrimPrefix(base, "http") + "/api/agent/v1/relay/ws?box=" + url.QueryEscape(box) + strings.Join(query, "")
 	c, _, err := websocket.Dial(ctx, u, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -174,3 +174,22 @@ func relayOnline(base, box string) bool {
 }
 
 func jsonNum(n uint64) string { b, _ := json.Marshal(n); return string(b) }
+
+// 挂着常驻推送、带 &updates=android 的被控端，「软件包」来了新 APK 也要马上收到提醒（就算很久没别的动静）。
+func TestRelayWSGetsUpdateHint(t *testing.T) {
+	ts, hub := relayTestServerHub(t, ScopeRead, ScopeUpload)
+	box := "遥控/测试机/收件"
+	c := relayDial(t, ts.URL, box, "&updates=android")
+	time.Sleep(50 * time.Millisecond)
+	// 连上很久了：touched 已经过期，但连接还挂着
+	hub.mu.Lock()
+	hub.boxes[box].touched = time.Now().Add(-2 * relayIdleExpire)
+	hub.mu.Unlock()
+	if n := hub.hint("android", json.RawMessage(`{"do":"update_hint","name":"a.apk"}`), time.Now()); n != 1 {
+		t.Fatalf("hinted %d boxes, want 1", n)
+	}
+	msgs := relayMsgs(t, relayRead(t, c))
+	if len(msgs) != 1 || !strings.Contains(string(msgs[0].Body), "update_hint") {
+		t.Fatalf("got %+v", msgs)
+	}
+}

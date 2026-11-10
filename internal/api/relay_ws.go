@@ -14,7 +14,7 @@ import (
 // 被控端 CPU 可以一直睡，数据包到了 Wi-Fi 会把它叫醒。连接会被中间的路由器 / 代理悄悄掐掉，所以被控端自己定时发心跳，
 // 间隔由它自己摸（能撑多久就拉多长）；服务端从不主动发心跳，免得把被控端叫醒。
 //
-//	GET /api/agent/v1/relay/ws?box=<信箱名>   要 read 权限
+//	GET /api/agent/v1/relay/ws?box=<信箱名>[&updates=android]   要 read 权限
 //
 // 服务端 → 被控端（文字消息，JSON）：
 //   - {"messages":[{"id","at","body"},…]}  新指令（和长轮询的格式一样，多了 id）
@@ -68,6 +68,9 @@ func (s *Server) relayWS(w http.ResponseWriter, r *http.Request) {
 	name, ok := relayBoxName(w, r)
 	if !ok {
 		return
+	}
+	if kind := r.URL.Query().Get("updates"); kind != "" && len(kind) <= 20 {
+		s.relay.wantUpdates(name, kind, time.Now()) // 要「软件包」新安装包提醒（见 package_hint.go）
 	}
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
 	if err != nil {

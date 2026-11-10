@@ -21,6 +21,8 @@ import (
 //	GET  /api/agent/v1/relay/ws?box=<信箱名>       常驻推送（WebSocket，见 relay_ws.go），要 read 权限
 //
 // POST 的回话里 "online" 表示收件的一方现在有没有挂着常驻推送（挂着就是马上送到）。
+// 收的一方 GET（或连常驻推送）时加 &updates=android，表示「软件包里来了新安装包请告诉我」：之后有人往 /软件包/ 传了 .apk，
+// 服务端往这个信箱放一条 {"do":"update_hint","name":…}（见 package_hint.go）。旧服务端不认这个参数，照常收信。
 const (
 	relayMaxBody    = 8 << 20
 	relayMaxTotal   = 64 << 20 // 所有信箱加起来最多占多少内存
@@ -42,6 +44,7 @@ type relayBox struct {
 	msgs      []relayMsg
 	wake      chan struct{} // 有新消息时关掉，叫醒正在等的 GET
 	touched   time.Time
+	updates   string             // 收件方要哪种安装包的更新提醒（GET 或常驻推送时 &updates=…），空 = 不要
 	listeners int                // 挂着常驻推送的连接数
 	stop      context.CancelFunc // 现在的常驻推送（新的连上来时断开它）
 	stopGen   uint64
@@ -170,6 +173,32 @@ func (h *relayHub) take(name string, now time.Time) ([]relayMsg, <-chan struct{}
 	return nil, b.wake
 }
 
+// hint 给所有要 kind 类安装包提醒、最近有人收的信箱各放一条消息，返回放了几个信箱。
+func (h *relayHub) hint(kind string, body json.RawMessage, now time.Time) int {
+	h.mu.Lock()
+	var names []string
+	for name, b := range h.boxes {
+		if b.updates == kind && (b.listeners > 0 || now.Sub(b.touched) <= relayIdleExpire) { // 挂着常驻推送的也算
+			names = append(names, name)
+		}
+	}
+	h.mu.Unlock()
+	n := 0
+	for _, name := range names {
+		if h.put(name, body, now) {
+			n++
+		}
+	}
+	return n
+}
+
+// wantUpdates 记下这个信箱要哪种安装包的更新提醒。
+func (h *relayHub) wantUpdates(name, kind string, now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.box(name, now).updates = kind
+}
+
 func relayBoxName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name := r.URL.Query().Get("box")
 	if name == "" || len(name) > relayMaxBox {
@@ -214,6 +243,9 @@ func (s *Server) relayGet(w http.ResponseWriter, r *http.Request) {
 	name, ok := relayBoxName(w, r)
 	if !ok {
 		return
+	}
+	if kind := r.URL.Query().Get("updates"); kind != "" && len(kind) <= 20 {
+		s.relay.wantUpdates(name, kind, time.Now())
 	}
 	wait := time.Duration(0)
 	if n, err := strconv.Atoi(r.URL.Query().Get("wait")); err == nil && n > 0 {

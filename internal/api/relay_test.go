@@ -90,6 +90,11 @@ func TestRelayHubTotalCap(t *testing.T) {
 
 // relayTestServer 只挂即时信箱两个接口，跳过令牌校验，直接塞一个有读写权限的 agent。
 func relayTestServer(t *testing.T, scopes ...string) *httptest.Server {
+	ts, _ := relayTestServerHub(t, scopes...)
+	return ts
+}
+
+func relayTestServerHub(t *testing.T, scopes ...string) (*httptest.Server, *relayHub) {
 	s := &Server{relay: newRelayHub()}
 	a := &agentCall{tok: &meta.AgentToken{Scopes: scopes}}
 	with := func(h http.HandlerFunc) http.HandlerFunc {
@@ -103,7 +108,7 @@ func relayTestServer(t *testing.T, scopes ...string) *httptest.Server {
 	mux.HandleFunc("GET /api/agent/v1/relay/ws", with(s.relayWS))
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, s.relay
 }
 
 func TestRelayHTTPLongPoll(t *testing.T) {
