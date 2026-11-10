@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,8 +18,10 @@ import (
 //
 //	POST /api/agent/v1/relay?box=<信箱名>        请求体是一条 JSON 消息（最多 8 MB），要 upload 权限
 //	GET  /api/agent/v1/relay?box=<信箱名>&wait=25 取走信箱里的所有消息，没有就等最多 wait 秒，要 read 权限
+//	GET  /api/agent/v1/relay/ws?box=<信箱名>       常驻推送（WebSocket，见 relay_ws.go），要 read 权限
 //
-// 收的一方 GET 时加 &updates=android，表示「软件包里来了新安装包请告诉我」：之后有人往 /软件包/ 传了 .apk，
+// POST 的回话里 "online" 表示收件的一方现在有没有挂着常驻推送（挂着就是马上送到）。
+// 收的一方 GET（或连常驻推送）时加 &updates=android，表示「软件包里来了新安装包请告诉我」：之后有人往 /软件包/ 传了 .apk，
 // 服务端往这个信箱放一条 {"do":"update_hint","name":…}（见 package_hint.go）。旧服务端不认这个参数，照常收信。
 const (
 	relayMaxBody    = 8 << 20
@@ -32,21 +35,27 @@ const (
 )
 
 type relayMsg struct {
+	ID   uint64          `json:"id"` // 递增编号，常驻推送用它确认收到（ack）
 	At   time.Time       `json:"at"`
 	Body json.RawMessage `json:"body"`
 }
 
 type relayBox struct {
-	msgs    []relayMsg
-	wake    chan struct{} // 有新消息时关掉，叫醒正在等的 GET
-	touched time.Time
-	updates string // 收件方要哪种安装包的更新提醒（GET 时 &updates=…），空 = 不要
+	msgs      []relayMsg
+	wake      chan struct{} // 有新消息时关掉，叫醒正在等的 GET
+	touched   time.Time
+	updates   string             // 收件方要哪种安装包的更新提醒（GET 或常驻推送时 &updates=…），空 = 不要
+	listeners int                // 挂着常驻推送的连接数
+	stop      context.CancelFunc // 现在的常驻推送（新的连上来时断开它）
+	stopGen   uint64
 }
 
 type relayHub struct {
 	mu    sync.Mutex
 	boxes map[string]*relayBox
-	bytes int // 所有信箱里消息的总大小
+	bytes int    // 所有信箱里消息的总大小
+	seq   uint64 // 消息编号
+	gen   uint64 // 常驻推送连接编号
 }
 
 func newRelayHub() *relayHub { return &relayHub{boxes: map[string]*relayBox{}} }
@@ -69,7 +78,7 @@ func (h *relayHub) box(name string, now time.Time) *relayBox {
 func (h *relayHub) sweep(now time.Time) {
 	for name, b := range h.boxes {
 		h.bytes -= b.drop(now)
-		if len(b.msgs) == 0 && now.Sub(b.touched) > relayIdleExpire {
+		if len(b.msgs) == 0 && b.listeners == 0 && now.Sub(b.touched) > relayIdleExpire {
 			delete(h.boxes, name)
 		}
 	}
@@ -98,7 +107,8 @@ func (h *relayHub) put(name string, body json.RawMessage, now time.Time) bool {
 	}
 	b := h.box(name, now)
 	h.bytes -= b.drop(now)
-	b.msgs = append(b.msgs, relayMsg{At: now, Body: body})
+	h.seq++
+	b.msgs = append(b.msgs, relayMsg{ID: h.seq, At: now, Body: body})
 	h.bytes += len(body)
 	if extra := len(b.msgs) - relayMaxMsgs; extra > 0 {
 		for _, m := range b.msgs[:extra] {
@@ -109,6 +119,41 @@ func (h *relayHub) put(name string, body json.RawMessage, now time.Time) bool {
 	close(b.wake)
 	b.wake = make(chan struct{})
 	return true
+}
+
+// online 收件的一方现在有没有挂着常驻推送。
+func (h *relayHub) online(name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	b := h.boxes[name]
+	return b != nil && b.listeners > 0
+}
+
+// peek 看编号大于 after 的消息（不取走，等对面确认收到再删）；没有的话返回一个通道，有新消息时会被关掉。
+func (h *relayHub) peek(name string, after uint64, now time.Time) ([]relayMsg, <-chan struct{}) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	b := h.box(name, now)
+	h.bytes -= b.drop(now)
+	for i, m := range b.msgs {
+		if m.ID > after {
+			return append([]relayMsg(nil), b.msgs[i:]...), nil
+		}
+	}
+	return nil, b.wake
+}
+
+// ack 对面确认收到了：删掉编号不大于 upTo 的消息。
+func (h *relayHub) ack(name string, upTo uint64, now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	b := h.box(name, now)
+	i := 0
+	for i < len(b.msgs) && b.msgs[i].ID <= upTo {
+		h.bytes -= len(b.msgs[i].Body)
+		i++
+	}
+	b.msgs = b.msgs[i:]
 }
 
 // take 取走所有消息；没有的话返回一个通道，有新消息时会被关掉。
@@ -133,7 +178,7 @@ func (h *relayHub) hint(kind string, body json.RawMessage, now time.Time) int {
 	h.mu.Lock()
 	var names []string
 	for name, b := range h.boxes {
-		if b.updates == kind && now.Sub(b.touched) <= relayIdleExpire {
+		if b.updates == kind && (b.listeners > 0 || now.Sub(b.touched) <= relayIdleExpire) { // 挂着常驻推送的也算
 			names = append(names, name)
 		}
 	}
@@ -188,7 +233,7 @@ func (s *Server) relayPost(w http.ResponseWriter, r *http.Request) {
 		agentError(w, http.StatusServiceUnavailable, "relay_full", "relay boxes are full right now", "Wait for the other side to pick up its messages, or send big files through the drive.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "online": s.relay.online(name)})
 }
 
 func (s *Server) relayGet(w http.ResponseWriter, r *http.Request) {
