@@ -102,8 +102,12 @@ func dbRestoreCmd(ctx context.Context, cfg *config.Config, args []string, log *s
 		return err
 	}
 	defer pool.Close()
-	if _, err := dbdump.RestoreBackup(ctx, pool, migrations.FS, cfg.MasterKey, f); err != nil {
+	restored, err := dbdump.RestoreBackup(ctx, pool, migrations.FS, cfg.MasterKey, f)
+	if err != nil {
 		return err
+	}
+	if len(restored.Skipped) > 0 {
+		log.Warn("skipped empty tables from migrations this program does not have", "tables", restored.Skipped)
 	}
 	log.Info("database restored", "created", info.Created)
 	return nil

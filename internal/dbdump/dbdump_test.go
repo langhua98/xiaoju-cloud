@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/langhua98/xiaoju-cloud/internal/db"
 	"github.com/langhua98/xiaoju-cloud/migrations"
 )
@@ -178,5 +179,84 @@ func TestDumpRestore(t *testing.T) {
 	// 不是空数据库：拒绝
 	if _, err := RestoreBackup(ctx, dst, migrations.FS, master, bytes.NewReader(buf.Bytes())); !errors.Is(err, ErrNotEmpty) {
 		t.Fatalf("restore into non-empty database: %v", err)
+	}
+}
+
+// 导出文件里有程序没有的迁移（以前试验分支部署过一次留下的，比如 0002_album_cursor）：
+// 它建的表是空的就跳过照样恢复，有数据就拒绝。
+func TestRestoreUnknownMigration(t *testing.T) {
+	src := os.Getenv("XIAOJU_TEST_DATABASE_URL")
+	if src == "" {
+		t.Skip("XIAOJU_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	admin, err := db.Connect(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	u, err := url.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDB := func(name string) *pgxpool.Pool {
+		admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+			t.Skip("cannot create a database for the restore test:", err)
+		}
+		t.Cleanup(func() { admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)") })
+		v := *u
+		v.Path = "/" + name
+		p, err := db.Connect(ctx, v.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(p.Close)
+		return p
+	}
+
+	from := newDB("xiaoju_unknown_src_test")
+	if _, err := db.MigrateUp(ctx, from, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := from.Exec(ctx, `CREATE TABLE album_cursors (id bigint PRIMARY KEY);
+		INSERT INTO schema_migrations (version) VALUES ('0002_album_cursor')`); err != nil {
+		t.Fatal(err)
+	}
+	master := []byte("0123456789abcdef0123456789abcdef")
+	backup := func() []byte {
+		var buf bytes.Buffer
+		if _, err := WriteBackup(ctx, from, master, &buf); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	// 表是空的：跳过，其余照常恢复，schema_migrations 里那一行也恢复（线上就是带着它运行的）
+	dst := newDB("xiaoju_unknown_dst_test")
+	got, err := RestoreBackup(ctx, dst, migrations.FS, master, bytes.NewReader(backup()))
+	if err != nil {
+		t.Fatal("restore with an empty unknown table:", err)
+	}
+	if len(got.Skipped) != 1 || got.Skipped[0] != "album_cursors" {
+		t.Fatalf("skipped: %v", got.Skipped)
+	}
+	var n int
+	dst.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = '0002_album_cursor'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("schema_migrations row for the unknown migration: %d", n)
+	}
+	if _, err := db.MigrateUp(ctx, dst, migrations.FS); err != nil {
+		t.Fatal("migrate after restore:", err)
+	}
+
+	// 表里有数据：拒绝，不能悄悄丢数据
+	if _, err := from.Exec(ctx, `INSERT INTO album_cursors (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	dst2 := newDB("xiaoju_unknown_dst2_test")
+	_, err = RestoreBackup(ctx, dst2, migrations.FS, master, bytes.NewReader(backup()))
+	if err == nil || !strings.Contains(err.Error(), "0002_album_cursor") {
+		t.Fatalf("restore with data in an unknown table: %v", err)
 	}
 }
