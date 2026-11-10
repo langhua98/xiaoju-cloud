@@ -96,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\restore.ps1          
 
 ## 5. 改云盘地址
 
-旧地址 `https://langhua1998-xiaoju-cloud.hf.space` 写死在这些地方（换成第 4 步的新地址）：
+云盘地址（现在是 `https://node.tail823dbd.ts.net`，原来是 HF Space）写死在这些地方，换地址时都要改：
 
 - 网页：本仓库 `web/config.js`，或 GitHub 仓库变量 `XIAOJU_API_URL`，然后重新跑 “Deploy web to GitHub Pages”。
   网页还是在 GitHub Pages 上，`XIAOJU_CORS_ORIGINS`、刷脸（通行密钥，绑的是网页域名）都不用改。

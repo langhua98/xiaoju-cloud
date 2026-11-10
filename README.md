@@ -562,7 +562,7 @@ Hugging Face 门口另外按 IP 限流：手机这个 IP 一段时间里请求�
 - 网页：GitHub Pages `https://langhua98.github.io/xiaoju-cloud/`（`.github/workflows/pages.yml`：发布 `web/`，
   给 `version.json` / `?v=` 打提交号，并编译、签名三个快捷指令 `xiaoju-backup.shortcut`、`xiaoju-newphotos.shortcut`、
   `xiaoju-share.shortcut`；签名失败时沿用网上现在那一份）。
-- 服务端：Hugging Face Space `https://langhua1998-xiaoju-cloud.hf.space`（`.github/workflows/deploy-hf.yml`：
+- 服务端：家里 Windows 电脑（Tailscale 地址 `https://node.tail823dbd.ts.net`；HF Space 部署见`.github/workflows/deploy-hf.yml`：
   `test`（带 PostgreSQL 的 `go test`）→ `image`（`image.yml`：构建镜像，在镜像里实际生成 JPEG / HEIC / 视频缩略图）→ `deploy`）。
   只改 `web/**`、`shortcuts/**`、文档时不部署服务端。
 - **部署不打断上传**：`deploy.py` 改 Secrets、上传源码之前（这两样都会让 Space 重启）先问服务端
