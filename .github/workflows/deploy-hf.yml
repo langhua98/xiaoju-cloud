@@ -59,6 +59,8 @@ jobs:
 
   deploy:
     needs: [test, image]
+    # 搬到家里电脑以后，仓库变量 HF_DEPLOY 设成 off，就不再部署到 Hugging Face（见 deploy/windows/README.md）
+    if: vars.HF_DEPLOY != 'off'
     runs-on: ubuntu-latest
     timeout-minutes: 110
     steps:

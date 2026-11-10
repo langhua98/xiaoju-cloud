@@ -1,0 +1,44 @@
+# 给家里的 Windows 电脑编译 xiaoju.exe，放到 Release「windows-latest」。
+# 电脑上的 deploy/windows/update.ps1 从这里下载（见 deploy/windows/README.md）。
+name: Build for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "migrations/**"
+      - ".github/workflows/windows.yml"
+
+concurrency:
+  group: windows-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o xiaoju.exe ./cmd/xiaoju
+          sha256sum xiaoju.exe | tee xiaoju.exe.sha256
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="家里 Windows 电脑用的云盘程序，用 deploy/windows/update.ps1 安装。编译自 ${GITHUB_SHA}。"
+          if ! gh release view windows-latest >/dev/null 2>&1; then
+            gh release create windows-latest --prerelease --title "Windows 版（家里电脑用）" --notes "$notes"
+          fi
+          gh release upload windows-latest xiaoju.exe xiaoju.exe.sha256 --clobber
+          gh release edit windows-latest --notes "$notes"

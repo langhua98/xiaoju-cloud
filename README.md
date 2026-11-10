@@ -65,6 +65,7 @@ docker compose up -d --build    # 启动 PostgreSQL + xiaoju
 ```
 
 没有服务器？见 [部署到 Hugging Face Spaces](docs/deploy-huggingface.md)。
+家里有一台常开的 Windows 电脑？见 [搬到家里的 Windows 电脑](deploy/windows/README.md)（PostgreSQL 也在本机，用隧道开到公网）。
 
 或本地开发（Go 1.25+）：
 
