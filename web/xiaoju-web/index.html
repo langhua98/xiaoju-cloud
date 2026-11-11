@@ -134,7 +134,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import {
+  VRMLoaderPlugin, VRMUtils,
+  VRMSpringBoneCollider, VRMSpringBoneColliderShapeSphere, VRMSpringBoneColliderShapeCapsule,
+} from '@pixiv/three-vrm';
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
 
 const MODEL_URL = './xiaoju.vrm';
@@ -217,6 +220,8 @@ loader.load(
     headY = hp.y;
     setView('full', true);
     prepareFingers();
+    measureSkirt();
+    addSkirtColliders();
 
     mixer = new THREE.AnimationMixer(vrm.scene);
     mixer.addEventListener('finished', onFinished);
@@ -366,6 +371,142 @@ function relaxFingers(dt) {
   fingerW += (want - fingerW) * Math.min(1, dt * 5);
   if (fingerW < 0.01) return;
   for (const [node, q] of fingerRelax) node.quaternion.slerp(q, fingerW);
+}
+
+// ---------- 防止手和裙子穿模 ----------
+// 动捕演员穿的是紧身衣，手垂下来离身体很近；小桔的裙子是外扩的 A 字裙，手就会插进裙子里。
+// 做法一：加载时从模型量出裙子在每个高度的宽度；每一帧检查前臂和手，如果进了裙子，就把整条手臂往外转一点。
+// 做法二：把前臂和手加进裙摆的物理碰撞，裙摆被手碰到时会被推开。
+const skirt = { prof: null };
+const SKIRT_MARGIN = 0.04; // 手和前臂的粗细，留出的余量（米）
+
+function measureSkirt() {
+  vrm.scene.updateMatrixWorld(true);
+  const hp = vrm.humanoid.getNormalizedBoneNode('hips').getWorldPosition(new THREE.Vector3());
+  const bands = new Map();
+  const p = new THREE.Vector3();
+  vrm.scene.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    const mats = [].concat(o.material);
+    if (!mats.some((m) => /Tops|Onepiece|Bottoms|Skirt/i.test(m.name))) return;
+    const n = o.geometry.attributes.position.count;
+    for (let i = 0; i < n; i++) {
+      o.getVertexPosition(i, p);
+      p.applyMatrix4(o.matrixWorld);
+      const dy = p.y - hp.y;
+      if (dy < -0.6 || dy > 0.22) continue; // 只看腰上一点到裙摆（避开 T 字姿势时的手臂）
+      const k = Math.round(dy / 0.04);
+      const b = bands.get(k) || { rx: 0, zf: 0, zb: 0 };
+      b.rx = Math.max(b.rx, Math.abs(p.x - hp.x));
+      b.zf = Math.max(b.zf, p.z - hp.z);
+      b.zb = Math.max(b.zb, hp.z - p.z);
+      bands.set(k, b);
+    }
+  });
+  if (!bands.size) return;
+  skirt.prof = [...bands.entries()].sort((a, b) => a[0] - b[0]).map(([k, b]) => ({
+    dy: k * 0.04,
+    rx: b.rx,
+    zf: Math.max(b.zf, b.rx * 0.6),
+    zb: Math.max(b.zb, b.rx * 0.6),
+  }));
+}
+
+// 给定高度（相对腰部），返回裙子在这个高度的半宽/前/后
+function skirtAt(dy) {
+  const pr = skirt.prof;
+  if (dy < pr[0].dy - 0.03 || dy > pr[pr.length - 1].dy) return null;
+  if (dy <= pr[0].dy) return pr[0];
+  for (let i = 1; i < pr.length; i++) {
+    if (dy <= pr[i].dy) {
+      const a = pr[i - 1], b = pr[i], t = (dy - a.dy) / (b.dy - a.dy);
+      return { rx: a.rx + (b.rx - a.rx) * t, zf: a.zf + (b.zf - a.zf) * t, zb: a.zb + (b.zb - a.zb) * t };
+    }
+  }
+  return pr[pr.length - 1];
+}
+
+const _hipsInv = new THREE.Matrix4();
+const _pts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+const _sh = new THREE.Vector3(), _l = new THREE.Vector3(), _dir = new THREE.Vector3(), _a = new THREE.Vector3(), _axis = new THREE.Vector3();
+const _pq = new THREE.Quaternion(), _dq = new THREE.Quaternion();
+
+function avoidSkirt() {
+  if (!skirt.prof) return;
+  const nb = (n) => vrm.humanoid.getNormalizedBoneNode(n);
+  const hips = nb('hips');
+  vrm.scene.updateMatrixWorld(true);
+  _hipsInv.copy(hips.matrixWorld).invert();
+  for (const side of ['left', 'right']) {
+    const ua = nb(side + 'UpperArm'), la = nb(side + 'LowerArm'), hd = nb(side + 'Hand');
+    if (!ua || !la || !hd) continue;
+    for (let iter = 0; iter < 4; iter++) {
+      ua.getWorldPosition(_sh);
+      la.getWorldPosition(_pts[0]);                                   // 手肘
+      hd.getWorldPosition(_pts[2]);                                   // 手腕
+      _pts[1].lerpVectors(_pts[0], _pts[2], 0.5);                     // 前臂中间
+      _pts[3].copy(_pts[2]).sub(_pts[0]).multiplyScalar(0.45).add(_pts[2]); // 指尖附近
+      let best = 0, bestI = -1;
+      const bestDir = new THREE.Vector3();
+      for (let i = 0; i < 4; i++) {
+        _l.copy(_pts[i]).applyMatrix4(_hipsInv);
+        const s = skirtAt(_l.y);
+        if (!s) continue;
+        const d = Math.hypot(_l.x, _l.z);
+        const c = d > 1e-4 ? _l.x / d : (side === 'left' ? 1 : -1);
+        const sn = d > 1e-4 ? _l.z / d : 0;
+        const rz = _l.z >= 0 ? s.zf : s.zb;
+        const r = 1 / Math.sqrt((c / s.rx) ** 2 + (sn / rz) ** 2);
+        const pen = r + SKIRT_MARGIN - d;
+        if (pen > best) {
+          best = pen;
+          bestI = i;
+          bestDir.set(c, 0, sn);
+        }
+      }
+      if (bestI < 0 || best < 0.002) break;
+      // 把手臂绕肩膀往裙子外侧转，刚好让这一点出来
+      _dir.copy(bestDir).transformDirection(hips.matrixWorld);
+      _a.copy(_pts[bestI]).sub(_sh);
+      _axis.copy(_a).cross(_dir);
+      if (_axis.lengthSq() < 1e-8) break;
+      _axis.normalize();
+      _dq.setFromAxisAngle(_axis, Math.atan2(best, _a.length()) * 1.05);
+      ua.parent.getWorldQuaternion(_pq);
+      ua.quaternion.premultiply(_pq.clone().invert().multiply(_dq).multiply(_pq));
+      ua.updateMatrixWorld(true);
+    }
+  }
+}
+
+function addSkirtColliders() {
+  const sm = vrm.springBoneManager;
+  if (!sm) return;
+  const groups = [];
+  for (const side of ['left', 'right']) {
+    const la = vrm.humanoid.getRawBoneNode(side + 'LowerArm');
+    const hd = vrm.humanoid.getRawBoneNode(side + 'Hand');
+    const mid = vrm.humanoid.getRawBoneNode(side + 'MiddleProximal');
+    if (!la || !hd) continue;
+    const colliders = [];
+    // 前臂：胶囊体，从手肘到手腕
+    const c1 = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapeCapsule({
+      offset: new THREE.Vector3(), tail: hd.position.clone(), radius: 0.035,
+    }));
+    la.add(c1);
+    colliders.push(c1);
+    // 手掌：胶囊体，从手腕到手指
+    const tip = mid ? mid.position.clone().multiplyScalar(1.8) : new THREE.Vector3((side === 'left' ? 1 : -1) * 0.08, 0, 0);
+    const c2 = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapeCapsule({
+      offset: new THREE.Vector3(), tail: tip, radius: 0.04,
+    }));
+    hd.add(c2);
+    colliders.push(c2);
+    groups.push({ name: 'skirtGuard_' + side, colliders });
+  }
+  for (const j of sm.joints) {
+    if (/Skirt/i.test(j.bone.name)) j.colliderGroups = [...j.colliderGroups, ...groups];
+  }
 }
 
 // ---------- 头部跟随镜头、害羞歪头 ----------
@@ -525,6 +666,7 @@ function animate() {
     if (mixer) mixer.update(dt);   // 播放动作捕捉数据
     relaxFingers(dt);
     headExtras(dt);
+    avoidSkirt();                  // 手臂绕开裙子，防止穿模
     updateGaze(dt);
     updateFace(dt, time);
     vrm.update(dt);                // 头发裙子物理、表情、视线
