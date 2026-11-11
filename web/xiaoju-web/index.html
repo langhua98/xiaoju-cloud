@@ -180,7 +180,9 @@ loader.load(
     document.getElementById('loading').classList.add('hide');
   },
   (p) => {
-    const pct = p.total ? Math.round((p.loaded / p.total) * 100) : 0;
+    // 服务器压缩传输时 total 可能比实际小，用模型原始大小兜底并限制在 99% 以内
+    const total = Math.max(p.total || 0, 18537888);
+    const pct = Math.min(99, Math.round((p.loaded / total) * 100));
     document.getElementById('prog').style.width = pct + '%';
     document.getElementById('pct').textContent = pct + '%';
   },
