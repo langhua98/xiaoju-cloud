@@ -1,0 +1,138 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_79_69",
+ "name": "79_69",
+ "description": "very happy",
+ "duration": 6.77,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "79_69",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 3,
+  "bodyParts": [
+   "arms"
+  ],
+  "locomotion": "stepping",
+  "facing": "front",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Actor everyday activities"
+  ]
+ },
+ "tempo": {
+  "bpm": 129,
+  "beatsPerBar": 4,
+  "firstBeat": 0.433,
+  "confidence": 0.45,
+  "basis": "motion",
+  "alternatives": [
+   64.5
+  ]
+ },
+ "loop": {
+  "in": 0,
+  "out": 6.77,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 3
+ },
+ "events": [
+  {
+   "t": 6.767,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 6.767,
+   "type": "lift",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 6.767,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 6.767,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.01,
+  "maxTravel": 0.14,
+  "netTurnDeg": 2,
+  "turnRangeDeg": 55,
+  "hipsBounce": 0.04
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "other",
+  "endArms": "hips"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 1,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 1.01,
+   "angularSpeed": {
+    "legs": 0.78,
+    "arms": 2.98,
+    "torso": 0.81
+   },
+   "bodyShare": {
+    "head": 0.19,
+    "torso": 0.07,
+    "arms": 0.28,
+    "hands": 0.24,
+    "hips": 0.12,
+    "legs": 0.1
+   },
+   "energy": 0.76,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

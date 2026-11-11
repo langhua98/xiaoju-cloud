@@ -1,0 +1,147 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_83_65",
+ "name": "83_65",
+ "description": "hop and turn right 360 degrees in air",
+ "duration": 3.3,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "83_65",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "jump",
+  "genre": [],
+  "energy": 4,
+  "bodyParts": [
+   "full"
+  ],
+  "locomotion": "spinning",
+  "facing": "turning",
+  "floorWork": false,
+  "airborne": true,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Steps"
+  ]
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0
+ },
+ "events": [
+  {
+   "t": 1.333,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 1.367,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 1.967,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 2,
+   "type": "contact",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 1.367,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 1.967,
+   "to": 3.3,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 1.333,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 2,
+   "to": 3.3,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.16,
+  "maxTravel": 0.25,
+  "netTurnDeg": -358,
+  "turnRangeDeg": 388,
+  "hipsBounce": 0.69
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "hips",
+  "endArms": "hips"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 0.86,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.91,
+   "angularSpeed": {
+    "legs": 1.84,
+    "arms": 1.55,
+    "torso": 0.39
+   },
+   "bodyShare": {
+    "head": 0.02,
+    "torso": 0.08,
+    "arms": 0.15,
+    "hands": 0.13,
+    "hips": 0.35,
+    "legs": 0.27
+   },
+   "energy": 1,
+   "airborne": 0.16,
+   "lowHips": 0
+  }
+ }
+}

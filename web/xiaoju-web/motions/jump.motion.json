@@ -1,0 +1,154 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_13_39",
+ "name": "13_39",
+ "description": "jump",
+ "duration": 2.9,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "13_39",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "jump",
+  "genre": [],
+  "energy": 4,
+  "bodyParts": [
+   "full"
+  ],
+  "locomotion": "in-place",
+  "facing": "front",
+  "floorWork": false,
+  "airborne": true,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Various everyday behaviors"
+  ]
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0
+ },
+ "loop": {
+  "in": 0,
+  "out": 2.9,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 4
+ },
+ "events": [
+  {
+   "t": 1.3,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 1.333,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 1.867,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 1.867,
+   "type": "contact",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 1.3,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 1.867,
+   "to": 2.9,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 1.333,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 1.867,
+   "to": 2.9,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.07,
+  "maxTravel": 0.07,
+  "netTurnDeg": 1,
+  "turnRangeDeg": 11,
+  "hipsBounce": 0.63
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "down",
+  "endArms": "down"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 1.04,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.33,
+   "angularSpeed": {
+    "legs": 1.52,
+    "arms": 1.25,
+    "torso": 0.4
+   },
+   "bodyShare": {
+    "head": 0.11,
+    "torso": 0.09,
+    "arms": 0.19,
+    "hands": 0.14,
+    "hips": 0.11,
+    "legs": 0.36
+   },
+   "energy": 0.92,
+   "airborne": 0.15,
+   "lowHips": 0
+  }
+ }
+}

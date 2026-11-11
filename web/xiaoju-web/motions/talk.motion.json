@@ -1,0 +1,114 @@
+{
+ "specVersion": "0.1",
+ "id": "ual1_idle_talking_loop",
+ "name": "Idle_Talking_Loop",
+ "description": "Idle Talking Loop",
+ "duration": 2.93,
+ "license": {
+  "spdx": "CC0-1.0",
+  "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "attribution": "Universal Animation Library by Quaternius (CC0 1.0)",
+  "authors": [
+   {
+    "name": "Quaternius",
+    "url": "https://quaternius.com/"
+   }
+  ],
+  "source": {
+   "kind": "keyframe",
+   "url": "https://quaternius.com/packs/universalanimationlibrary.html",
+   "originalId": "Idle_Talking_Loop",
+   "originalFormat": "glb",
+   "converter": "open-vrma/quaternius2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 1,
+  "bodyParts": [
+   "arms",
+   "hands"
+  ],
+  "locomotion": "in-place",
+  "facing": "front",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": true,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": false
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0
+ },
+ "loop": {
+  "in": 0,
+  "out": 2.93,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 0
+ },
+ "ranges": [
+  {
+   "from": 0,
+   "to": 2.93,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 2.93,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0,
+  "maxTravel": 0.01,
+  "netTurnDeg": 0,
+  "turnRangeDeg": 0,
+  "hipsBounce": 0.01
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "front",
+  "endArms": "front"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 0.9,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.01,
+   "angularSpeed": {
+    "legs": 0.1,
+    "arms": 0.5,
+    "torso": 0.1
+   },
+   "bodyShare": {
+    "head": 0.18,
+    "torso": 0.04,
+    "arms": 0.32,
+    "hands": 0.36,
+    "hips": 0.02,
+    "legs": 0.08
+   },
+   "energy": 0.07,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

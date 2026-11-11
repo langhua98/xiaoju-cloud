@@ -1,0 +1,250 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_120_07",
+ "name": "120_07",
+ "description": "Mickey Dance",
+ "duration": 9.23,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "120_07",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "dance",
+  "genre": [],
+  "energy": 3,
+  "bodyParts": [
+   "full"
+  ],
+  "locomotion": "stepping",
+  "facing": "side",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Various style walks"
+  ]
+ },
+ "tempo": {
+  "bpm": 100,
+  "beatsPerBar": 4,
+  "firstBeat": 0.6,
+  "confidence": 0.45,
+  "basis": "motion",
+  "alternatives": [
+   200,
+   50
+  ]
+ },
+ "events": [
+  {
+   "t": 1.833,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 2.6,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 2.833,
+   "type": "contact",
+   "side": "right"
+  },
+  {
+   "t": 3.333,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 3.467,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 4.067,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 4.267,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 4.767,
+   "type": "contact",
+   "side": "right"
+  },
+  {
+   "t": 4.967,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 5.633,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 5.833,
+   "type": "contact",
+   "side": "right"
+  },
+  {
+   "t": 6.3,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 6.633,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 7.233,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 7.433,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 7.933,
+   "type": "contact",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 1.833,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 3.333,
+   "to": 4.067,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 4.267,
+   "to": 4.967,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 6.3,
+   "to": 7.233,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 7.433,
+   "to": 9.23,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 2.6,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 2.833,
+   "to": 3.467,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 4.767,
+   "to": 5.633,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 5.833,
+   "to": 6.633,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 7.933,
+   "to": 9.23,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.76,
+  "maxTravel": 0.97,
+  "netTurnDeg": -11,
+  "turnRangeDeg": 118,
+  "hipsBounce": 0.1
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "hips",
+  "endArms": "hips"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 0.99,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 2.6,
+   "angularSpeed": {
+    "legs": 1.52,
+    "arms": 0.56,
+    "torso": 0.51
+   },
+   "bodyShare": {
+    "head": 0.11,
+    "torso": 0.1,
+    "arms": 0.07,
+    "hands": 0.17,
+    "hips": 0.27,
+    "legs": 0.28
+   },
+   "energy": 0.74,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

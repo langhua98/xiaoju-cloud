@@ -54,6 +54,7 @@
   .grid button span { font-size: 20px; line-height: 1.2; }
   .grid button:active { transform: scale(.94); background: #fbeef3; }
   .grid button.on { border-color: var(--accent); background: #fdeef3; }
+  .credit { grid-column: 1 / -1; font-size: 10px; line-height: 1.5; color: #a29cb8; }
   #tip {
     position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 0; right: 0;
     text-align: center; font-size: 12px; color: #9a94b0; z-index: 4; pointer-events: none;
@@ -75,6 +76,7 @@
 <div id="panel">
   <div class="tabs">
     <button class="on" data-tab="act">动作</button>
+    <button data-tab="dance">舞蹈</button>
     <button data-tab="face">表情</button>
     <button data-tab="view">视角</button>
   </div>
@@ -87,6 +89,14 @@
     <button data-act="shake"><span>🙅</span>摇头</button>
     <button data-act="talk"><span>💬</span>说话</button>
     <button data-act="cheer"><span>🙌</span>欢呼</button>
+  </div>
+  <div class="grid" id="tab-dance">
+    <button data-act="dance_loop"><span>🎵</span>小舞步</button>
+    <button data-act="charleston"><span>🎷</span>查尔斯顿</button>
+    <button data-act="chicken"><span>🐔</span>小鸡舞</button>
+    <button data-act="macarena"><span>💃</span>玛卡雷纳</button>
+    <button data-act="mickey"><span>🐭</span>米奇舞</button>
+    <button data-act="stop"><span>⏹️</span>停下</button>
   </div>
   <div class="grid" id="tab-face">
     <button data-face="neutral" class="on"><span>😐</span>默认</button>
@@ -103,6 +113,10 @@
     <button data-view="half"><span>👤</span>半身</button>
     <button data-view="face"><span>🔍</span>脸部</button>
     <button data-view="auto"><span>🔄</span>自动转</button>
+    <div class="credit">
+      动作数据来自开源数据集 open-vrma：Quaternius 动画库（CC0）与 CMU 动作捕捉数据库。
+      The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.
+    </div>
   </div>
 </div>
 
@@ -111,7 +125,8 @@
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
     "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
-    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.1.0/lib/three-vrm.module.min.js"
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.1.0/lib/three-vrm.module.min.js",
+    "@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3.1.0/lib/three-vrm-animation.module.min.js"
   }
 }
 </script>
@@ -120,8 +135,28 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
 
 const MODEL_URL = './xiaoju.vrm';
+const MODEL_SIZE = 18537888;
+
+// 动作列表：file 是 motions 文件夹里的 .vrma（真人动作捕捉 / 动画师制作），reps 播放几遍
+const MOTIONS = {
+  idle:       { file: 'idle' },
+  wave:       { file: 'wave', face: 'happy' },
+  nod:        { file: 'nod', face: 'happy' },
+  shake:      { file: 'shake', face: 'sad' },
+  bow:        { file: 'bow', face: 'relaxed' },
+  spin:       { file: 'spin', face: 'happy' },
+  jump:       { file: 'jump', face: 'surprised' },
+  cheer:      { file: 'cheer', face: 'happy' },
+  talk:       { file: 'talk', face: 'happy', reps: 2, mouth: 1 },
+  dance_loop: { file: 'dance_loop', face: 'happy', reps: 8 },
+  charleston: { file: 'charleston', face: 'happy', reps: 2 },
+  chicken:    { file: 'chicken', face: 'happy' },
+  macarena:   { file: 'macarena', face: 'happy' },
+  mickey:     { file: 'mickey', face: 'happy' },
+};
 
 // ---------- 场景 ----------
 const stage = document.getElementById('stage');
@@ -147,7 +182,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 2.2);
 sun.position.set(1, 2, 2);
 scene.add(sun);
 
-// 地面圆形阴影
+// 地面圆形阴影（跟着腰部移动）
 const shadow = new THREE.Mesh(
   new THREE.CircleGeometry(0.45, 48),
   new THREE.MeshBasicMaterial({ color: 0x7b6fd6, transparent: true, opacity: 0.12 })
@@ -155,13 +190,19 @@ const shadow = new THREE.Mesh(
 shadow.rotation.x = -Math.PI / 2;
 scene.add(shadow);
 
+// 眼睛看向这个点：平时是镜头，偶尔瞟向别处
+const lookTarget = new THREE.Object3D();
+scene.add(lookTarget);
+
 // ---------- 加载模型 ----------
 let vrm = null;
+let mixer = null;
+let headY = 1.4;
 const loader = new GLTFLoader();
 loader.register((parser) => new VRMLoaderPlugin(parser));
 loader.load(
   MODEL_URL,
-  (gltf) => {
+  async (gltf) => {
     vrm = gltf.userData.vrm;
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
     if (VRMUtils.combineSkeletons) VRMUtils.combineSkeletons(gltf.scene);
@@ -169,307 +210,189 @@ loader.load(
     VRMUtils.rotateVRM0(vrm); // 兼容旧版 VRM 0.x，1.0 模型不受影响
     vrm.scene.traverse((o) => { o.frustumCulled = false; });
     scene.add(vrm.scene);
-    if (vrm.lookAt) vrm.lookAt.target = lookTarget; // 眼睛看向镜头（偶尔瞟向别处）
+    if (vrm.lookAt) vrm.lookAt.target = lookTarget;
 
-    const head = vrm.humanoid.getNormalizedBoneNode('head');
     const hp = new THREE.Vector3();
-    head.getWorldPosition(hp);
+    vrm.humanoid.getNormalizedBoneNode('head').getWorldPosition(hp);
     headY = hp.y;
     setView('full', true);
+    prepareFingers();
 
+    mixer = new THREE.AnimationMixer(vrm.scene);
+    mixer.addEventListener('finished', onFinished);
+    try {
+      idleAction = mixer.clipAction(await getClip('idle'));
+      idleAction.play();
+    } catch (e) {
+      console.error(e);
+    }
     document.getElementById('loading').classList.add('hide');
   },
   (p) => {
-    // 服务器压缩传输时 total 可能比实际小，用模型原始大小兜底并限制在 99% 以内
-    const total = Math.max(p.total || 0, 18537888);
+    // 服务器压缩传输时 total 可能比实际小，用模型原始大小兜底
+    const total = Math.max(p.total || 0, MODEL_SIZE);
     const pct = Math.min(99, Math.round((p.loaded / total) * 100));
     document.getElementById('prog').style.width = pct + '%';
     document.getElementById('pct').textContent = pct + '%';
   },
   (e) => {
     console.error(e);
-    document.getElementById('err').textContent = '模型加载失败，请确认 xiaoju.vrm 和网页放在同一个文件夹，并通过本地服务打开。';
+    document.getElementById('err').textContent = '模型加载失败，请确认 xiaoju.vrm 和网页放在同一个文件夹，并通过网页服务打开。';
   }
 );
 
-// ---------- 视角 ----------
-let headY = 1.4;
-let autoRotate = false;
-const viewAnim = { from: null, to: null, t: 1 };
-function setView(name, instant = false) {
-  if (name === 'auto') {
-    autoRotate = !autoRotate;
-    controls.autoRotate = autoRotate;
-    controls.autoRotateSpeed = 2;
-    document.querySelector('[data-view="auto"]').classList.toggle('on', autoRotate);
-    return;
+// ---------- 动作播放 ----------
+const motionLoader = new GLTFLoader();
+motionLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+const clips = {};
+
+async function getClip(name) {
+  if (clips[name]) return clips[name];
+  const gltf = await motionLoader.loadAsync(`./motions/${MOTIONS[name].file}.vrma`);
+  const clip = createVRMAnimationClip(gltf.userData.vrmAnimations[0], vrm);
+  clip.name = name;
+  alignRoot(clip);
+  clip.userData = { fingers: clip.tracks.some((t) => /Index|Middle|Thumb/.test(t.name)) };
+  clips[name] = clip;
+  return clip;
+}
+
+// 有的动捕录制时人是侧身或背对的：把动作开头转成面朝镜头，并把起点挪到原地
+function alignRoot(clip) {
+  const hipsName = vrm.humanoid.getNormalizedBoneNode('hips').name;
+  const qt = clip.tracks.find((t) => t.name === hipsName + '.quaternion');
+  const pt = clip.tracks.find((t) => t.name === hipsName + '.position');
+  if (!qt) return;
+  // 每一帧腰部朝向（展开成连续角度，避免 180° 处跳变）
+  const q = new THREE.Quaternion();
+  const f = new THREE.Vector3();
+  const yaws = [];
+  for (let i = 0; i < qt.values.length; i += 4) {
+    f.set(0, 0, 1).applyQuaternion(q.fromArray(qt.values, i));
+    let y = Math.atan2(f.x, f.z);
+    if (yaws.length) {
+      const prev = yaws[yaws.length - 1];
+      while (y - prev > Math.PI) y -= Math.PI * 2;
+      while (y - prev < -Math.PI) y += Math.PI * 2;
+    }
+    yaws.push(y);
   }
-  const h = headY + 0.1; // 身高
-  const presets = {
-    full: { target: [0, h * 0.36, 0], dist: h * 3.2 },
-    half: { target: [0, h * 0.68, 0], dist: h * 1.6 },
-    face: { target: [0, headY - 0.06, 0], dist: 0.9 },
-  };
-  const p = presets[name];
-  const dir = camera.position.clone().sub(controls.target).normalize();
-  const target = new THREE.Vector3(...p.target);
-  const pos = target.clone().add(dir.multiplyScalar(p.dist));
-  if (instant) {
-    controls.target.copy(target);
-    camera.position.copy(pos);
-    return;
+  // 原地左右摆的舞：按平均朝向摆正；会转圈的动作：按开头朝向摆正
+  const range = Math.max(...yaws) - Math.min(...yaws);
+  const yaw = range < Math.PI / 2 ? yaws.reduce((a, b) => a + b, 0) / yaws.length : yaws[0];
+  const qc = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
+  for (let i = 0; i < qt.values.length; i += 4) {
+    q.fromArray(qt.values, i).premultiply(qc).toArray(qt.values, i);
   }
-  viewAnim.from = { t: controls.target.clone(), p: camera.position.clone() };
-  viewAnim.to = { t: target, p: pos };
-  viewAnim.t = 0;
-}
-
-// ---------- 动作系统 ----------
-// 思路：每一帧先算出"目标姿势"（待机姿势 + 当前动作），
-// 再让每个关节像挂在弹簧上一样追向目标。这样起动、停下、切换动作都有自然的缓冲和惯性。
-// 骨骼角度为欧拉角 [x, y, z]（弧度），基于标准化骨骼：T 字姿势为 0，人物面朝 +Z，左手在 +X。
-
-const TAU = Math.PI * 2;
-const clamp01 = (x) => Math.min(1, Math.max(0, x));
-const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
-
-// 关键帧曲线：keys = [[时间, 数值], ...]，用平滑曲线穿过每个点（速度连续，不会一顿一顿）
-function track(t, keys) {
-  const n = keys.length;
-  if (t <= keys[0][0]) return keys[0][1];
-  if (t >= keys[n - 1][0]) return keys[n - 1][1];
-  let i = 1;
-  while (keys[i][0] < t) i++;
-  const p0 = keys[Math.max(0, i - 2)][1], p1 = keys[i - 1][1], p2 = keys[i][1], p3 = keys[Math.min(n - 1, i + 1)][1];
-  const u = (t - keys[i - 1][0]) / (keys[i][0] - keys[i - 1][0]);
-  const u2 = u * u, u3 = u2 * u;
-  return 0.5 * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 + (-p0 + 3 * p1 - 3 * p2 + p3) * u3);
-}
-
-// 几个不同频率的正弦叠加，得到看起来不规律的轻微晃动
-const noise = (t, s) => Math.sin(t + s) * 0.5 + Math.sin(t * 2.13 + s * 1.7) * 0.3 + Math.sin(t * 3.71 + s * 2.9) * 0.2;
-
-// 待机：呼吸、重心左右转移、头部轻微摆动、手臂自然下垂微弯
-function idlePose(time) {
-  const br = Math.sin((time * TAU) / 4.2);   // 呼吸，约 4 秒一次
-  const sway = noise(time * 0.22, 1);        // 重心转移，很慢
-  const hn = noise(time * 0.45, 7);
-  const hn2 = noise(time * 0.37, 3);
-  return {
-    hips: [0, sway * 0.05, sway * 0.04],
-    spine: [0.02 + br * 0.01, -sway * 0.02, -sway * 0.035],
-    chest: [br * 0.015, -sway * 0.01, -sway * 0.015],
-    upperChest: [br * 0.015, 0, 0],
-    neck: [0, 0, 0],
-    head: [0.02 + hn2 * 0.025, hn * 0.05, hn2 * 0.03 + sway * 0.02],
-    leftShoulder: [0, 0, br * 0.025],
-    rightShoulder: [0, 0, -br * 0.025],
-    leftUpperArm: [0, -0.12 + hn * 0.02, -1.2 - br * 0.02],
-    rightUpperArm: [0, 0.12 - hn2 * 0.02, 1.2 + br * 0.02],
-    leftLowerArm: [0, -0.35, 0],
-    rightLowerArm: [0, 0.35, 0],
-    leftHand: [0, -0.1, 0],
-    rightHand: [0, 0.1, 0],
-    leftUpperLeg: [0, 0, -sway * 0.04],
-    rightUpperLeg: [0, 0, -sway * 0.04],
-    leftLowerLeg: [0, 0, 0],
-    rightLowerLeg: [0, 0, 0],
-  };
-}
-
-// 每个动作：dur 时长，face 表情，look 动作中看镜头的程度（0~1），pose(t) 返回要覆盖的关节目标
-// 另外可以返回：curlL / curlR 手指弯曲（0 张开，1 握拳），rootY 身体上下，rotY 整体转身
-const ACTIONS = {
-  wave: {
-    dur: 3.0, face: 'happy', look: 0.8,
-    pose: (t) => {
-      const up = track(t, [[0, 0], [0.45, 1], [2.5, 1], [3.0, 0]]);
-      const sw = Math.sin(t * 8.5) * track(t, [[0, 0], [0.5, 0.2], [0.8, 1], [2.3, 1], [2.7, 0]]);
-      return {
-        rightShoulder: [0, 0, -0.12 * up],
-        rightUpperArm: [0, 0.12 + 0.25 * up, 1.2 - 0.92 * up],
-        rightLowerArm: [0, 0.35 * (1 - up), -1.35 * up + sw * 0.32],
-        rightHand: [0, 0, sw * 0.3],
-        spine: [0.02, 0, -0.05 * up],
-        head: [0.03, -0.08 * up, 0.12 * up],
-        curlR: 0.45 - 0.35 * up,
-      };
-    },
-  },
-  nod: {
-    dur: 1.9, face: 'happy', look: 1,
-    pose: (t) => {
-      const n = track(t, [[0, 0], [0.2, -0.07], [0.5, 0.32], [0.8, 0.02], [1.1, 0.26], [1.5, 0]]);
-      return { head: [n, 0, 0.05], neck: [n * 0.35, 0, 0], chest: [0.02 + n * 0.1, 0, 0] };
-    },
-  },
-  shake: {
-    dur: 2.0, face: 'sad', look: 0.6,
-    pose: (t) => {
-      const y = track(t, [[0, 0], [0.25, 0.32], [0.6, -0.32], [0.95, 0.26], [1.3, -0.16], [1.65, 0]]);
-      return { head: [0.08, y, -y * 0.15], neck: [0.04, y * 0.3, 0], chest: [0.02, -y * 0.08, 0] };
-    },
-  },
-  bow: {
-    dur: 3.2, face: 'relaxed', look: 0.2,
-    pose: (t) => {
-      const b = track(t, [[0, 0], [0.25, -0.04], [0.85, 0.52], [1.9, 0.5], [2.7, 0]]);
-      const h = track(t, [[0, 0], [0.5, 1], [2.6, 1], [3.2, 0]]);
-      return {
-        hips: [b * 0.25, 0, 0],
-        spine: [b * 0.6, 0, 0], chest: [b * 0.3, 0, 0], neck: [b * 0.15, 0, 0], head: [b * 0.3, 0, 0],
-        leftUpperLeg: [-b * 0.25, 0, 0], rightUpperLeg: [-b * 0.25, 0, 0],
-        leftUpperArm: [0, -0.12 - 0.5 * h, -1.2 - 0.12 * h], rightUpperArm: [0, 0.12 + 0.5 * h, 1.2 + 0.12 * h],
-        leftLowerArm: [0, -0.35 - 0.85 * h, 0], rightLowerArm: [0, 0.35 + 0.85 * h, 0],
-        curlL: 0.3, curlR: 0.3,
-      };
-    },
-  },
-  spin: {
-    dur: 2.2, face: 'happy', look: 0,
-    pose: (t) => {
-      const r = track(t, [[0, 0], [0.3, -0.3], [1.35, TAU + 0.18], [1.75, TAU - 0.03], [2.2, TAU]]);
-      const a = track(t, [[0, 0], [0.35, 0.3], [0.7, 1], [1.4, 1], [2.0, 0]]);
-      const hop = track(t, [[0, 0], [0.3, -0.03], [0.55, 0.05], [1.2, 0.03], [1.5, 0]]);
-      return {
-        rotY: r,
-        rootY: hop,
-        leftUpperArm: [0, -0.1, -1.2 + 0.65 * a], rightUpperArm: [0, 0.1, 1.2 - 0.65 * a],
-        leftLowerArm: [0, -0.35 + 0.15 * a, 0.2 * a], rightLowerArm: [0, 0.35 - 0.15 * a, -0.2 * a],
-        spine: [-0.04 * a, 0, 0], head: [-0.08 * a, 0, 0],
-        curlL: 0.2, curlR: 0.2,
-      };
-    },
-  },
-  jump: {
-    dur: 2.2, face: 'surprised', look: 0.6,
-    pose: (t) => {
-      // 下蹲蓄力 → 起跳 → 空中 → 落地缓冲 → 站起
-      const c = track(t, [[0, 0], [0.4, 1], [0.52, 0.1], [0.98, 0.05], [1.12, 0.8], [1.6, 0], [2.2, 0]]);
-      const air = t > 0.5 && t < 1.05 ? Math.sin(((t - 0.5) / 0.55) * Math.PI) * 0.26 : 0;
-      const arm = track(t, [[0, 0], [0.4, -0.5], [0.6, 1], [0.95, 0.7], [1.15, -0.2], [1.7, 0]]);
-      return {
-        rootY: air - c * 0.09,
-        hips: [c * 0.15, 0, 0],
-        spine: [c * 0.25 - air * 0.3, 0, 0], head: [-c * 0.1 - air * 0.4, 0, 0],
-        leftUpperLeg: [-c * 0.75 - air * 0.6, 0, 0], rightUpperLeg: [-c * 0.75 - air * 0.6, 0, 0],
-        leftLowerLeg: [c * 1.3 + air * 1.2, 0, 0], rightLowerLeg: [c * 1.3 + air * 1.2, 0, 0],
-        leftUpperArm: [0, -0.12 + Math.min(0, arm) * -0.6, -1.2 + Math.max(0, arm) * 1.6],
-        rightUpperArm: [0, 0.12 + Math.min(0, arm) * 0.6, 1.2 - Math.max(0, arm) * 1.6],
-        curlL: 0.25, curlR: 0.25,
-      };
-    },
-  },
-  cheer: {
-    dur: 2.8, face: 'happy', look: 0.8,
-    pose: (t) => {
-      const up = track(t, [[0, 0], [0.3, -0.1], [0.55, 1], [2.3, 1], [2.8, 0]]);
-      const b = Math.max(0, Math.sin(t * 9)) * track(t, [[0, 0], [0.6, 1], [2.2, 1], [2.5, 0]]);
-      return {
-        rootY: b * 0.035,
-        leftUpperArm: [0, -0.15, -1.2 + 1.95 * up + b * 0.15], rightUpperArm: [0, 0.15, 1.2 - 1.95 * up - b * 0.15],
-        leftLowerArm: [0, -0.3, 0.25 * up], rightLowerArm: [0, 0.3, -0.25 * up],
-        leftHand: [0, 0, b * 0.2], rightHand: [0, 0, -b * 0.2],
-        spine: [-0.06 * up, 0, 0], head: [-0.12 * up, 0, 0],
-        leftLowerLeg: [b * 0.25, 0, 0], rightLowerLeg: [b * 0.25, 0, 0], leftUpperLeg: [-b * 0.12, 0, 0], rightUpperLeg: [-b * 0.12, 0, 0],
-        curlL: 0.1, curlR: 0.1,
-      };
-    },
-    mouth: 0.4,
-  },
-  talk: {
-    dur: 3.6, face: 'happy', look: 1,
-    pose: (t) => {
-      const g = track(t, [[0, 0], [0.5, 1], [3.0, 1], [3.6, 0]]);
-      const n = noise(t * 2.2, 5), m = noise(t * 1.6, 9);
-      return {
-        head: [0.03 + n * 0.05, m * 0.1, n * 0.05],
-        rightUpperArm: [0, 0.12 + 0.35 * g, 1.2 - 0.2 * g + m * 0.05 * g],
-        rightLowerArm: [0, 0.35 + (0.95 + n * 0.25) * g, 0],
-        rightHand: [0.5 * g, 0, -0.15 * g],
-        curlR: 0.45 - 0.3 * g,
-      };
-    },
-    mouth: 1,
-  },
-  shyPose: {
-    dur: 3.4, look: 0.25,
-    pose: (t) => {
-      const s = track(t, [[0, 0], [0.5, 1], [2.8, 1], [3.4, 0]]);
-      const w = Math.sin(t * 2.4) * s;
-      return {
-        hips: [0, w * 0.06, 0],
-        head: [0.28 * s, -0.25 * s, 0.15 * s], neck: [0.1 * s, 0, 0],
-        leftUpperArm: [0, -0.12 - 0.35 * s, -1.2 + 0.05 * s], rightUpperArm: [0, 0.12 + 0.35 * s, 1.2 - 0.05 * s],
-        leftLowerArm: [0, -0.35 - 1.6 * s, 0], rightLowerArm: [0, 0.35 + 1.6 * s, 0],
-        curlL: 0.6, curlR: 0.6,
-      };
-    },
-  },
-};
-
-let current = null; // { name, t }
-function play(name) {
-  if (!ACTIONS[name]) return;
-  current = { name, t: 0 };
-  const f = ACTIONS[name].face;
-  if (f && faceSel === 'neutral') actionFace = f;
-}
-
-// ---------- 弹簧 ----------
-// [频率 Hz, 阻尼]：频率越低越"懒"，阻尼小于 1 会稍微过头再回来。手比手臂慢一点，形成甩动感。
-function springParams(name) {
-  if (/Proximal|Intermediate|Distal/.test(name)) return [6, 1];
-  if (/Hand/.test(name)) return [3.2, 0.6];
-  if (/LowerArm/.test(name)) return [3.6, 0.68];
-  if (/UpperArm|Shoulder/.test(name)) return [4, 0.75];
-  if (name === 'head' || name === 'neck') return [3.4, 0.8];
-  if (/Leg/.test(name)) return [6, 0.9];
-  return [3.2, 0.85];
-}
-const springs = {}; // 名字 -> { x, v, k, c, node }
-function springTo(name, target, dt) {
-  let s = springs[name];
-  if (!s) {
-    const node = vrm.humanoid.getNormalizedBoneNode(name);
-    if (!node) { springs[name] = { node: null }; return; }
-    const [f, z] = springParams(name);
-    const w = TAU * f;
-    s = springs[name] = { node, x: target.slice(), v: [0, 0, 0], k: w * w, c: 2 * z * w };
-  }
-  if (!s.node) return;
-  const steps = Math.ceil(dt / (1 / 120));
-  const h = dt / steps;
-  for (let n = 0; n < steps; n++) {
-    for (let i = 0; i < 3; i++) {
-      s.v[i] += (s.k * (target[i] - s.x[i]) - s.c * s.v[i]) * h;
-      s.x[i] += s.v[i] * h;
+  if (pt) {
+    const x0 = pt.values[0], z0 = pt.values[2];
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pt.values.length; i += 3) {
+      v.set(pt.values[i] - x0, pt.values[i + 1], pt.values[i + 2] - z0).applyQuaternion(qc).toArray(pt.values, i);
     }
   }
-  s.node.rotation.set(s.x[0], s.x[1], s.x[2]);
 }
 
-// 手指自然弯曲（curl：0 张开，1 握拳）
+let idleAction = null;
+let curAction = null;
+let curName = null;
+let actionFace = null;
+const FADE = 0.4;
+
+function fadeTo(next, dur) {
+  const prev = curAction || idleAction;
+  next.reset();
+  next.setEffectiveTimeScale(1);
+  next.setEffectiveWeight(1);
+  next.fadeIn(dur).play();
+  if (prev && prev !== next) prev.fadeOut(dur);
+}
+
+async function play(name) {
+  if (!vrm || !mixer) return;
+  if (name === 'stop') return stop();
+  const m = MOTIONS[name];
+  if (!m) return;
+  let clip;
+  try { clip = await getClip(name); } catch (e) { console.error(e); return; }
+  const act = mixer.clipAction(clip);
+  act.setLoop(THREE.LoopRepeat, m.reps || 1);
+  act.clampWhenFinished = true;
+  fadeTo(act, FADE);
+  curAction = act;
+  curName = name;
+  actionFace = m.face || null;
+  document.querySelectorAll('[data-act]').forEach((b) => b.classList.toggle('on', b.dataset.act === name));
+}
+
+function stop() {
+  if (!curAction) return;
+  fadeTo(idleAction, 0.6);
+  curAction = null;
+  curName = null;
+  actionFace = null;
+  document.querySelectorAll('[data-act]').forEach((b) => b.classList.remove('on'));
+}
+
+function onFinished(e) {
+  if (e.action === curAction) stop();
+}
+
+// ---------- 手指 ----------
+// 动捕数据（CMU）没有手指动作，这时让手指保持自然微弯，不会直挺挺的
 const FINGERS = ['Index', 'Middle', 'Ring', 'Little'];
-function addFingers(pose, side, curl) {
-  const s = side === 'left' ? -1 : 1;
-  FINGERS.forEach((f, i) => {
-    const c = curl * (1 + i * 0.12);
-    pose[side + f + 'Proximal'] = [0, 0, s * c * 0.8];
-    pose[side + f + 'Intermediate'] = [0, 0, s * c * 1.0];
-    pose[side + f + 'Distal'] = [0, 0, s * c * 0.7];
-  });
-  pose[side + 'ThumbProximal'] = [0, -s * curl * 0.35, 0];
-  pose[side + 'ThumbDistal'] = [0, -s * curl * 0.4, 0];
+const fingerRelax = []; // [节点, 目标四元数]
+let fingerW = 0;
+function prepareFingers() {
+  const e = new THREE.Euler();
+  for (const side of ['left', 'right']) {
+    const s = side === 'left' ? -1 : 1;
+    const curl = 0.45;
+    FINGERS.forEach((f, i) => {
+      const c = curl * (1 + i * 0.12);
+      [['Proximal', 0.8], ['Intermediate', 1.0], ['Distal', 0.7]].forEach(([part, k]) => {
+        const node = vrm.humanoid.getNormalizedBoneNode(side + f + part);
+        if (node) fingerRelax.push([node, new THREE.Quaternion().setFromEuler(e.set(0, 0, s * c * k))]);
+      });
+    });
+    [['ThumbProximal', 0.35], ['ThumbDistal', 0.4]].forEach(([part, k]) => {
+      const node = vrm.humanoid.getNormalizedBoneNode(side + part);
+      if (node) fingerRelax.push([node, new THREE.Quaternion().setFromEuler(e.set(0, -s * curl * k, 0))]);
+    });
+  }
+}
+function relaxFingers(dt) {
+  const want = curAction && !curAction.getClip().userData.fingers ? 1 : 0;
+  fingerW += (want - fingerW) * Math.min(1, dt * 5);
+  if (fingerW < 0.01) return;
+  for (const [node, q] of fingerRelax) node.quaternion.slerp(q, fingerW);
+}
+
+// ---------- 头部跟随镜头、害羞歪头 ----------
+// 叠加在动作之上：待机时头会稍微转向你；动作进行时自动减弱，不干扰动作本身
+let followW = 1, shyW = 0;
+const tmpQ = new THREE.Quaternion(), tmpE = new THREE.Euler();
+function headExtras(dt) {
+  followW += ((curAction ? 0.15 : 1) - followW) * Math.min(1, dt * 3);
+  shyW += ((faceSel === 'shy' ? 1 : 0) - shyW) * Math.min(1, dt * 3);
+  const p = vrm.scene.worldToLocal(camera.position.clone());
+  let yaw = Math.atan2(p.x, p.z);
+  const behind = Math.min(1, Math.max(0, (Math.abs(yaw) - 1.2) / 0.6));
+  yaw = Math.max(-0.7, Math.min(0.7, yaw));
+  const pitch = Math.max(-0.35, Math.min(0.35, -Math.atan2(p.y - headY, Math.hypot(p.x, p.z))));
+  const w = followW * (1 - behind);
+  const apply = (bone, k, extra) => {
+    const node = vrm.humanoid.getNormalizedBoneNode(bone);
+    if (!node) return;
+    tmpE.set(pitch * k * w + extra[0], yaw * k * w + extra[1], extra[2]);
+    node.quaternion.multiply(tmpQ.setFromEuler(tmpE));
+  };
+  apply('neck', 0.3, [0.08 * shyW, 0, 0]);
+  apply('head', 0.35, [0.2 * shyW, -0.25 * shyW, 0.15 * shyW]);
 }
 
 // ---------- 视线 ----------
-// 眼睛看向这个点；平时就是镜头位置，偶尔瞟向别处
-const lookTarget = new THREE.Object3D();
-scene.add(lookTarget);
 const glance = { next: 3, active: false, off: new THREE.Vector2(), cur: new THREE.Vector2() };
-let lookW = 1;
-
 function updateGaze(dt) {
   glance.next -= dt;
   if (glance.next <= 0) {
@@ -479,7 +402,7 @@ function updateGaze(dt) {
     } else {
       glance.off.set((Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.4);
       glance.next = 0.4 + Math.random() * 0.8;
-      if (Math.random() < 0.5) blinkT = 0; // 移开视线时常常顺便眨眼
+      if (Math.random() < 0.5) blinkT = 0; // 移开视线时常顺便眨眼
     }
     glance.active = !glance.active;
   }
@@ -493,49 +416,31 @@ function updateGaze(dt) {
     .addScaledVector(up, glance.cur.y * dist * 0.5);
 }
 
-// 头和脖子跟着镜头转一点（转到背后就不跟了）
-function addHeadFollow(pose, weight) {
-  const p = vrm.scene.worldToLocal(camera.position.clone());
-  const horiz = Math.hypot(p.x, p.z);
-  let yaw = Math.atan2(p.x, p.z);
-  const behind = clamp01((Math.abs(yaw) - 1.2) / 0.6);
-  const w = weight * (1 - behind);
-  yaw = clamp(yaw, -0.7, 0.7);
-  const pitch = clamp(-Math.atan2(p.y - headY, horiz), -0.35, 0.35);
-  const add = (name, k) => {
-    const r = (pose[name] = (pose[name] || [0, 0, 0]).slice());
-    r[0] += pitch * k * w;
-    r[1] += yaw * k * w;
-  };
-  add('chest', 0.1);
-  add('neck', 0.3);
-  add('head', 0.35);
-}
-
 // ---------- 表情 ----------
 const FACES = ['happy', 'angry', 'sad', 'surprised', 'relaxed'];
 let faceSel = 'neutral';
-let actionFace = null;
 const faceW = Object.fromEntries(FACES.map((k) => [k, 0]));
 let blinkTimer = 2, blinkT = -1, winkT = -1;
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+const wave3 = (t, s) => Math.sin(t + s) * 0.5 + Math.sin(t * 2.13 + s * 1.7) * 0.3 + Math.sin(t * 3.71 + s * 2.9) * 0.2;
 
 function setFace(name) {
   faceSel = name;
   document.querySelectorAll('[data-face]').forEach((b) => b.classList.toggle('on', b.dataset.face === name));
   if (name === 'wink') winkT = 0;
-  if (name === 'shy') play('shyPose');
 }
 
+let talkT = 0;
 function updateFace(dt, time) {
   const em = vrm.expressionManager;
   if (!em) return;
   const sel = faceSel === 'shy' ? 'relaxed' : faceSel === 'wink' ? 'happy' : faceSel;
-  const want = current && actionFace && faceSel === 'neutral' ? actionFace : sel;
+  const want = curAction && actionFace && faceSel === 'neutral' ? actionFace : sel;
   for (const k of FACES) {
-    const target = k === want ? (k === 'happy' && faceSel === 'wink' ? 0.5 : 1) : 0;
+    const target = k === want ? (faceSel === 'wink' ? 0.5 : 1) : 0;
     faceW[k] += (target - faceW[k]) * Math.min(1, dt * 6);
   }
-  // 自动眨眼：闭眼快、睁眼慢一点；偶尔连眨两下
+  // 自动眨眼：闭眼快、睁眼慢；偶尔连眨两下
   blinkTimer -= dt;
   if (blinkTimer <= 0 && blinkT < 0) {
     blinkT = 0;
@@ -547,63 +452,62 @@ function updateFace(dt, time) {
     blink = blinkT < 0.07 ? blinkT / 0.07 : 1 - clamp01((blinkT - 0.07) / 0.13);
     if (blinkT > 0.2) blinkT = -1;
   }
-  const eyesBusy = faceW.happy + faceW.relaxed;
   let wink = 0;
   if (winkT >= 0) {
     winkT += dt;
-    wink = track(winkT, [[0, 0], [0.1, 1], [0.5, 1], [0.7, 0]]);
+    wink = winkT < 0.1 ? winkT / 0.1 : winkT < 0.5 ? 1 : 1 - clamp01((winkT - 0.5) / 0.2);
     if (winkT > 0.8) { winkT = -1; setFace('neutral'); }
   }
-  // 说话口型：随机组合几种口型，比单纯开合自然
-  let aa = 0, oh = 0, ih = 0;
-  const mouth = current && ACTIONS[current.name].mouth;
-  if (mouth) {
-    const a = ACTIONS[current.name];
-    const e = track(current.t, [[0, 0], [0.2, 1], [a.dur - 0.3, 1], [a.dur, 0]]) * mouth;
-    aa = clamp01(noise(time * 9, 1) * 0.9 + 0.3) * 0.75 * e;
-    oh = clamp01(noise(time * 7, 4) * 0.8) * 0.45 * e;
-    ih = clamp01(noise(time * 8, 8) * 0.8) * 0.3 * e;
-  }
+  // 说话口型
+  const talking = curName && MOTIONS[curName].mouth;
+  talkT += ((talking ? 1 : 0) - talkT) * Math.min(1, dt * 8);
+  const aa = clamp01(wave3(time * 9, 1) * 0.9 + 0.3) * 0.75 * talkT;
+  const oh = clamp01(wave3(time * 7, 4) * 0.8) * 0.45 * talkT;
+  const ih = clamp01(wave3(time * 8, 8) * 0.8) * 0.3 * talkT;
+
   for (const k of FACES) em.setValue(k, faceW[k]);
-  em.setValue('blink', clamp01(blink * (1 - eyesBusy)));
+  em.setValue('blink', clamp01(blink * (1 - faceW.happy - faceW.relaxed)));
   em.setValue('blinkLeft', wink);
   em.setValue('aa', aa);
   em.setValue('oh', oh);
   em.setValue('ih', ih);
 }
 
-// ---------- 每帧更新 ----------
-const clock = new THREE.Clock();
-function applyPose(time, dt) {
-  const pose = idlePose(time);
-  let curlL = 0.45, curlR = 0.45, rootY = 0, rotY = 0, wantLook = 1;
-  if (current) {
-    const a = ACTIONS[current.name];
-    current.t += dt;
-    if (current.t >= a.dur) {
-      current = null;
-      actionFace = null;
-    } else {
-      const p = a.pose(current.t);
-      for (const k in p) if (Array.isArray(p[k])) pose[k] = p[k];
-      if (p.curlL !== undefined) curlL = p.curlL;
-      if (p.curlR !== undefined) curlR = p.curlR;
-      rootY = p.rootY || 0;
-      rotY = p.rotY || 0;
-      wantLook = a.look ?? 0.5;
-    }
+// ---------- 视角 ----------
+let autoRotate = false;
+const viewAnim = { from: null, to: null, t: 1 };
+function setView(name, instant = false) {
+  if (name === 'auto') {
+    autoRotate = !autoRotate;
+    controls.autoRotate = autoRotate;
+    controls.autoRotateSpeed = 2;
+    document.querySelector('[data-view="auto"]').classList.toggle('on', autoRotate);
+    return;
   }
-  lookW += (wantLook - lookW) * Math.min(1, dt * 3);
-  addHeadFollow(pose, lookW);
-  addFingers(pose, 'left', curlL);
-  addFingers(pose, 'right', curlR);
-  for (const name in pose) springTo(name, pose[name], dt);
-
-  vrm.scene.position.y = rootY;
-  vrm.scene.rotation.y = rotY % TAU;
-  shadow.scale.setScalar(Math.max(0.6, 1 - Math.max(0, rootY) * 1.5));
+  const h = headY + 0.1;
+  const presets = {
+    full: { target: [0, h * 0.45, 0], dist: h * 3.7 },
+    half: { target: [0, h * 0.68, 0], dist: h * 1.6 },
+    face: { target: [0, headY - 0.06, 0], dist: 0.9 },
+  };
+  const p = presets[name];
+  if (!p) return;
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  const target = new THREE.Vector3(...p.target);
+  const pos = target.clone().add(dir.multiplyScalar(p.dist));
+  if (instant) {
+    controls.target.copy(target);
+    camera.position.copy(pos);
+    return;
+  }
+  viewAnim.from = { t: controls.target.clone(), p: camera.position.clone() };
+  viewAnim.to = { t: target, p: pos };
+  viewAnim.t = 0;
 }
 
+// ---------- 每帧更新 ----------
+const clock = new THREE.Clock();
+const hipsPos = new THREE.Vector3();
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -618,10 +522,14 @@ function animate() {
   controls.update();
 
   if (vrm) {
+    if (mixer) mixer.update(dt);   // 播放动作捕捉数据
+    relaxFingers(dt);
+    headExtras(dt);
     updateGaze(dt);
-    applyPose(time, dt);
     updateFace(dt, time);
-    vrm.update(dt); // 更新头发裙子物理、表情、视线
+    vrm.update(dt);                // 头发裙子物理、表情、视线
+    vrm.humanoid.getRawBoneNode('hips').getWorldPosition(hipsPos);
+    shadow.position.set(hipsPos.x, 0.001, hipsPos.z);
   }
   renderer.render(scene, camera);
 }
@@ -645,17 +553,21 @@ window.addEventListener('resize', () => {
 });
 
 // ---------- 给代码调用的接口 ----------
-// 在浏览器控制台里可以直接写：xiaoju.play('wave')、xiaoju.face('happy')、xiaoju.turn(90)
+// 在浏览器控制台里可以直接写：xiaoju.play('charleston')、xiaoju.stop()、xiaoju.face('happy')、xiaoju.turn(90)
 window.xiaoju = {
   play,
+  stop,
   face: setFace,
   view: setView,
-  turn: (deg) => { controls.autoRotate = false; const a = THREE.MathUtils.degToRad(deg);
-    const off = camera.position.clone().sub(controls.target).applyAxisAngle(new THREE.Vector3(0, 1, 0), a);
-    camera.position.copy(controls.target).add(off); },
+  turn: (deg) => {
+    controls.autoRotate = false;
+    const off = camera.position.clone().sub(controls.target)
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(deg));
+    camera.position.copy(controls.target).add(off);
+  },
   get vrm() { return vrm; },
-  actions: Object.keys(ACTIONS).filter((k) => k !== 'shyPose'),
-  track,
+  get mixer() { return mixer; },
+  actions: Object.keys(MOTIONS).filter((k) => k !== 'idle'),
 };
 </script>
 </body>

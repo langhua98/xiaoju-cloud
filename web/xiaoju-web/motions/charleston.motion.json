@@ -1,0 +1,230 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_103_03",
+ "name": "103_03",
+ "description": "charleston_01",
+ "duration": 3.67,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "103_03",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "dance",
+  "genre": [
+   "charleston"
+  ],
+  "energy": 5,
+  "bodyParts": [
+   "arms"
+  ],
+  "locomotion": "stepping",
+  "facing": "side",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Charelston dancing"
+  ]
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0
+ },
+ "loop": {
+  "in": 0,
+  "out": 3.67,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 8
+ },
+ "events": [
+  {
+   "t": 0.433,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 0.633,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 0.8,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 1.133,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 1.167,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 1.8,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 1.833,
+   "type": "contact",
+   "side": "right"
+  },
+  {
+   "t": 2,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 2.133,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 2.467,
+   "type": "contact",
+   "side": "left"
+  },
+  {
+   "t": 2.467,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 3.167,
+   "type": "contact",
+   "side": "right"
+  },
+  {
+   "t": 3.667,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 3.667,
+   "type": "lift",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 0.433,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0.633,
+   "to": 0.8,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 1.133,
+   "to": 1.8,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 2,
+   "to": 2.133,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 2.467,
+   "to": 3.667,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 1.167,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 1.833,
+   "to": 2.467,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 3.167,
+   "to": 3.667,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.14,
+  "maxTravel": 0.22,
+  "netTurnDeg": -12,
+  "turnRangeDeg": 38,
+  "hipsBounce": 0.06
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "down",
+  "endArms": "other"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 1,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 1.23,
+   "angularSpeed": {
+    "legs": 2.87,
+    "arms": 4.59,
+    "torso": 1.2
+   },
+   "bodyShare": {
+    "head": 0.14,
+    "torso": 0.07,
+    "arms": 0.25,
+    "hands": 0.2,
+    "hips": 0.13,
+    "legs": 0.2
+   },
+   "energy": 1.7,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}
