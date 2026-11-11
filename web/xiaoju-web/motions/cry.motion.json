@@ -1,0 +1,120 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_79_72",
+ "name": "79_72",
+ "description": "crying",
+ "duration": 7.9,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "79_72",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 2,
+  "bodyParts": [
+   "full"
+  ],
+  "locomotion": "stepping",
+  "facing": "front",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Actor everyday activities"
+  ]
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0.11
+ },
+ "loop": {
+  "in": 0,
+  "out": 7.9,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 5
+ },
+ "ranges": [
+  {
+   "from": 0,
+   "to": 7.9,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 7.9,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.01,
+  "maxTravel": 0.12,
+  "netTurnDeg": 1,
+  "turnRangeDeg": 18,
+  "hipsBounce": 0.02
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "hips",
+  "endArms": "hips"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 1,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.66,
+   "angularSpeed": {
+    "legs": 0.39,
+    "arms": 0.76,
+    "torso": 0.46
+   },
+   "bodyShare": {
+    "head": 0.22,
+    "torso": 0.12,
+    "arms": 0.18,
+    "hands": 0.24,
+    "hips": 0.12,
+    "legs": 0.12
+   },
+   "energy": 0.19,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

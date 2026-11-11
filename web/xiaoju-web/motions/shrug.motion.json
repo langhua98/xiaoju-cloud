@@ -1,0 +1,127 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_141_21",
+ "name": "141_21",
+ "description": "Shrug",
+ "duration": 2.23,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "141_21",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 2,
+  "bodyParts": [
+   "hands"
+  ],
+  "locomotion": "in-place",
+  "facing": "back",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "General subject capture"
+  ]
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0
+ },
+ "loop": {
+  "in": 0,
+  "out": 2.23,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 6
+ },
+ "events": [
+  {
+   "t": 0.567,
+   "type": "lift",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 2.23,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 0.567,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.03,
+  "maxTravel": 0.05,
+  "netTurnDeg": 4,
+  "turnRangeDeg": 5,
+  "hipsBounce": 0.03
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "hips",
+  "endArms": "hips"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 0.84,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.13,
+   "angularSpeed": {
+    "legs": 0.19,
+    "arms": 1.28,
+    "torso": 0.42
+   },
+   "bodyShare": {
+    "head": 0.19,
+    "torso": 0.06,
+    "arms": 0.23,
+    "hands": 0.38,
+    "hips": 0.08,
+    "legs": 0.06
+   },
+   "energy": 0.25,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

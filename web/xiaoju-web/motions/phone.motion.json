@@ -1,0 +1,117 @@
+{
+ "specVersion": "0.1",
+ "id": "ual2_idle_talkingphone_loop",
+ "name": "Idle_TalkingPhone_Loop",
+ "description": "Idle TalkingPhone Loop",
+ "duration": 2.93,
+ "license": {
+  "spdx": "CC0-1.0",
+  "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "attribution": "Universal Animation Library 2 by Quaternius (CC0 1.0)",
+  "authors": [
+   {
+    "name": "Quaternius",
+    "url": "https://quaternius.com/"
+   }
+  ],
+  "source": {
+   "kind": "keyframe",
+   "url": "https://quaternius.itch.io/universal-animation-library-2",
+   "originalId": "Idle_TalkingPhone_Loop",
+   "originalFormat": "glb",
+   "converter": "open-vrma/quaternius2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 1,
+  "bodyParts": [
+   "arms",
+   "hands"
+  ],
+  "locomotion": "in-place",
+  "facing": "front",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": true,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": false
+ },
+ "tempo": {
+  "bpm": null,
+  "confidence": 0
+ },
+ "loop": {
+  "in": 0,
+  "out": 2.93,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 0
+ },
+ "ranges": [
+  {
+   "from": 0,
+   "to": 2.93,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 2.93,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0,
+  "maxTravel": 0.01,
+  "netTurnDeg": 0,
+  "turnRangeDeg": 0,
+  "hipsBounce": 0.01
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "other",
+  "endArms": "other"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 0.9,
+  "floorAligned": true,
+  "checkedOn": [
+   "vrm1-sample"
+  ]
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.01,
+   "angularSpeed": {
+    "legs": 0.08,
+    "arms": 0.44,
+    "torso": 0.06
+   },
+   "bodyShare": {
+    "head": 0.12,
+    "torso": 0.06,
+    "arms": 0.39,
+    "hands": 0.3,
+    "hips": 0.03,
+    "legs": 0.09
+   },
+   "energy": 0.07,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

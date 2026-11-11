@@ -1,0 +1,161 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_113_03",
+ "name": "113_03",
+ "description": "Curtsey",
+ "duration": 4,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "113_03",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 2,
+  "bodyParts": [
+   "hands"
+  ],
+  "locomotion": "stepping",
+  "facing": "side",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Post pregnant woman"
+  ]
+ },
+ "tempo": {
+  "bpm": 100,
+  "beatsPerBar": 4,
+  "firstBeat": 0.433,
+  "confidence": 0.52,
+  "basis": "motion",
+  "alternatives": [
+   200,
+   50
+  ]
+ },
+ "loop": {
+  "in": 0,
+  "out": 4,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 6
+ },
+ "events": [
+  {
+   "t": 0.567,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 0.867,
+   "type": "contact",
+   "side": "right"
+  },
+  {
+   "t": 2.033,
+   "type": "lift",
+   "side": "right"
+  },
+  {
+   "t": 2.333,
+   "type": "contact",
+   "side": "right"
+  }
+ ],
+ "ranges": [
+  {
+   "from": 0,
+   "to": 4,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 0.567,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 0.867,
+   "to": 2.033,
+   "type": "footLock",
+   "side": "right"
+  },
+  {
+   "from": 2.333,
+   "to": 4,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.04,
+  "maxTravel": 0.22,
+  "netTurnDeg": -2,
+  "turnRangeDeg": 31,
+  "hipsBounce": 0.23
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "down",
+  "endArms": "down"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 0.92,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 0.51,
+   "angularSpeed": {
+    "legs": 0.68,
+    "arms": 1.09,
+    "torso": 0.25
+   },
+   "bodyShare": {
+    "head": 0.1,
+    "torso": 0.07,
+    "arms": 0.23,
+    "hands": 0.27,
+    "hips": 0.12,
+    "legs": 0.21
+   },
+   "energy": 0.28,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

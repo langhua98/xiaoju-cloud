@@ -1,0 +1,126 @@
+{
+ "specVersion": "0.1",
+ "id": "cmu_79_70",
+ "name": "79_70",
+ "description": "laughing",
+ "duration": 6.33,
+ "sourceFps": 120,
+ "license": {
+  "spdx": "LicenseRef-CMU-Mocap",
+  "url": "http://mocap.cs.cmu.edu/faqs.php",
+  "attribution": "The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217.",
+  "authors": [
+   {
+    "name": "Carnegie Mellon University Graphics Lab",
+    "url": "http://mocap.cs.cmu.edu/"
+   },
+   {
+    "name": "Bruce Hahne (BVH conversion, cgspeed)"
+   }
+  ],
+  "source": {
+   "kind": "mocap",
+   "url": "http://mocap.cs.cmu.edu/",
+   "originalId": "79_70",
+   "originalFormat": "bvh",
+   "converter": "open-vrma/cmu2vrma@0.1"
+  }
+ },
+ "tags": {
+  "kind": "gesture",
+  "genre": [],
+  "energy": 3,
+  "bodyParts": [
+   "head"
+  ],
+  "locomotion": "stepping",
+  "facing": "front",
+  "floorWork": false,
+  "airborne": false,
+  "fingers": false,
+  "expressions": false,
+  "lookAt": false,
+  "rootMotion": true,
+  "keywords": [
+   "Actor everyday activities"
+  ]
+ },
+ "tempo": {
+  "bpm": 129,
+  "beatsPerBar": 4,
+  "firstBeat": 0.233,
+  "confidence": 0.37,
+  "basis": "motion",
+  "alternatives": [
+   64.5
+  ]
+ },
+ "loop": {
+  "in": 0,
+  "out": 6.33,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 3
+ },
+ "ranges": [
+  {
+   "from": 0,
+   "to": 6.33,
+   "type": "footLock",
+   "side": "left"
+  },
+  {
+   "from": 0,
+   "to": 6.33,
+   "type": "footLock",
+   "side": "right"
+  }
+ ],
+ "root": {
+  "netTravel": 0.03,
+  "maxTravel": 0.11,
+  "netTurnDeg": -1,
+  "turnRangeDeg": 53,
+  "hipsBounce": 0.05
+ },
+ "poses": {
+  "start": "stand",
+  "end": "stand",
+  "startSupport": "both",
+  "endSupport": "both",
+  "startArms": "other",
+  "endArms": "other"
+ },
+ "retarget": {
+  "restPose": "T",
+  "sourceHipHeight": 1,
+  "floorAligned": true
+ },
+ "provenance": {
+  "tags": "auto",
+  "tempo": "auto",
+  "events": "auto",
+  "ranges": "auto"
+ },
+ "x": {
+  "openVrma": {
+   "pathTravel": 1.11,
+   "angularSpeed": {
+    "legs": 0.81,
+    "arms": 2.14,
+    "torso": 1.31
+   },
+   "bodyShare": {
+    "head": 0.35,
+    "torso": 0.07,
+    "arms": 0.2,
+    "hands": 0.18,
+    "hips": 0.1,
+    "legs": 0.1
+   },
+   "energy": 0.53,
+   "airborne": 0,
+   "lowHips": 0
+  }
+ }
+}

@@ -1,9 +1,9 @@
 {
  "specVersion": "0.1",
- "id": "cmu_111_02",
- "name": "111_02",
+ "id": "cmu_113_02",
+ "name": "113_02",
  "description": "Bow",
- "duration": 3.5,
+ "duration": 4.37,
  "sourceFps": 120,
  "license": {
   "spdx": "LicenseRef-CMU-Mocap",
@@ -21,7 +21,7 @@
   "source": {
    "kind": "mocap",
    "url": "http://mocap.cs.cmu.edu/",
-   "originalId": "111_02",
+   "originalId": "113_02",
    "originalFormat": "bvh",
    "converter": "open-vrma/cmu2vrma@0.1"
   }
@@ -31,7 +31,7 @@
   "genre": [],
   "energy": 2,
   "bodyParts": [
-   "arms"
+   "hands"
   ],
   "locomotion": "in-place",
   "facing": "side",
@@ -42,58 +42,59 @@
   "lookAt": false,
   "rootMotion": true,
   "keywords": [
-   "Pregnant woman"
+   "Post pregnant woman"
   ]
  },
  "tempo": {
-  "bpm": null,
-  "confidence": 0
+  "bpm": 100,
+  "beatsPerBar": 4,
+  "firstBeat": 0.533,
+  "confidence": 0.55,
+  "basis": "motion",
+  "alternatives": [
+   200,
+   50
+  ]
  },
  "loop": {
   "in": 0,
-  "out": 3.5,
+  "out": 4.37,
   "mode": "cycle",
   "blend": 0.1,
-  "poseDiffDeg": 1
+  "poseDiffDeg": 3
  },
  "events": [
   {
-   "t": 0.967,
+   "t": 4.367,
    "type": "lift",
    "side": "left"
   },
   {
-   "t": 2.833,
-   "type": "contact",
-   "side": "left"
+   "t": 4.367,
+   "type": "lift",
+   "side": "right"
   }
  ],
  "ranges": [
   {
    "from": 0,
-   "to": 0.967,
-   "type": "footLock",
-   "side": "left"
-  },
-  {
-   "from": 2.833,
-   "to": 3.5,
+   "to": 4.367,
    "type": "footLock",
    "side": "left"
   },
   {
    "from": 0,
-   "to": 3.5,
+   "to": 4.367,
    "type": "footLock",
    "side": "right"
   }
  ],
  "root": {
-  "netTravel": 0.01,
-  "maxTravel": 0.14,
-  "netTurnDeg": 0,
-  "turnRangeDeg": 21,
-  "hipsBounce": 0.02
+  "netTravel": 0.04,
+  "maxTravel": 0.17,
+  "netTurnDeg": -1,
+  "turnRangeDeg": 14,
+  "hipsBounce": 0.05
  },
  "poses": {
   "start": "stand",
@@ -105,7 +106,7 @@
  },
  "retarget": {
   "restPose": "T",
-  "sourceHipHeight": 0.89,
+  "sourceHipHeight": 0.92,
   "floorAligned": true
  },
  "provenance": {
@@ -116,21 +117,21 @@
  },
  "x": {
   "openVrma": {
-   "pathTravel": 0.32,
+   "pathTravel": 0.38,
    "angularSpeed": {
-    "legs": 0.21,
-    "arms": 0.94,
+    "legs": 0.53,
+    "arms": 0.93,
     "torso": 0.28
    },
    "bodyShare": {
-    "head": 0.12,
-    "torso": 0.1,
-    "arms": 0.24,
-    "hands": 0.24,
-    "hips": 0.23,
-    "legs": 0.07
+    "head": 0.11,
+    "torso": 0.08,
+    "arms": 0.2,
+    "hands": 0.25,
+    "hips": 0.19,
+    "legs": 0.17
    },
-   "energy": 0.36,
+   "energy": 0.24,
    "airborne": 0,
    "lowHips": 0
   }

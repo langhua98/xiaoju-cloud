@@ -1,9 +1,9 @@
 {
  "specVersion": "0.1",
- "id": "cmu_83_65",
- "name": "83_65",
- "description": "hop and turn right 360 degrees in air",
- "duration": 3.3,
+ "id": "cmu_105_61",
+ "name": "105_61",
+ "description": "360.0",
+ "duration": 3,
  "sourceFps": 120,
  "license": {
   "spdx": "LicenseRef-CMU-Mocap",
@@ -21,17 +21,17 @@
   "source": {
    "kind": "mocap",
    "url": "http://mocap.cs.cmu.edu/",
-   "originalId": "83_65",
+   "originalId": "105_61",
    "originalFormat": "bvh",
    "converter": "open-vrma/cmu2vrma@0.1"
   }
  },
  "tags": {
-  "kind": "jump",
+  "kind": "other",
   "genre": [],
   "energy": 4,
   "bodyParts": [
-   "full"
+   "hips"
   ],
   "locomotion": "spinning",
   "facing": "turning",
@@ -42,31 +42,38 @@
   "lookAt": false,
   "rootMotion": true,
   "keywords": [
-   "Steps"
+   "Motion"
   ]
  },
  "tempo": {
   "bpm": null,
   "confidence": 0
  },
+ "loop": {
+  "in": 0,
+  "out": 3,
+  "mode": "cycle",
+  "blend": 0.1,
+  "poseDiffDeg": 4
+ },
  "events": [
   {
-   "t": 1.333,
+   "t": 0.833,
+   "type": "lift",
+   "side": "left"
+  },
+  {
+   "t": 0.833,
    "type": "lift",
    "side": "right"
   },
   {
-   "t": 1.367,
-   "type": "lift",
-   "side": "left"
-  },
-  {
-   "t": 1.967,
+   "t": 1.267,
    "type": "contact",
    "side": "left"
   },
   {
-   "t": 2,
+   "t": 1.267,
    "type": "contact",
    "side": "right"
   }
@@ -74,43 +81,43 @@
  "ranges": [
   {
    "from": 0,
-   "to": 1.367,
+   "to": 0.833,
    "type": "footLock",
    "side": "left"
   },
   {
-   "from": 1.967,
-   "to": 3.3,
+   "from": 1.267,
+   "to": 3,
    "type": "footLock",
    "side": "left"
   },
   {
    "from": 0,
-   "to": 1.333,
+   "to": 0.833,
    "type": "footLock",
    "side": "right"
   },
   {
-   "from": 2,
-   "to": 3.3,
+   "from": 1.267,
+   "to": 3,
    "type": "footLock",
    "side": "right"
   }
  ],
  "root": {
-  "netTravel": 0.16,
-  "maxTravel": 0.25,
-  "netTurnDeg": -358,
-  "turnRangeDeg": 388,
-  "hipsBounce": 0.69
+  "netTravel": 0.06,
+  "maxTravel": 0.17,
+  "netTurnDeg": -365,
+  "turnRangeDeg": 378,
+  "hipsBounce": 0.39
  },
  "poses": {
   "start": "stand",
   "end": "stand",
   "startSupport": "both",
   "endSupport": "both",
-  "startArms": "hips",
-  "endArms": "hips"
+  "startArms": "down",
+  "endArms": "down"
  },
  "retarget": {
   "restPose": "T",
@@ -125,22 +132,22 @@
  },
  "x": {
   "openVrma": {
-   "pathTravel": 0.91,
+   "pathTravel": 0.64,
    "angularSpeed": {
-    "legs": 1.84,
-    "arms": 1.55,
-    "torso": 0.39
+    "legs": 1.58,
+    "arms": 1.81,
+    "torso": 0.64
    },
    "bodyShare": {
-    "head": 0.02,
-    "torso": 0.08,
+    "head": 0.12,
+    "torso": 0.05,
     "arms": 0.15,
-    "hands": 0.13,
-    "hips": 0.35,
-    "legs": 0.27
+    "hands": 0.16,
+    "hips": 0.31,
+    "legs": 0.21
    },
-   "energy": 1,
-   "airborne": 0.16,
+   "energy": 0.81,
+   "airborne": 0.11,
    "lowHips": 0
   }
  }
