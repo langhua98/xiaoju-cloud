@@ -48,7 +48,7 @@ PostgreSQL 是系统服务 `postgresql-x64-17`，自动启动。
 
 ## 2. 把 GitHub 上的密钥导过来
 
-主密钥和 Telegram 令牌都存在 GitHub 仓库的 Secrets 里（Hugging Face 设置页里看不到值）。用工作流加密导出，只有这台电脑能解开：
+主密钥和 Telegram 令牌一般存在 GitHub 仓库的 Secrets 里（Hugging Face 设置页里看不到值；主密钥要是不在 GitHub 里，见本节末尾）。用工作流加密导出，只有这台电脑能解开：
 
 1. 打开 <https://github.com/langhua98/xiaoju-cloud/actions/workflows/export-secrets.yml> → **Run workflow**，
    `age_public_key` 粘贴上一步的公钥，运行。
@@ -61,6 +61,16 @@ PostgreSQL 是系统服务 `postgresql-x64-17`，自动启动。
 
 > 你自己另外保存过主密钥的话，也可以直接编辑 `C:\xiaoju\config\xiaoju.env` 填进去（名字和 GitHub Secrets 一样）。
 > **主密钥丢了，备份和文件都解不开。**
+>
+> **工作流报「仓库 Secrets 里没有 XIAOJU_MASTER_KEY」**：主密钥当初是直接填在 Hugging Face Space 设置页的，没进 GitHub。
+> Space 的 Secrets 看不到值，但 Space 运行时有：把 Space 的 Dockerfile 临时换成下面这样（`age1…` 换成本机公钥），
+> 等它跑起来，在 Space 的 Logs 里复制 `-----BEGIN AGE ENCRYPTED FILE-----` 到 `-----END…-----` 那一段，存成 `space.env.age`，
+> 再 `import-secrets.ps1 space.env.age`。日志里只有密文，只有这台电脑能解开。用完重新跑一次 “Deploy to Hugging Face Space” 恢复（或者直接暂停 Space，见第 6 步）。
+> ```dockerfile
+> FROM alpine:3.20
+> RUN apk add --no-cache age busybox-extras
+> CMD sh -c 'env | grep -E "^(XIAOJU_|TG_|GOOGLE_)" | grep -v "^XIAOJU_DATABASE_URL=" | age -r age1… -a; mkdir -p /tmp/w; echo ok > /tmp/w/index.html; exec httpd -f -p 7860 -h /tmp/w'
+> ```
 
 ## 3. 恢复数据
 
@@ -70,6 +80,9 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\restore.ps1          
 ```
 
 从 Telegram 主频道（不行就用备份频道）置顶的每日备份恢复。最后一次备份之后的改动会丢（最多约 24 小时）。
+
+连不上 Telegram（`not connected after 1m30s`）时：先看电脑时间准不准（install.ps1 会打开自动对时），
+再在 `xiaoju.env` 里加 `TG_TRANSPORT=websocket`（走 443 端口的网页版通道，import-secrets 不会覆盖本机设的这一项）。
 恢复完在电脑浏览器打开 <http://127.0.0.1:8080/healthz>，显示 `ok` 就对了。
 
 ## 4. 开到公网：选一种隧道
@@ -79,7 +92,8 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\restore.ps1          
 
 ### 4a. 有自己的域名托管在 Cloudflare：Cloudflare Tunnel
 
-1. `winget install --id Cloudflare.cloudflared`
+1. `winget install --id Cloudflare.cloudflared --source winget`（不加 `--source winget` 时微软商店源可能报证书错误）
+   注意：Cloudflare Zero Trust 要先绑支付方式（免费版也要），不想绑卡就用下面的 4b。
 2. <https://one.dash.cloudflare.com> → Networks → Tunnels → Create a tunnel → Cloudflared，起名 `xiaoju`。
    页面给的命令里选 Windows，复制 `cloudflared.exe service install <一长串令牌>`，在管理员 PowerShell 里运行（装成开机自启的服务）。
 3. 下一步 Public Hostname：子域名比如 `pan`，域名选你的，Service 填 **HTTP** `127.0.0.1:8080`。保存。
@@ -89,7 +103,8 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\restore.ps1          
 
 ### 4b. 没有域名：Tailscale Funnel（免费，地址固定）
 
-1. `winget install --id Tailscale.Tailscale`，装完登录（浏览器里点一下）。
+1. `winget install --id Tailscale.Tailscale --source winget`，然后在管理员 PowerShell 里 `tailscale up --unattended`，
+   打开它给的链接登录（`--unattended`：不登录 Windows 也保持连接，开机就能用）。
 2. 管理员 PowerShell：`tailscale funnel --bg 8080`。第一次会给一个链接，打开后同意开启 HTTPS 和 Funnel，再运行一次。
    `--bg` 会记住设置，重启后自动恢复。
 3. 新地址是 `https://<电脑名>.<你的 tailnet>.ts.net`（`tailscale funnel status` 能看到）。

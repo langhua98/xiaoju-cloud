@@ -16,6 +16,36 @@ powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 powercfg /hibernate off
 Write-Host '已关闭。断电后自动开机要在 BIOS 里设置（见 README）。'
+# Telegram（MTProto）要求本机时间准，时间服务默认可能没开：设成自动启动并马上对一次时
+Set-Service -Name w32time -StartupType Automatic
+Start-Service -Name w32time -ErrorAction SilentlyContinue
+w32tm /config /manualpeerlist:"time.windows.com,0x9 pool.ntp.org,0x9" /syncfromflags:manual /update | Out-Null
+w32tm /resync /force | Out-Null
+Write-Host '已开启自动对时。'
+# 关屏后别断网：网卡不许 Windows 为省电关掉，Wi-Fi 驱动自己的省电也关掉，
+# 支持「S0 低电量待机」的电脑（多数新电脑）插电待机时保持联网。
+foreach ($a in Get-NetAdapter -Physical | Where-Object { $_.InterfaceDescription -notmatch 'Bluetooth' }) {
+    # 设备管理器「允许计算机关闭此设备以节约电源」：有这个开关的网卡立刻关掉；注册表那份重启后也生效
+    Get-CimInstance -Namespace root/wmi -ClassName MSPower_DeviceEnable -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceName -like "$($a.PnPDeviceID)*" } |
+        ForEach-Object { Set-CimInstance -InputObject $_ -Property @{ Enable = $false } }
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue |
+        Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).NetCfgInstanceId -eq $a.InterfaceGuid } |
+        ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name PnPCapabilities -Value 0x18 -Type DWord }
+    # 驱动高级属性里的省电（联发科叫 Power Saving / LowPowerEnable，英特尔叫 MIMO 省电等）：能选 Disabled 的都关掉。
+    # 改了网卡会重启一下，断网几秒。
+    Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -match 'Power Sav|省电|节能|Energy.Efficient|Green Ethernet' -and
+                       $_.ValidDisplayValues -contains 'Disabled' -and $_.DisplayValue -ne 'Disabled' } |
+        ForEach-Object { Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $_.RegistryKeyword -DisplayValue 'Disabled' }
+}
+# 无线适配器省电模式：最高性能（S0 待机的电脑上这项被系统隐藏了，设不上就算了）
+# （交给 cmd 吞掉输出：powercfg 设不上时写 stderr，PowerShell 5.1 会当成出错让脚本中断）
+cmd /c 'powercfg /setacvalueindex SCHEME_CURRENT 19cafa3d-c9d5-4b0e-a7c3-2c1daedb5a10 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>&1'
+# 待机时的网络连接：插电时启用
+cmd /c 'powercfg /setacvalueindex SCHEME_CURRENT SUB_NONE F15576E8-98B7-4186-B944-EAFA664402D9 1 >nul 2>&1'
+powercfg /setactive SCHEME_CURRENT
+Write-Host '已关掉网卡省电，关屏后保持联网。'
 
 Step '2/8 建目录'
 foreach ($d in @($Root, $Bin, $Tools, $Config, $DataDir, $TmpDir, $Logs, $Backups, $Scripts)) {
@@ -34,7 +64,12 @@ if (Get-Service -Name $PgService -ErrorAction SilentlyContinue) {
 } else {
     $superPw = New-Secret
     Set-Content -Encoding ASCII -Path $superFile -Value $superPw
-    $installer = Join-Path $env:TEMP 'postgresql-17-windows-x64.exe'
+    # 用户名是中文时 %TEMP% 里有中文，EDB 安装器会在初始化数据库那步失败：换成纯英文的临时目录
+    $pgTmp = Join-Path $TmpDir 'pg-install'
+    New-Item -ItemType Directory -Force -Path $pgTmp | Out-Null
+    $oldTemp = $env:TEMP; $oldTmp = $env:TMP
+    $env:TEMP = $pgTmp; $env:TMP = $pgTmp
+    $installer = Join-Path $pgTmp 'postgresql-17-windows-x64.exe'
     Download 'https://get.enterprisedb.com/postgresql/postgresql-17.8-1-windows-x64.exe' $installer
     Write-Host "安装中（几分钟），数据目录：$PgData"
     $p = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList @(
@@ -43,7 +78,8 @@ if (Get-Service -Name $PgService -ErrorAction SilentlyContinue) {
         '--datadir', "`"$PgData`"", '--servicename', $PgService,
         '--enable-components', 'server,commandlinetools',
         '--disable-components', 'pgAdmin,stackbuilder')
-    if ($p.ExitCode -ne 0) { throw "PostgreSQL 安装失败，退出码 $($p.ExitCode)。日志在 $env:TEMP\install-postgresql.log" }
+    $env:TEMP = $oldTemp; $env:TMP = $oldTmp
+    if ($p.ExitCode -ne 0) { throw "PostgreSQL 安装失败，退出码 $($p.ExitCode)。日志在 $pgTmp\install-postgresql.log" }
     Remove-Item $installer -ErrorAction SilentlyContinue
 }
 Set-Service -Name $PgService -StartupType Automatic
@@ -111,10 +147,21 @@ $envs['XIAOJU_TMP_DIR']         = $TmpDir
 $envs['TG_SESSION_FILE']        = Join-Path $DataDir 'tg-session.json'
 $envs['TG_BACKUP_SESSION_FILE'] = Join-Path $DataDir 'tg-backup-session.json'
 Write-EnvFile $EnvFile $envs
+# 上次中途失败可能留下空文件：里面没有公钥就当没有，重新生成（还没用这把钥匙加密过任何东西）
+if ((Test-Path $AgeKey) -and -not (Select-String -Quiet -Path $AgeKey -Pattern '^# public key: age1')) {
+    Remove-Item -Force $AgeKey
+}
 if (-not (Test-Path $AgeKey)) {
-    & (Join-Path $Tools 'age\age-keygen.exe') -o $AgeKey
+    # age-keygen 在 Windows 上总会往 stderr 打一句 "world-readable" 警告（config 目录其实已经限制了权限）。
+    # 输出被重定向时 PowerShell 5.1 会把 stderr 当成出错，所以这里临时放宽，按退出码判断。
+    $ErrorActionPreference = 'Continue'
+    & (Join-Path $Tools 'age\age-keygen.exe') -o $AgeKey 2>&1 | ForEach-Object { "$_" } | Out-Null
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($code -ne 0 -or -not (Test-Path $AgeKey)) { throw "age-keygen 失败（退出码 $code）。" }
 }
 $pub = (Get-Content $AgeKey | Where-Object { $_ -match '^# public key: ' }) -replace '^# public key: ', ''
+if (-not $pub) { throw "$AgeKey 里没有公钥，删掉它再运行一次。" }
 
 Step '8/8 注册开机任务'
 $ps = 'powershell.exe'

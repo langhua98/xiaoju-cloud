@@ -58,6 +58,8 @@ type Info struct {
 	Created    time.Time      `json:"created"`
 	Migrations []string       `json:"migrations"`
 	Rows       map[string]int `json:"rows"`
+	// Skipped 是恢复时跳过的空表：导出文件里有、但程序没有建它的迁移（旧试验分支留下的）。
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // LastMigration 返回导出时最新的迁移版本。
@@ -336,9 +338,12 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS, r io.Rea
 	if err != nil {
 		return Info{}, err
 	}
+	// 程序里没有的迁移：一般是程序比导出文件旧。但也可能是以前试验分支部署过一次留下的（比如 0002_album_cursor），
+	// 线上程序不认识它也照样运行。这种迁移建的表要是空的，跳过这些表照样恢复；有数据才拒绝（见下面 COPY 那里）。
+	var unknown []string
 	for _, v := range h.Migrations {
 		if !containsString(known, v) {
-			return Info{}, fmt.Errorf("the dump uses migration %s which this program does not have: use a newer build", v)
+			unknown = append(unknown, v)
 		}
 	}
 
@@ -367,8 +372,10 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS, r io.Rea
 		}
 		// 迁移里可能插入了默认数据（schema_migrations 本身也是）：清空，以导出文件为准
 		names := make([]string, len(existing))
+		have := make(map[string]bool, len(existing))
 		for i, t := range existing {
 			names[i] = pgx.Identifier{t.Table}.Sanitize()
+			have[t.Table] = true
 		}
 		if len(names) > 0 {
 			if _, err := tx.Exec(ctx, "TRUNCATE "+strings.Join(names, ", ")); err != nil {
@@ -376,6 +383,18 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS, r io.Rea
 			}
 		}
 		err = eachTable(br, func(t tableHeader, data io.Reader) error {
+			if !have[t.Table] && len(unknown) > 0 {
+				n, err := io.Copy(io.Discard, data)
+				if err != nil {
+					return err
+				}
+				if n > 0 {
+					return fmt.Errorf("the dump uses migration %s which this program does not have (table %s has data): use a newer build",
+						strings.Join(unknown, ", "), t.Table)
+				}
+				info.Skipped = append(info.Skipped, t.Table)
+				return nil
+			}
 			sql := fmt.Sprintf("COPY %s (%s) FROM STDIN", pgx.Identifier{t.Table}.Sanitize(), quoteColumns(t.Columns))
 			_, err := tx.Conn().PgConn().CopyFrom(ctx, data, sql)
 			return err

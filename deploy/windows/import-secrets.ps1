@@ -30,6 +30,8 @@ foreach ($line in $plain) {
     if ($i -lt 1 -or $line.StartsWith('#')) { continue }
     $k = $line.Substring(0, $i); $v = $line.Substring($i + 1)
     if ($keepLocal -contains $k -or $v -eq '') { continue }
+    # 连 Telegram 的方式看本机网络：本机已经设过（比如这里的网络只通 websocket）就不让云端的值覆盖
+    if ($k -eq 'TG_TRANSPORT' -and $envs['TG_TRANSPORT']) { continue }
     $envs[$k] = $v
     $added += $k
 }
