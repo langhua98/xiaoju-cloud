@@ -34,7 +34,9 @@ jobs:
         env:
           XIAOJU_API_URL: ${{ vars.XIAOJU_API_URL }}
         run: |
+          fallback=$(grep '^window.XIAOJU_API_FALLBACK' web/config.js || true)
           printf 'window.XIAOJU_API_URL = %s;\n' "$(jq -Rn --arg v "$XIAOJU_API_URL" '$v')" > web/config.js
+          [ -n "$fallback" ] && echo "$fallback" >> web/config.js
           cat web/config.js
       # 签名快捷指令要几分钟（第三方服务 HubSign，慢的时候更久）。快捷指令没改时直接用网上现在那一份，
       # 只改网页的部署一分钟内就能发布。手动运行（workflow_dispatch，比如换了服务端地址）总是重新签名。

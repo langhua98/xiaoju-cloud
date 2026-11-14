@@ -1301,6 +1301,18 @@ button.danger { color: var(--danger); }
   .grid-legend b.add { color: #60a5fa; }
 }
 
+/* 家里电脑关着，连的是只读备用 */
+.standby-bar {
+  position: sticky;
+  top: 0;
+  z-index: 19;
+  padding: 6px 16px;
+  text-align: center;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 13px;
+}
+
 /* 网页有新版本 */
 .update-bar {
   position: sticky;

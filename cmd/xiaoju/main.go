@@ -113,12 +113,20 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	connect := db.Connect
+	if cfg.Standby {
+		// 备用库（Neon 等）没人用时要能睡着，不然免费额度很快用完：空闲连接 2 分钟就关
+		connect = db.ConnectIdle
+	}
+	pool, err := connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-	if done, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
+	if cfg.Standby {
+		// 只读备用：库是家里电脑同步过来的副本，表结构以电脑那边为准，这里不执行迁移
+		log.Warn("XIAOJU_STANDBY is set: read-only standby (view and download only; no uploads, no background jobs, nothing written to Telegram)")
+	} else if done, err := db.MigrateUp(ctx, pool, migrations.FS); err != nil {
 		return err
 	} else if len(done) > 0 {
 		log.Info("applied migrations", "versions", done)
@@ -130,8 +138,12 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	// 备份频道连不上时主服务照常运行，原因通过 /api/backup/status 和日志暴露
 	var backupErr string
-	backup, backupDone, err := newBackupDriver(ctx, cfg, log)
-	if err != nil {
+	var backup storage.Driver
+	var backupDone <-chan error
+	if cfg.Standby {
+		driver, messenger = storage.ReadOnly(driver), nil // 不发文件、不删消息、不发提醒
+		backupErr = "read-only standby"
+	} else if backup, backupDone, err = newBackupDriver(ctx, cfg, log); err != nil {
 		log.Error("backup disabled: cannot connect backup channel", "err", err)
 		backupErr = err.Error()
 	}
@@ -148,16 +160,19 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		MasterKey: cfg.MasterKey, PartSize: cfg.PartSize, TempDir: cfg.TempDir, Log: log,
 		Backup: backup, BackupError: backupErr, Thumbs: thumbs,
 	})
-	if backup != nil {
-		go svc.RunBackupSync(ctx, 5*time.Minute)
+	// 只读备用不跑任何后台任务：清理回收站、对账会删 Telegram 上的消息，备份会置顶旧库，都只能由家里电脑做
+	if !cfg.Standby {
+		if backup != nil {
+			go svc.RunBackupSync(ctx, 5*time.Minute)
+		}
+		go svc.RunMaintenance(ctx, time.Hour)
+		// 定期检查（启动 10 分钟后开始，查完一轮每小时看一次有没有到期要查的）
+		go svc.RunScrub(ctx, 10*time.Minute, time.Hour)
+		go svc.BackfillThumbnails(ctx)
+		// 数据库自动备份：每天一次，存进网盘「数据库备份」文件夹和两个频道的置顶消息（见 service/dbbackup.go）
+		svc.EnableDBBackup(service.DBBackupOptions{UserID: userID, Every: cfg.DBBackupEvery, Location: cfg.Location})
+		go svc.RunDBBackup(ctx, 15*time.Minute)
 	}
-	go svc.RunMaintenance(ctx, time.Hour)
-	// 定期检查（启动 10 分钟后开始，查完一轮每小时看一次有没有到期要查的）
-	go svc.RunScrub(ctx, 10*time.Minute, time.Hour)
-	go svc.BackfillThumbnails(ctx)
-	// 数据库自动备份：每天一次，存进网盘「数据库备份」文件夹和两个频道的置顶消息（见 service/dbbackup.go）
-	svc.EnableDBBackup(service.DBBackupOptions{UserID: userID, Every: cfg.DBBackupEvery, Location: cfg.Location})
-	go svc.RunDBBackup(ctx, 15*time.Minute)
 
 	passkeys, err := auth.NewPasskeys(ctx, store, userID, auth.PasskeyConfig{RPID: cfg.WebAuthnRPID, Origins: cfg.WebAuthnOrigins})
 	if err != nil {
@@ -167,7 +182,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if cfg.PasskeyReset {
+	if cfg.PasskeyReset && !cfg.Standby {
 		n, err := passkeys.ResetAll(ctx)
 		if err != nil {
 			return err
@@ -188,7 +203,9 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	gsync := gdrive.New(&gdrive.OAuth{ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Endpoints: gdrive.Google},
 		svc, userID, cfg.MasterKey, log.With("component", "gdrive"))
 	log.Info("google drive sync", "configured", gsync.Configured())
-	go gsync.Run(ctx, 3*time.Minute, 2*time.Minute)
+	if !cfg.Standby { // 谷歌同步会往两边写，只能由家里电脑跑
+		go gsync.Run(ctx, 3*time.Minute, 2*time.Minute)
+	}
 
 	sessions, err := auth.NewSessionsWithStore(ctx, cfg.AdminToken, store)
 	if err != nil {
@@ -203,8 +220,11 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		Passkeys: passkeys, Grid: grid, Sessions: sessions, Location: cfg.Location,
 		GDrive: gsync, PublicURL: cfg.PublicURL,
 		Notify: notify, NotifyChatID: cfg.Telegram.NotifyChatID,
+		Standby: cfg.Standby,
 	})
-	go server.RunAgentMaintenance(ctx, 6*time.Hour) // 删掉 180 天前的 AI 助手审计日志
+	if !cfg.Standby {
+		go server.RunAgentMaintenance(ctx, 6*time.Hour) // 删掉 180 天前的 AI 助手审计日志
+	}
 	handler := server.Handler()
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

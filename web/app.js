@@ -12,6 +12,8 @@ const store = {
 // 登录：令牌 → Face ID / 指纹（注册了设备时），通过后服务端签发会话（12 小时）。
 // 开启了格子口令时，看照片、视频每随机 3–7 张弹出一道限时格子题，两次机会都没答对就退出登录。
 const defaultAPI = (window.XIAOJU_API_URL || "").replace(/\/+$/, "");
+// 只读备用（Hugging Face）：家里电脑关着、上面那个连不上时自动换过去，电脑开了再换回来（见 pickServer）
+const fallbackAPI = defaultAPI ? (window.XIAOJU_API_FALLBACK || "").replace(/\/+$/, "") : "";
 const state = {
   api: defaultAPI || store.get("xiaoju.api"),
   token: "",   // 访问令牌（登录接口要用）
@@ -51,7 +53,7 @@ function authHeaders() {
   return h;
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, retried = false) {
   let resp;
   try {
     resp = await fetch(state.api + path, {
@@ -60,8 +62,11 @@ async function request(method, path, body) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
+    if (!retried && await pickServer()) return request(method, path, body, true);
     throw new HttpError(0, "无法连接服务端（地址错误、服务休眠中或未允许跨域）");
   }
+  // 隧道那头的电脑关了：网关回 502/503/504，换个服务端再试一次
+  if ([502, 503, 504].includes(resp.status) && !retried && await pickServer()) return request(method, path, body, true);
   if (resp.status === 204) return null;
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new HttpError(resp.status, errorText(resp.status, data.error, data.code, data), data.code, data);
@@ -93,6 +98,52 @@ function errorText(status, msg, code, data = {}) {
   if (status === 404) return "不存在或已被删除";
   if (status === 409) return "同名文件已存在";
   return msg || `请求失败（${status}）`;
+}
+
+// ---------- 只读备用 ----------
+// 先连家里电脑（defaultAPI）；连不上就换 Hugging Face 上的只读备用（fallbackAPI），顶上显示提示条，
+// 每分钟看一次电脑开了没有，开了自动换回来。会话两边通用（同一个令牌签的），不用重新登录。
+const serverPick = { running: null, timer: 0 };
+
+async function serverAlive(base, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const resp = await fetch(`${base}/api/speedtest/ping`, { cache: "no-store", signal: ctl.signal });
+    return resp.status === 204 ? resp : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function useServer(base, standby) {
+  state.api = base;
+  $("#standby-bar").hidden = !standby;
+  clearInterval(serverPick.timer);
+  if (standby) serverPick.timer = setInterval(checkHomeBack, 60_000);
+}
+
+// 重新挑服务端；换了返回 true。同时只挑一次，别的请求等同一个结果。
+function pickServer() {
+  if (!fallbackAPI) return Promise.resolve(false);
+  serverPick.running ||= (async () => {
+    const before = state.api;
+    if (await serverAlive(defaultAPI, 6000)) useServer(defaultAPI, false);
+    // 备用在 Hugging Face 上，休眠了要唤醒，多等一会儿
+    else if (await serverAlive(fallbackAPI, 45000)) useServer(fallbackAPI, true);
+    return state.api !== before;
+  })().finally(() => { serverPick.running = null; });
+  return serverPick.running;
+}
+
+async function checkHomeBack() {
+  if (state.api !== fallbackAPI || document.visibilityState !== "visible") return;
+  if (!(await serverAlive(defaultAPI, 6000))) return;
+  useServer(defaultAPI, false);
+  toast("家里电脑开了，已换回正常模式");
+  if (!document.querySelector("dialog[open]") && !state.selecting) load();
 }
 
 function toast(msg, { action = "", onAction = null } = {}) {
@@ -4658,8 +4709,11 @@ drop.addEventListener("drop", (e) => {
 
 window.addEventListener("hashchange", () => load());
 // 当前标签页里有会话（页面被重新加载）：直接进入；会话过期或被作废时第一个请求会退回登录页
-if (state.session) enterApp();
-else load();
+// 有备用时先看看家里电脑在不在（在的话不到一秒），不在就直接用备用，免得每个请求都先等超时
+(fallbackAPI ? pickServer() : Promise.resolve()).finally(() => {
+  if (state.session) enterApp();
+  else load();
+});
 
 // ---------- 网页版本检查 ----------
 // 部署后已经打开的旧页面不认识服务端的新要求（比如看照片时的格子口令），要换成新版。

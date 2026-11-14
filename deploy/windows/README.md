@@ -126,6 +126,31 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\check.ps1
 - [ ] 重启电脑，不登录，等两分钟，用手机打开云盘：数据库、云盘、隧道都自己起来了。
 - [ ] 第二天 `C:\xiaoju\backups` 里有备份；Telegram 频道里有新的置顶备份。
 
+## 8. 云端只读备用（电脑关着时也能看）
+
+电脑关机、断网时，手机 App 和网页自动换到 Hugging Face 上的**只读备用**：能看、能下载，不能上传、改、删；
+顶上显示「家里电脑关着 · 只读备用」。电脑开了一分钟内自动换回来。手机自动备份照片会等电脑开了再传。
+
+```
+电脑（每小时）──pg_dump 整库──▶ 云端 PostgreSQL（Neon 等免费库）◀── Hugging Face 只读备用（XIAOJU_STANDBY=1）
+```
+
+备用服务不跑任何后台任务、不往 Telegram 写东西、不置顶备份，所以不会和电脑上的打架（第 6 节说的问题也就没了）。
+
+1. 开一个免费的云端 PostgreSQL（17 版最好），复制连接串（`postgresql://…`）。
+2. 电脑上（管理员 PowerShell）：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\standby-sync.ps1 -Setup '<连接串>'
+   ```
+   会检查能不能连上、注册每小时一次的开机任务 `xiaoju-standby-sync`、马上同步一次。日志 `C:\xiaoju\logs\standby-sync.log`。
+   库超过 450 MB 时自动不带缩略图（免费库一般只有 0.5 GB）。
+3. GitHub 仓库 Settings → Secrets and variables → Actions：
+   - **Secrets** 加 `XIAOJU_STANDBY_DATABASE_URL` = 同一个连接串；
+   - **Variables** 把 `HF_DEPLOY` 从 `off` 改成 `standby`。
+4. Actions → Deploy to Hugging Face Space → Run workflow（会自动把暂停的 Space 开起来）。
+
+关掉备用：`HF_DEPLOY` 改回 `off`，Hugging Face 上 Pause；电脑上 `Unregister-ScheduledTask xiaoju-standby-sync`。
+
 ## 日常
 
 | 要做什么 | 命令（管理员 PowerShell，都在 `C:\xiaoju\scripts`） |
@@ -134,6 +159,7 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\check.ps1
 | 更新到最新版 | `update.ps1`（会打断正在进行的上传，挑没人用的时候） |
 | 改了 `xiaoju.env` 后重启 | `update.ps1 -RestartOnly` |
 | 马上备份一次 | `backup.ps1` |
+| 马上同步到云端备用 | `standby-sync.ps1` |
 | 用本机备份恢复 | `pg_restore -h 127.0.0.1 -U xiaoju -d xiaoju --clean --if-exists C:\xiaoju\backups\<文件>.dump`（先停云盘） |
 
 运行脚本都用 `powershell -ExecutionPolicy Bypass -File <脚本>`。

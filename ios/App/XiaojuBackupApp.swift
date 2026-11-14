@@ -40,7 +40,18 @@ struct RootView: View {
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
         }
         .tint(.brand)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if cloud.standby {
+                Text("家里电脑关着 · 只读备用：能看、能下载，不能上传和修改")
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(Color.brand.opacity(0.15))
+            }
+        }
         .sheet(item: $cloud.gridPrompt) { _ in GridGateView() }
+        // 打开时先看看家里电脑在不在（在的话不到一秒），不在就直接用备用，免得第一个请求等超时
+        .task { _ = await cloud.pickServer() }
     }
 
     // 没登录（或登录过期）时先显示登录页；备份照常可以从右上角进去

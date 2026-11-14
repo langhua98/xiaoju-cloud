@@ -34,6 +34,9 @@ type Config struct {
 	WebAuthnOrigins []string
 	// PasskeyReset 为 true 时启动时清空所有已注册设备和格子口令（全部丢失时的紧急恢复）。
 	PasskeyReset bool
+	// Standby（XIAOJU_STANDBY=1）是只读备用模式：家里电脑关着时手机、网页临时连这台。数据库是电脑每小时同步过来的副本，
+	// 只能看和下载，不能上传、改、删；不跑后台任务（备份、清理回收站、谷歌同步……），不往 Telegram 写任何东西。
+	Standby bool
 	// Location 是格子口令判断“出题时是星期几”用的时区（XIAOJU_TIMEZONE，默认 Asia/Shanghai）。
 	// 照片的 EXIF 没写时区时，拍摄时间也按这个时区算。
 	Location *time.Location
@@ -132,6 +135,7 @@ func Load() (*Config, error) {
 		}
 	}
 	c.PasskeyReset, _ = strconv.ParseBool(os.Getenv("XIAOJU_PASSKEY_RESET"))
+	c.Standby, _ = strconv.ParseBool(os.Getenv("XIAOJU_STANDBY"))
 	c.DBBackupEvery = 24 * time.Hour
 	if v := strings.TrimSpace(os.Getenv("XIAOJU_DB_BACKUP_EVERY")); v != "" {
 		d, err := time.ParseDuration(v)

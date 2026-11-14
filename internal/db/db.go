@@ -7,13 +7,34 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	return connect(ctx, cfg)
+}
+
+// ConnectIdle 同 Connect，但空闲连接 2 分钟就关、不保留常驻连接：没人用时云端数据库（如 Neon）可以自动休眠，
+// 不白白消耗免费额度。只读备用服务用。
+func ConnectIdle(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	cfg.MinConns = 0
+	cfg.MaxConnIdleTime = 2 * time.Minute
+	return connect(ctx, cfg)
+}
+
+func connect(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error) {
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
