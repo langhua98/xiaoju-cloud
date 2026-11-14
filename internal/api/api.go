@@ -35,6 +35,7 @@ type Server struct {
 	userID      uuid.UUID
 	token       string
 	corsOrigins []string
+	standby     bool // 只读备用模式（见 standby.go）
 	log         *slog.Logger
 	passkeys    *auth.Passkeys
 	grid        *auth.Grid
@@ -80,6 +81,8 @@ type Options struct {
 	// Notify 发 Telegram 提醒（见 notify.go），nil = 没有提醒功能；NotifyChatID 默认发给谁（0 = 存储频道的创建者）。
 	Notify       TelegramSender
 	NotifyChatID int64
+	// Standby 为 true 时是只读备用模式（见 standby.go）。
+	Standby bool
 }
 
 func New(svc *service.Service, opt Options) *Server {
@@ -106,7 +109,7 @@ func New(svc *service.Service, opt Options) *Server {
 		stream:     newStreamHub(),
 		notifier:   newNotifier(opt.Notify, opt.NotifyChatID),
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
-		started: time.Now(),
+		started: time.Now(), standby: opt.Standby,
 	}
 	if svc != nil {
 		svc.SetOnUploaded(s.packageUploaded)
@@ -221,19 +224,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /u/{token}/{name...}", s.limited(s.dropLimit, s.tracked(agentLane(s.dropPut))))
 	mux.HandleFunc("OPTIONS /u/{token}", s.dropPreflight)
 	mux.HandleFunc("OPTIONS /u/{token}/{name...}", s.dropPreflight)
+	if s.standby {
+		return s.standbyGuard(mux)
+	}
 	return mux
+}
+
+func (s *Server) originAllowed(origin string) bool {
+	return slices.Contains(s.corsOrigins, "*") || slices.Contains(s.corsOrigins, origin)
 }
 
 // cors 处理跨域请求；预检请求（OPTIONS）不带认证头，必须在 auth 之前直接放行。
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		allowed := origin != "" && (slices.Contains(s.corsOrigins, "*") || slices.Contains(s.corsOrigins, origin))
+		allowed := origin != "" && s.originAllowed(origin)
 		if allowed {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Add("Vary", "Origin")
-			h.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Range, Mcp-Session-Id")
+			h.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Range, Mcp-Session-Id, "+standbyHeader)
 		}
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			if allowed {

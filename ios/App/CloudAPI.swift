@@ -17,10 +17,21 @@ final class Cloud: ObservableObject {
         let id = UUID()
     }
 
-    let base: URL = {
+    // 家里电脑上的云盘
+    let primary: URL = {
         let raw = Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIURL") as? String ?? ""
         return URL(string: raw) ?? URL(string: "https://localhost")!
     }()
+    // Hugging Face 上的只读备用：电脑关着、上面那个连不上时自动换过去，只能看、不能改；电脑开了再换回来
+    let fallback: URL? = {
+        let raw = Bundle.main.object(forInfoDictionaryKey: "XiaojuAPIFallback") as? String ?? ""
+        return raw.isEmpty ? nil : URL(string: raw)
+    }()
+    @Published private(set) var standby = false // 正在用只读备用
+    private var picking: Task<Bool, Never>?
+    private var lastHomeCheck = Date.distantPast
+
+    var base: URL { standby ? (fallback ?? primary) : primary }
 
     let webURL: URL? = URL(string: Bundle.main.object(forInfoDictionaryKey: "XiaojuWebURL") as? String ?? "")
 
@@ -56,6 +67,7 @@ final class Cloud: ObservableObject {
     @discardableResult
     func send(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil,
               contentType: String? = nil) async throws -> Data {
+        await checkHomeBack()
         guard let url = URL(string: path, relativeTo: base) else { throw CloudError.server("地址不对：\(path)") }
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -69,10 +81,27 @@ final class Cloud: ObservableObject {
         }
         // 被 Hugging Face 限流（429）：大家一起等一会儿再试（见 RateGate.swift），几次都不行才报错
         var attempt = 0
+        var switched = false
         while true {
             try await RateGate.shared.wait()
-            let (data, resp) = try await URLSession.shared.data(for: req)
+            let data: Data, resp: URLResponse
+            do {
+                (data, resp) = try await URLSession.shared.data(for: req)
+            } catch let err as URLError where err.code != .cancelled {
+                // 连不上：换个服务端（电脑 ↔ 备用）再试一次
+                guard !switched, await pickServer(), let again = URL(string: path, relativeTo: base) else { throw err }
+                switched = true
+                req.url = again
+                continue
+            }
             let http = resp as? HTTPURLResponse
+            // 隧道那头的电脑关了：网关回 502/503/504
+            if let code = http?.statusCode, [502, 503, 504].contains(code), !switched, await pickServer(),
+               let again = URL(string: path, relativeTo: base) {
+                switched = true
+                req.url = again
+                continue
+            }
             if http?.statusCode == 429 && attempt < 3 {
                 attempt += 1
                 await RateGate.shared.limited(retryAfter: http?.value(forHTTPHeaderField: "Retry-After"))
@@ -82,6 +111,43 @@ final class Cloud: ObservableObject {
             try check(data, resp)
             return data
         }
+    }
+
+    // MARK: 只读备用
+
+    // 重新挑服务端：先试家里电脑，不行再试备用。换了返回 true。同时只挑一次。
+    func pickServer() async -> Bool {
+        guard let fallback else { return false }
+        if let picking { return await picking.value }
+        let task = Task<Bool, Never> {
+            let before = self.standby
+            if await Self.alive(self.primary, timeout: 6) {
+                self.standby = false
+            } else if await Self.alive(fallback, timeout: 45) { // 备用在 Hugging Face 上，休眠了要唤醒
+                self.standby = true
+            }
+            self.lastHomeCheck = Date()
+            return self.standby != before
+        }
+        picking = task
+        let changed = await task.value
+        picking = nil
+        return changed
+    }
+
+    // 用着备用时，每分钟最多看一次电脑开了没有，开了就换回去
+    private func checkHomeBack() async {
+        guard standby, Date().timeIntervalSince(lastHomeCheck) > 60 else { return }
+        lastHomeCheck = Date()
+        if await Self.alive(primary, timeout: 6) { standby = false }
+    }
+
+    private static func alive(_ base: URL, timeout: TimeInterval) async -> Bool {
+        guard let url = URL(string: "/api/speedtest/ping", relativeTo: base) else { return false }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+        req.httpMethod = "GET"
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 204
     }
 
     // 上传文件（流式，从文件读）：POST /api/files?name=&parent_id=

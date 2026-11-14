@@ -12,6 +12,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     # 服务端地址：编译时可用 XIAOJU_API_URL=... 覆盖（Actions 里取仓库变量）
     XIAOJU_API_URL: https://node.tail823dbd.ts.net
+    # 只读备用（家里电脑关着时自动换过去，只能看）；留空 = 不用
+    XIAOJU_API_FALLBACK: https://langhua1998-xiaoju-cloud.hf.space
     # 网盘网页（App 里「云盘」页直接打开它）
     XIAOJU_WEB_URL: https://langhua98.github.io/xiaoju-cloud/
     # 签名由 xcodebuild 的命令行决定：没签名的测试包传 CODE_SIGNING_ALLOWED=NO；
@@ -49,6 +51,7 @@ targets:
             CFBundleURLSchemes: [xiaojubackup]
         BGTaskSchedulerPermittedIdentifiers: [com.langhua98.xiaoju.backup.sync, com.langhua98.xiaoju.backup.continued]
         XiaojuAPIURL: $(XIAOJU_API_URL)
+        XiaojuAPIFallback: $(XIAOJU_API_FALLBACK)
         XiaojuWebURL: $(XIAOJU_WEB_URL)
         ITSAppUsesNonExemptEncryption: false # 只用 HTTPS，上传 TestFlight 时不用再答出口合规
     dependencies:

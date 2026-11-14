@@ -59,7 +59,8 @@ jobs:
 
   deploy:
     needs: [test, image]
-    # 搬到家里电脑以后，仓库变量 HF_DEPLOY 设成 off，就不再部署到 Hugging Face（见 deploy/windows/README.md）
+    # 搬到家里电脑以后，仓库变量 HF_DEPLOY 设成 off，就不再部署到 Hugging Face（见 deploy/windows/README.md）；
+    # 设成 standby 时部署成只读备用（XIAOJU_STANDBY=1，连 XIAOJU_STANDBY_DATABASE_URL 那个由电脑每小时同步的库）
     if: vars.HF_DEPLOY != 'off'
     runs-on: ubuntu-latest
     timeout-minutes: 110
@@ -75,7 +76,8 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
           HF_SPACE_PUBLIC: ${{ vars.HF_SPACE_PUBLIC }}
-          XIAOJU_DATABASE_URL: ${{ secrets.XIAOJU_DATABASE_URL }}
+          XIAOJU_DATABASE_URL: ${{ vars.HF_DEPLOY == 'standby' && secrets.XIAOJU_STANDBY_DATABASE_URL || secrets.XIAOJU_DATABASE_URL }}
+          XIAOJU_STANDBY: ${{ vars.HF_DEPLOY == 'standby' && '1' || '' }}
           XIAOJU_ADMIN_TOKEN: ${{ secrets.XIAOJU_ADMIN_TOKEN }}
           XIAOJU_MASTER_KEY: ${{ secrets.XIAOJU_MASTER_KEY }}
           TG_APP_ID: ${{ secrets.TG_APP_ID }}
