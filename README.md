@@ -90,7 +90,7 @@ make run
 | `GET` | `/api/uploads/{id}` | 断点续传的进度 `{"offset","size"}`；传完了或被清理了 404 |
 | `GET` | `/api/files/{id}` | 文件元数据 |
 | `GET` | `/api/files/{id}/content[?inline=1]` | 下载，支持 `Range` |
-| `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览）；照片另给 `preview`：大图预览 `/pv/{id}?..`（最长边 1600 的 JPEG） |
+| `POST` | `/api/files/{id}/link` | 生成 6 小时有效的签名下载链接 `/dl/{id}?exp=..&sig=..`（无需认证头，可加 `&inline=1` 在线预览）；照片另给 `preview`：大图预览 `/pv/{id}?..`（最长边 1600 的 JPEG）；配置了视频中转时视频另给 `stream`（见「视频中转」） |
 | `GET` | `/api/duplicates` | 内容完全一样的文件，按 SHA-256 分组：`{"groups":[{"sha256","size","files":[{文件,"path","in_private","thumb"}]}],"extra_bytes"}`（回收站里的不算） |
 | `POST` | `/api/shares` | 分享链接：`{"file_id","expires_days"（0 不过期）,"password"}` → `{"id","token","expires_at","has_password"}`；网页地址是 `share.html#token` |
 | `GET` / `DELETE` | `/api/shares`、`/api/shares/{id}` | 列出、撤销分享链接 |
@@ -286,6 +286,16 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 
 备份频道连不上时服务照常运行（只用主频道），原因写在日志和状态接口的 `error` 字段里。
 备份频道也可以加额外的 Bot（`TG_BACKUP_EXTRA_BOT_TOKENS`，用第二个账号创建，见下一节）。
+
+## 视频中转（可选）
+
+云盘在家里电脑上时，电脑往外送数据的速度（家里宽带上传 + 隧道，实测 2～6 Mbps）远低于手机视频的码率（4K 约 45 Mbps）。
+`internal/relay`：另一台机房里的服务（Hugging Face Space，`XIAOJU_RELAY_UPSTREAM=<家里电脑地址>`）只做视频中转，
+不连数据库：手机拿着电脑签的链接 `/rl/{id}?exp&sig` 来，中转向电脑 `GET /relay/files/{id}?exp&sig`（带 `X-Relay-Key`，
+由管理员令牌算出）要索引（分块位置 + 包裹过的 DEK），用主密钥解开，直接从 Telegram 读分块、解密、按 Range 发回去。
+电脑上设 `XIAOJU_RELAY_URL=<中转地址>` 后，视频的 `POST /api/files/{id}/link` 多给一个 `stream`；电脑每 5 分钟检查中转
+（顺便防止 Space 休眠），不在线时不给 `stream`。网页、App 有 `stream` 先用它，播不了再换回 `url`。部署见
+[deploy/windows/README.md](deploy/windows/README.md#视频中转看视频快)（仓库变量 `HF_DEPLOY=relay`）。
 
 ## 多个 Bot 轮流用（可选）
 

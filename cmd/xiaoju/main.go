@@ -70,6 +70,10 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 		}
 		return migrate(ctx, cfg, dir, log)
 	case "serve":
+		if cfg.RelayUpstream != "" {
+			// 视频中转：不连数据库，只从 Telegram 取视频发给手机（见 internal/relay）
+			return serveRelay(ctx, cfg, log)
+		}
 		if cfg.DatabaseURL == "" && cfg.Storage == "telegram" {
 			// 还没配置数据库时进入诊断模式，先验证运行环境能否连上 Telegram。
 			return diagnose(ctx, cfg, log)
@@ -203,7 +207,9 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		Passkeys: passkeys, Grid: grid, Sessions: sessions, Location: cfg.Location,
 		GDrive: gsync, PublicURL: cfg.PublicURL,
 		Notify: notify, NotifyChatID: cfg.Telegram.NotifyChatID,
+		RelayURL: cfg.RelayURL,
 	})
+	go server.RunRelayCheck(ctx, 5*time.Minute)
 	go server.RunAgentMaintenance(ctx, 6*time.Hour) // 删掉 180 天前的 AI 助手审计日志
 	handler := server.Handler()
 	srv := &http.Server{

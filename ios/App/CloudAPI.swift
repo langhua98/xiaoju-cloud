@@ -338,6 +338,8 @@ enum FileKind: String, CaseIterable, Identifiable {
 struct FileLink: Decodable {
     let url: String
     let preview: String?
+    // 视频走中转的播放地址（机房直接从 Telegram 取，比经过家里电脑快得多）；没有中转时为空
+    let stream: String?
 }
 
 struct CloudShare: Decodable, Identifiable {

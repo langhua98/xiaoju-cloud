@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import Photos
 import SwiftUI
 
@@ -401,10 +402,21 @@ struct MediaPage: View {
             do {
                 let l = try await Cloud.shared.link(for: item)
                 link = l
-                if item.isVideo, let url = Cloud.shared.absolute(l.url) {
-                    let p = AVPlayer(url: url)
+                if item.isVideo, let direct = Cloud.shared.absolute(l.url) {
+                    // 有中转先走中转；播不了（中转出问题）再换回直接从家里电脑播
+                    let viaRelay = Cloud.shared.absolute(l.stream)
+                    let p = AVPlayer(url: viaRelay ?? direct)
                     player = p
                     p.play()
+                    if viaRelay != nil, let first = p.currentItem {
+                        for await status in first.publisher(for: \.status).values where status == .failed {
+                            let at = p.currentTime()
+                            p.replaceCurrentItem(with: AVPlayerItem(url: direct))
+                            await p.seek(to: at)
+                            p.play()
+                            break
+                        }
+                    }
                 }
             } catch {
                 if !error.isCancellation { self.error = error.localizedDescription }

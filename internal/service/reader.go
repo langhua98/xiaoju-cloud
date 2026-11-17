@@ -168,3 +168,11 @@ func (r *FileReader) Close() error {
 	r.closeCur()
 	return nil
 }
+
+// NewFileReaderWithBackup 同 NewFileReader，主存储读不到的分块改读 backup（可以为 nil）。视频中转用（见 internal/relay）。
+func NewFileReaderWithBackup(ctx context.Context, driver, backup storage.Driver, dek []byte, parts []meta.Part, log *slog.Logger) *FileReader {
+	r := NewFileReader(ctx, driver, dek, parts)
+	r.backup = backup
+	r.log = log
+	return r
+}

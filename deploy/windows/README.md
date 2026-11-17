@@ -126,6 +126,26 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\check.ps1
 - [ ] 重启电脑，不登录，等两分钟，用手机打开云盘：数据库、云盘、隧道都自己起来了。
 - [ ] 第二天 `C:\xiaoju\backups` 里有备份；Telegram 频道里有新的置顶备份。
 
+## 视频中转（看视频快）
+
+家里宽带往外送数据很慢（实测 2～6 Mbps），手机拍的 4K 视频要 40 多 Mbps，直接从电脑播会一直转圈。
+视频本来就存在 Telegram 频道里，所以让 Hugging Face 上的 Space 做「中转」：它直接从 Telegram 取视频、解密、发给手机，
+家里电脑只告诉它视频在哪几条消息里（几 KB）。原画、不压缩。
+
+```
+手机 ──▶ Hugging Face（中转，只读，不连数据库）──▶ Telegram 频道
+               └──问索引──▶ 家里电脑
+```
+
+1. GitHub 仓库 Settings → Secrets and variables → Actions → **Variables**：`HF_DEPLOY` 改成 `relay`。
+2. Actions → Deploy to Hugging Face Space → **Run workflow**（暂停的 Space 会自动开起来）。
+3. 电脑上（管理员 PowerShell）：在 `C:\xiaoju\config\xiaoju.env` 加一行
+   `XIAOJU_RELAY_URL=https://langhua1998-xiaoju-cloud.hf.space`，然后 `update.ps1`。
+
+电脑每 5 分钟看一次中转在不在（顺便让 Space 别睡着），不在时自动直接播，不会播不了。
+中转不跑任何后台任务、不写 Telegram、不置顶备份，不会和电脑打架（第 6 节说的问题不存在）。
+关掉：`HF_DEPLOY` 改回 `off`、Space 上 Pause，`xiaoju.env` 里删掉那一行。
+
 ## 日常
 
 | 要做什么 | 命令（管理员 PowerShell，都在 `C:\xiaoju\scripts`） |

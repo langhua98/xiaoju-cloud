@@ -40,6 +40,8 @@ SECRET_KEYS = [
     "GOOGLE_CLIENT_SECRET",
 ]
 VARIABLE_KEYS = [
+    # 视频中转模式（仓库变量 HF_DEPLOY=relay 时工作流填家里电脑的地址）：Space 只从 Telegram 取视频发给手机
+    "XIAOJU_RELAY_UPSTREAM",
     "TG_TRANSPORT",
     "XIAOJU_PART_SIZE",
     "XIAOJU_CORS_ORIGINS",
@@ -53,7 +55,7 @@ VARIABLE_KEYS = [
     "XIAOJU_PUBLIC_URL",
 ]
 # 这些变量在 GitHub 里删掉后，也要从 Space 上删掉（否则会一直生效）
-REMOVE_WHEN_UNSET = {"XIAOJU_PASSKEY_RESET", "TG_AGENT_BOTS"}
+REMOVE_WHEN_UNSET = {"XIAOJU_PASSKEY_RESET", "TG_AGENT_BOTS", "XIAOJU_RELAY_UPSTREAM"}
 
 DONE_STAGES = {"RUNNING", "RUNTIME_ERROR", "BUILD_ERROR", "CONFIG_ERROR", "NO_APP_FILE", "PAUSED", "STOPPED"}
 
@@ -158,7 +160,8 @@ def main():
     repo_id = os.environ.get("HF_SPACE_ID", "").strip() or f"{user}/xiaoju-cloud"
     log(f"deploying to space {repo_id} (https://{space_host(repo_id)})")
     # 改 Secrets、上传源码都会让 Space 重启：先等上传停下来
-    wait_for_quiet(space_host(repo_id))
+    if not os.environ.get("XIAOJU_RELAY_UPSTREAM", "").strip():  # 视频中转上没有上传，不用等
+        wait_for_quiet(space_host(repo_id))
 
     # 网页前端（GitHub Pages）需要公开 Space：私有 Space 的网关会拦截浏览器的跨域预检请求。
     # 公开后 API 仍由 XIAOJU_ADMIN_TOKEN 保护。

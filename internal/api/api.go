@@ -56,6 +56,8 @@ type Server struct {
 
 	act     activity // 正在进行的上传（部署前问一下，见 activity.go）
 	started time.Time
+
+	videoRelay *relayState // 视频中转（见 relay_upstream.go）；nil = 没配置
 }
 
 type Options struct {
@@ -80,6 +82,8 @@ type Options struct {
 	// Notify 发 Telegram 提醒（见 notify.go），nil = 没有提醒功能；NotifyChatID 默认发给谁（0 = 存储频道的创建者）。
 	Notify       TelegramSender
 	NotifyChatID int64
+	// RelayURL 是视频中转的地址（XIAOJU_RELAY_URL，见 internal/relay）；空 = 不用中转。
+	RelayURL string
 }
 
 func New(svc *service.Service, opt Options) *Server {
@@ -106,7 +110,8 @@ func New(svc *service.Service, opt Options) *Server {
 		stream:     newStreamHub(),
 		notifier:   newNotifier(opt.Notify, opt.NotifyChatID),
 		gdrive:     opt.GDrive, publicURL: strings.TrimRight(opt.PublicURL, "/"),
-		started: time.Now(),
+		started:    time.Now(),
+		videoRelay: newRelayState(opt.RelayURL, opt.Token),
 	}
 	if svc != nil {
 		svc.SetOnUploaded(s.packageUploaded)
@@ -211,6 +216,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /dl/{id}", s.tracked(s.signedDownload))
 	mux.HandleFunc("GET /thumb/{id}", s.thumbnail)
 	mux.HandleFunc("GET /pv/{id}", s.signedPreview)
+	// 视频中转来要索引（见 relay_upstream.go）
+	mux.HandleFunc("GET /relay/files/{id}", s.relayIndex)
 	// 分享直链：单个文件的分享不用打开分享页，点开就下载（见 shares.go 的 shareDirect）
 	mux.HandleFunc("GET /d/{token}", s.limited(s.shareLimit, s.tracked(s.shareDirect)))
 	mux.HandleFunc("GET /d/{token}/{name...}", s.limited(s.shareLimit, s.tracked(s.shareDirect)))
@@ -442,6 +449,10 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 	link := map[string]any{
 		"url":        fmt.Sprintf("/dl/%s?exp=%d&sig=%s", id, exp, sig),
 		"expires_at": time.Unix(exp, 0).UTC(),
+	}
+	// 视频另给一个走中转的播放地址（机房直接从 Telegram 取，不受家里电脑上传带宽限制）
+	if st := s.streamLink(f, fmt.Sprintf("exp=%d&sig=%s", exp, sig)); st != "" {
+		link["stream"] = st
 	}
 	// 照片另给一个大图预览的地址（最长边 1600 的 JPEG），网页先显示它，放大看细节时再换原图
 	if s.svc.CanPreview(f) {
