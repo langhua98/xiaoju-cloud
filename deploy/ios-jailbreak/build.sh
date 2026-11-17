@@ -39,7 +39,8 @@ echo "== xiaoju"
 echo "== tailscale $TS_VERSION"
 # 跨平台编译时不能设 GOBIN，装到 $GOPATH/bin/ios_arm64/
 unset GOBIN
-(cd "$WORK" && go install -trimpath -ldflags="-s -w" \
+# iOS 上 Tailscale SSH 编不了（feature/ssh 排除了 ios），也用不着
+(cd "$WORK" && go install -trimpath -ldflags="-s -w" -tags ts_omit_ssh \
     tailscale.com/cmd/tailscaled@$TS_VERSION tailscale.com/cmd/tailscale@$TS_VERSION)
 cp "$(go env GOPATH)/bin/ios_arm64/tailscaled" "$(go env GOPATH)/bin/ios_arm64/tailscale" "$OUT/bin/"
 unset CGO_ENABLED GOOS GOARCH CC CGO_CFLAGS CGO_LDFLAGS
