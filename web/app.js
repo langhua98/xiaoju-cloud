@@ -2460,7 +2460,9 @@ async function showFull(slide, media, f) {
   const src = `${link.url}&inline=1`;
   if (kind === "video") {
     spin.remove();
-    showVideo(slide, media, f, src);
+    // 有中转时走中转（机房直接从 Telegram 取，不受家里电脑上传带宽限制）；中转出问题再换回直接播
+    if (link.stream) showVideo(slide, media, f, `${link.stream}&inline=1`, src);
+    else showVideo(slide, media, f, src);
     return;
   }
   const load = (url) => new Promise((resolve) => {
@@ -2553,7 +2555,7 @@ function videoErrorText(v) {
   return "视频加载失败，可以点右上角下载后查看";
 }
 
-function showVideo(slide, media, f, src) {
+function showVideo(slide, media, f, src, fallbackSrc = "") {
   const v = document.createElement("video");
   v.className = "vw-video loading";
   v.playsInline = true;
@@ -2582,6 +2584,15 @@ function showVideo(slide, media, f, src) {
   };
   const fail = () => {
     if (failed) return;
+    if (fallbackSrc && v.src !== fallbackSrc) { // 中转播不了：换回直接从家里电脑播，接着刚才的位置
+      const at = v.currentTime || 0;
+      const wasPlaying = !v.paused;
+      v.src = fallbackSrc;
+      fallbackSrc = "";
+      if (at) v.addEventListener("loadedmetadata", () => { v.currentTime = at; }, { once: true });
+      if (wasPlaying) start();
+      return;
+    }
     failed = true;
     spin.hidden = true;
     big.hidden = true;

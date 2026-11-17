@@ -100,3 +100,5 @@ jobs:
           XIAOJU_PASSKEY_RESET: ${{ vars.XIAOJU_PASSKEY_RESET }}
           XIAOJU_TIMEZONE: ${{ vars.XIAOJU_TIMEZONE }}
           XIAOJU_PUBLIC_URL: ${{ vars.XIAOJU_PUBLIC_URL }}
+          # HF_DEPLOY=relay：Space 只做视频中转（不连数据库，见 internal/relay），向家里电脑要索引
+          XIAOJU_RELAY_UPSTREAM: ${{ vars.HF_DEPLOY == 'relay' && (vars.XIAOJU_RELAY_UPSTREAM || 'https://node.tail823dbd.ts.net') || '' }}

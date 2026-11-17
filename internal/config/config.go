@@ -40,6 +40,11 @@ type Config struct {
 
 	LocalDir string
 
+	// 视频中转（见 internal/relay）。RelayURL（XIAOJU_RELAY_URL）设在家里电脑上：中转的地址，给视频链接另配走中转的地址。
+	// RelayUpstream（XIAOJU_RELAY_UPSTREAM）设在中转（Hugging Face）上：家里电脑的地址；设了 serve 就只做中转，不连数据库。
+	RelayURL      string
+	RelayUpstream string
+
 	// 谷歌云盘同步（可选）：Google Cloud 里建的 OAuth 客户端（“Web 应用”类型）。两项都填了网页上才能连接谷歌云盘。
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -94,6 +99,8 @@ func Load() (*Config, error) {
 		GoogleClientID:     strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID")),
 		GoogleClientSecret: strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_SECRET")),
 		PublicURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("XIAOJU_PUBLIC_URL")), "/"),
+		RelayURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("XIAOJU_RELAY_URL")), "/"),
+		RelayUpstream:      strings.TrimRight(strings.TrimSpace(os.Getenv("XIAOJU_RELAY_UPSTREAM")), "/"),
 		Telegram: Telegram{
 			AppHash:     os.Getenv("TG_APP_HASH"),
 			BotToken:    os.Getenv("TG_BOT_TOKEN"),
