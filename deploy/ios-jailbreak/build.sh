@@ -71,7 +71,7 @@ else
         || { tail -80 "$WORK/pg-ios/config.log"; exit 1; }
     grep -q 'USE_NAMED_POSIX_SEMAPHORES 1' "$WORK/pg-ios/src/include/pg_config.h" || { echo '没选上命名 POSIX 信号量'; exit 1; }
     (cd "$WORK/pg-ios" && make -j"$(sysctl -n hw.ncpu)" -s \
-        && make -s install DESTDIR="$PG_CACHE/$PG_KEY/ios" ZIC="$PG_CACHE/$PG_KEY/host/bin/zic")
+        && make -s install DESTDIR="$PG_CACHE/$PG_KEY/ios" ZIC="$WORK/pg-host/src/timezone/zic")
 
     # 2c. 空数据目录模板（C 语言环境、UTF8；本机 socket 免密，TCP 要密码）
     tmpl=$WORK/pgdata-template
