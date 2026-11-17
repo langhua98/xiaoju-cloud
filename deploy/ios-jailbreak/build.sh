@@ -99,7 +99,7 @@ while IFS= read -r -d '' f; do
     fi
 done
 file "$OUT/bin/xiaoju" "$OUT/bin/tailscaled" "$OUT/pgsql/bin/postgres"
-otool -l "$OUT/bin/xiaoju" | grep -A4 LC_BUILD_VERSION | head -5
+otool -l "$OUT/bin/xiaoju" | grep -A4 LC_BUILD_VERSION | head -5 || true
 
 mkdir -p "$OUT/scripts" "$OUT/launchd"
 cp "$HERE"/scripts/*.sh "$OUT/scripts/"
