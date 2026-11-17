@@ -1,0 +1,58 @@
+# 给越狱 iPhone（iPhone 7 Plus 这类 arm64 老手机）编译云盘、PostgreSQL、Tailscale，打成一个包，
+# 放到 Release「ios-jailbreak-latest」。手机上的 deploy/ios-jailbreak/scripts/install.sh 从这里下载（见 deploy/ios-jailbreak/README.md）。
+# PR 里只编译、上传 Artifact，不发布。
+name: Build for jailbroken iPhone
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "migrations/**"
+      - "deploy/ios-jailbreak/**"
+      - ".github/workflows/ios-jailbreak.yml"
+  pull_request:
+    paths:
+      - "deploy/ios-jailbreak/**"
+      - ".github/workflows/ios-jailbreak.yml"
+
+concurrency:
+  group: ios-jailbreak-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cache PostgreSQL build
+        uses: actions/cache@v4
+        with:
+          path: build-ios/pg-cache
+          key: pg-ios-${{ hashFiles('deploy/ios-jailbreak/postgres-ios.patch', 'deploy/ios-jailbreak/build.sh') }}
+      - name: Build
+        run: bash deploy/ios-jailbreak/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xiaoju-ios-arm64
+          path: dist/
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="越狱 iPhone 用的云盘 + PostgreSQL + Tailscale，用 deploy/ios-jailbreak/scripts/install.sh 安装。编译自 ${GITHUB_SHA}。"
+          if ! gh release view ios-jailbreak-latest >/dev/null 2>&1; then
+            gh release create ios-jailbreak-latest --prerelease --title "越狱 iPhone 版" --notes "$notes"
+          fi
+          gh release upload ios-jailbreak-latest dist/xiaoju-ios-arm64.tar.gz dist/xiaoju-ios-arm64.tar.gz.sha256 --clobber
+          gh release edit ios-jailbreak-latest --notes "$notes"
