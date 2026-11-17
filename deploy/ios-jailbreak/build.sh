@@ -46,7 +46,7 @@ cp "$(go env GOPATH)/bin/ios_arm64/tailscaled" "$(go env GOPATH)/bin/ios_arm64/t
 unset CGO_ENABLED GOOS GOARCH CC CGO_CFLAGS CGO_LDFLAGS
 
 # ---------- 2. PostgreSQL ----------
-PG_KEY="$PG_VERSION-$(shasum -a 256 "$HERE/postgres-ios.patch" "$0" | shasum -a 256 | cut -c1-16)"
+PG_KEY="$PG_VERSION-$(shasum -a 256 "$HERE/postgres-ios.patch" "$HERE/ios_compat.h" "$0" | shasum -a 256 | cut -c1-16)"
 if [ -f "$PG_CACHE/$PG_KEY/done" ]; then
     echo "== PostgreSQL $PG_VERSION（用缓存 $PG_KEY）"
 else
@@ -67,7 +67,7 @@ else
     (cd "$WORK/pg-ios" && patch -p1 <"$HERE/postgres-ios.patch")
     (cd "$WORK/pg-ios" && PREFERRED_SEMAPHORES=NAMED_POSIX ./configure \
         --host=aarch64-apple-darwin --prefix="$PREFIX/pgsql" "${common[@]}" \
-        PG_SYSROOT="$SDK" CC="$IOS_CC" CPPFLAGS="-DPG_NO_SYSV_SHMEM" >configure.log) \
+        PG_SYSROOT="$SDK" CC="$IOS_CC" CPPFLAGS="-DPG_NO_SYSV_SHMEM -include $HERE/ios_compat.h" >configure.log) \
         || { tail -80 "$WORK/pg-ios/config.log"; exit 1; }
     grep -q 'USE_NAMED_POSIX_SEMAPHORES 1' "$WORK/pg-ios/src/include/pg_config.h" || { echo '没选上命名 POSIX 信号量'; exit 1; }
     (cd "$WORK/pg-ios" && make -j"$(sysctl -n hw.ncpu)" -s \

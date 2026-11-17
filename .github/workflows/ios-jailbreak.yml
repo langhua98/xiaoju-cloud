@@ -38,7 +38,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build-ios/pg-cache
-          key: pg-ios-${{ hashFiles('deploy/ios-jailbreak/postgres-ios.patch', 'deploy/ios-jailbreak/build.sh') }}
+          key: pg-ios-${{ hashFiles('deploy/ios-jailbreak/postgres-ios.patch', 'deploy/ios-jailbreak/ios_compat.h', 'deploy/ios-jailbreak/build.sh') }}
       - name: Build
         run: bash deploy/ios-jailbreak/build.sh
       - uses: actions/upload-artifact@v4
