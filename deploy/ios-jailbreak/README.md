@@ -65,7 +65,7 @@ NewTerm 里（root）：
 
 ```sh
 apt-get install -y curl
-curl -fsSLo /var/mobile/install.sh https://raw.githubusercontent.com/langhua98/xiaoju-cloud/main/deploy/ios-jailbreak/scripts/install.sh
+curl -fsSLo /var/mobile/install.sh https://github.com/langhua98/xiaoju-cloud/releases/download/ios-jailbreak-latest/install.sh
 sh /var/mobile/install.sh
 ```
 
@@ -96,7 +96,7 @@ sh /var/mobile/xiaoju/scripts/selftest.sh
 
 1. 下载搬家脚本：
    ```powershell
-   iwr https://raw.githubusercontent.com/langhua98/xiaoju-cloud/main/deploy/windows/move-out.ps1 -OutFile C:\xiaoju\scripts\move-out.ps1
+   iwr https://github.com/langhua98/xiaoju-cloud/releases/download/ios-jailbreak-latest/move-out.ps1 -OutFile C:\xiaoju\scripts\move-out.ps1
    ```
 2. 停掉电脑上的云盘，导出完整备份（一条数据都不丢）：
    ```powershell

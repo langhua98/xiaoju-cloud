@@ -1,6 +1,6 @@
 # 在越狱的 iPhone 上装好小橘云盘要的一切：PostgreSQL、云盘程序、Tailscale、开机（越狱后）自动运行。
 # 用法（root）：
-#   curl -fsSLo /var/mobile/install.sh https://raw.githubusercontent.com/langhua98/xiaoju-cloud/main/deploy/ios-jailbreak/scripts/install.sh
+#   curl -fsSLo /var/mobile/install.sh https://github.com/langhua98/xiaoju-cloud/releases/download/ios-jailbreak-latest/install.sh
 #   sh /var/mobile/install.sh                  从 GitHub Release「ios-jailbreak-latest」下载
 #   sh /var/mobile/install.sh 本地的.tar.gz     用已经下载好的包
 # 可以重复运行：数据库、配置、Tailscale 登录都会保留。
@@ -9,9 +9,9 @@ set -eu
 if [ -f "$(dirname "$0")/common.sh" ]; then
     . "$(dirname "$0")/common.sh"
 else
-    # 第一次运行时脚本是单独下载的：先把同一版本的 common.sh 拿下来
+    # 第一次运行时脚本是单独下载的：从同一个 Release 把 common.sh 拿下来
     tmpc=/var/mobile/.xiaoju-common.sh
-    curl -fsSLo "$tmpc" "https://raw.githubusercontent.com/langhua98/xiaoju-cloud/main/deploy/ios-jailbreak/scripts/common.sh"
+    curl -fsSLo "$tmpc" "https://github.com/langhua98/xiaoju-cloud/releases/download/ios-jailbreak-latest/common.sh"
     . "$tmpc"
 fi
 need_root

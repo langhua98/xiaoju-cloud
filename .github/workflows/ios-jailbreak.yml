@@ -1,6 +1,6 @@
 # 给越狱 iPhone（iPhone 7 Plus 这类 arm64 老手机）编译云盘、PostgreSQL、Tailscale，打成一个包，
 # 放到 Release「ios-jailbreak-latest」。手机上的 deploy/ios-jailbreak/scripts/install.sh 从这里下载（见 deploy/ios-jailbreak/README.md）。
-# PR 里只编译、上传 Artifact，不发布。
+# PR 里也发布（搬家前要在手机上试装）；合并后 main 的编译会覆盖。
 name: Build for jailbroken iPhone
 
 on:
@@ -46,7 +46,6 @@ jobs:
           name: xiaoju-ios-arm64
           path: dist/
       - name: Publish
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,5 +53,6 @@ jobs:
           if ! gh release view ios-jailbreak-latest >/dev/null 2>&1; then
             gh release create ios-jailbreak-latest --prerelease --title "越狱 iPhone 版" --notes "$notes"
           fi
-          gh release upload ios-jailbreak-latest dist/xiaoju-ios-arm64.tar.gz dist/xiaoju-ios-arm64.tar.gz.sha256 --clobber
+          gh release upload ios-jailbreak-latest dist/xiaoju-ios-arm64.tar.gz dist/xiaoju-ios-arm64.tar.gz.sha256 \
+            deploy/ios-jailbreak/scripts/install.sh deploy/ios-jailbreak/scripts/common.sh deploy/windows/move-out.ps1 --clobber
           gh release edit ios-jailbreak-latest --notes "$notes"
