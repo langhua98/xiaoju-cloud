@@ -3,7 +3,10 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -49,5 +52,30 @@ func TestRelayIndexNeedsKey(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("bad sig: status %d", rec.Code)
+	}
+}
+
+// agent 接口（小橘推送看录像）拿到的中转地址，签名要能通过家里电脑给中转的索引检查（relayIndex 用 linkSig 核对）。
+func TestRelayStreamSignature(t *testing.T) {
+	video := &meta.File{ID: uuid.New(), Mime: "video/quicktime"}
+	s := New(nil, Options{Token: "t", RelayURL: "https://relay.example"})
+	if s.relayStream(video) != "" {
+		t.Fatal("relay stream while the relay is offline")
+	}
+	s.videoRelay.ok.Store(true)
+	st := s.relayStream(video)
+	u, err := url.Parse(st)
+	if err != nil || u.Host != "relay.example" || u.Path != "/rl/"+video.ID.String() {
+		t.Fatalf("relay stream %q", st)
+	}
+	exp, err := strconv.ParseInt(u.Query().Get("exp"), 10, 64)
+	if err != nil || exp < time.Now().Add(downloadLinkTTL-time.Minute).Unix() {
+		t.Fatalf("relay stream expiry %q", st)
+	}
+	if u.Query().Get("sig") != s.linkSig(video.ID, exp) {
+		t.Fatalf("relay stream signature %q", st)
+	}
+	if s.relayStream(&meta.File{ID: uuid.New(), Mime: "audio/wav"}) != "" {
+		t.Fatal("relay stream for audio")
 	}
 }

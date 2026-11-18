@@ -211,6 +211,7 @@ Docker 镜像里装了 `vips-tools vips-heif ffmpeg`（`xiaoju thumb 输入 输�
 请求头 `Authorization: Bearer xa_…`（或 `X-Xiaoju-Agent`）。换管理员令牌（`XIAOJU_ADMIN_TOKEN`）后所有 AI 令牌一起失效。
 默认永久有效（也可以选 1 / 7 / 30 / 90 天，网页上能「设为永久」，`PATCH /api/agents/{id} {"never_expires": true}`）；不用了在网页上撤销。
 AI 拿到的下载链接（`POST /items/{id}/link`）也不过期，令牌被撤销、过期、冻结或去掉下载权限时链接跟着失效。
+视频另外多给一个 `stream`（和 `stream_expires_at`，6 小时有效）：配了视频中转并且中转在线时才有，走 Hugging Face 直接从 Telegram 取，不经过家里电脑的上传带宽（见 [视频中转](deploy/windows/README.md#视频中转看视频快)）。
 
 | 预设 | 权限 |
 |---|---|

@@ -492,8 +492,15 @@ func (s *Server) agentLink(w http.ResponseWriter, r *http.Request) {
 	a := agentFrom(r)
 	url := fmt.Sprintf("%s/dl/%s?agent=%s&sig=%s&via=ai", publicBase(r), f.ID, a.tok.ID, s.agentLinkSig(f.ID, a.tok.ID))
 	s.audit(r.Context(), a, "link", []*meta.File{f}, []string{p}, nil, "ok", "", f.Size)
-	writeJSON(w, http.StatusOK, map[string]any{"url": url, "expires_at": nil,
-		"about": "This link does not expire. It stops working if the owner revokes this token."})
+	out := map[string]any{"url": url, "expires_at": nil,
+		"about": "This link does not expire. It stops working if the owner revokes this token."}
+	// 视频另给一个走中转的地址（6 小时有效）：Hugging Face 直接从 Telegram 取，不经过家里电脑的上传带宽。
+	// 小橘推送看侦测录像用它；中转不在线时没有这一项，照旧走 url。
+	if st := s.relayStream(f); st != "" {
+		out["stream"] = st
+		out["stream_expires_at"] = time.Now().Add(downloadLinkTTL).UTC()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ensureFolder 按路径段一层层找文件夹，没有就建（mkdir -p）。返回最后一层（nil 是网盘根目录）和新建了哪些。
