@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/hmac"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,6 +75,12 @@ func (s *Server) streamLink(f *meta.File, query string) string {
 		return ""
 	}
 	return r.url + "/rl/" + f.ID.String() + "?" + query
+}
+
+// relayStream 签一个 6 小时的下载签名（和网页的下载链接一样），返回走中转的播放地址；用不了中转时返回空。
+func (s *Server) relayStream(f *meta.File) string {
+	exp := time.Now().Add(downloadLinkTTL).Unix()
+	return s.streamLink(f, fmt.Sprintf("exp=%d&sig=%s", exp, s.linkSig(f.ID, exp)))
 }
 
 // GET /relay/files/{id}?exp=..&sig=..：给中转的索引。链接签名和下载链接一样（中转原样转过来），另外要 X-Relay-Key。
