@@ -304,7 +304,7 @@ func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{"items": out})
 }
 
 // withCounts 给列出的文件夹附上里面有几张照片、几个视频，和封面（最新一张的缩略图，网页做相册卡片）。

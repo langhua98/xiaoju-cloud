@@ -82,7 +82,7 @@ func (s *Server) listTrash(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []*meta.File{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{"items": items})
 }
 
 // GET /api/backup/phone：手机上的照片备份到哪一步了。每个相册文件夹（“相册”“隐藏相册”）：网盘里有几个文件、

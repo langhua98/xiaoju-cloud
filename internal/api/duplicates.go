@@ -39,5 +39,5 @@ func (s *Server) listDuplicates(w http.ResponseWriter, r *http.Request) {
 		extra += gr.Size * int64(len(g)-1)
 		out = append(out, gr)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "extra_bytes": extra})
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{"groups": out, "extra_bytes": extra})
 }
