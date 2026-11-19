@@ -273,8 +273,10 @@ struct FolderView: View {
         loading = true
         defer { loading = false }
         do {
-            items = try await Cloud.shared.children(of: folder?.id)
-            error = ""
+            try await Cloud.shared.children(of: folder?.id) { all in
+                items = all
+                error = ""
+            }
         } catch {
             if !error.isCancellation { self.error = error.localizedDescription }
         }

@@ -145,6 +145,23 @@ final class Cloud: ObservableObject {
         try await get("/api/folders/\(folder ?? "root")/children", as: ItemList.self).items
     }
 
+    // 分批取目录内容：先拿最新的一小批马上显示，再一批批往后取（相册上万张时不用等全部下完，也不会超时）。
+    // 每拿到一批调一次 onPage，传到目前为止的全部条目。老服务端不认 limit 时一次给全，照样能用。
+    func children(of folder: String?, onPage: ([CloudItem]) -> Void) async throws {
+        var all: [CloudItem] = []
+        var seen = Set<String>()
+        var offset: Int? = 0
+        var size = 200
+        while let at = offset {
+            let page = try await get("/api/folders/\(folder ?? "root")/children?limit=\(size)&offset=\(at)", as: ItemPage.self)
+            for item in page.items where seen.insert(item.id).inserted { all.append(item) }
+            onPage(all)
+            guard let next = page.next, next > at else { break }
+            offset = next
+            size = 1000
+        }
+    }
+
     // 根目录下的某个文件夹（相册、隐藏相册……），没有返回 nil
     func rootFolder(named name: String) async throws -> CloudItem? {
         try await children(of: nil).first { $0.isFolder && $0.name == name }
@@ -273,6 +290,12 @@ enum CloudError: LocalizedError {
 
 struct ItemList: Decodable {
     let items: [CloudItem]
+}
+
+// 分批取的一批：next 是下一批从第几个开始，没有了就是空
+struct ItemPage: Decodable {
+    let items: [CloudItem]
+    let next: Int?
 }
 
 extension Error {

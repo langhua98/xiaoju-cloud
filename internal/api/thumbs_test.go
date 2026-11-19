@@ -151,6 +151,33 @@ func TestThumbnails(t *testing.T) {
 		t.Fatalf("text file must not get a thumbnail: %+v", items[docID])
 	}
 
+	// 分批取：每批 3 个，拼起来和一次全取的顺序一样
+	all := append([]string(nil), order...)
+	var paged []string
+	for offset, rounds := 0, 0; ; rounds++ {
+		resp := do("GET", fmt.Sprintf("/api/folders/%s/children?limit=3&offset=%d", dir.ID, offset), "", tok...)
+		var out struct {
+			Items []item
+			Next  *int
+			Total int
+		}
+		json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if out.Total != len(all) || len(out.Items) > 3 || rounds > 5 {
+			t.Fatalf("page at %d: total %d, %d items", offset, out.Total, len(out.Items))
+		}
+		for _, it := range out.Items {
+			paged = append(paged, it.Name)
+		}
+		if out.Next == nil {
+			break
+		}
+		offset = *out.Next
+	}
+	if strings.Join(paged, "|") != strings.Join(all, "|") {
+		t.Fatalf("paged order %v, want %v", paged, all)
+	}
+
 	getThumb := func(link string) (int, []byte, http.Header) {
 		t.Helper()
 		resp := do("GET", link, "")

@@ -110,7 +110,7 @@ struct AlbumDetailView: View {
     private func load() async {
         loading = true
         defer { loading = false }
-        items = ((try? await Cloud.shared.children(of: album.id)) ?? []).filter(\.isMedia)
+        try? await Cloud.shared.children(of: album.id) { all in items = all.filter(\.isMedia) }
     }
 }
 
