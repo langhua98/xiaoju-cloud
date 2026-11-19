@@ -85,7 +85,7 @@ struct CloudAlbumsView: View {
         do {
             let root = try await cloud.children(of: nil)
             if let album = root.first(where: { $0.isFolder && $0.name == "相册" }) {
-                albums = try await cloud.children(of: album.id).filter(\.isFolder)
+                albums = try await cloud.subfolders(of: album.id)
             } else {
                 albums = []
             }
@@ -101,16 +101,26 @@ struct AlbumDetailView: View {
     let album: CloudItem
     @State private var items: [CloudItem] = []
     @State private var loading = true
+    @State private var next: Int? // 下一批从第几个开始；nil = 取完了
 
     var body: some View {
-        MediaGallery(items: items, title: album.name, emptyText: loading ? "正在加载…" : "这个相簿是空的", reload: load)
+        MediaGallery(items: items, title: album.name, emptyText: loading ? "正在加载…" : "这个相簿是空的", reload: load,
+                     more: next == nil ? nil : loadMore)
             .task { await load() }
     }
 
     private func load() async {
         loading = true
         defer { loading = false }
-        try? await Cloud.shared.children(of: album.id) { all in items = all.filter(\.isMedia) }
+        guard let page = try? await Cloud.shared.childrenPage(of: album.id, offset: 0) else { return }
+        items = page.items.filter(\.isMedia)
+        next = page.next
+    }
+
+    private func loadMore() async {
+        guard let at = next, let page = try? await Cloud.shared.childrenPage(of: album.id, offset: at), next == at else { return }
+        items = Cloud.merge(items, page.items.filter(\.isMedia))
+        next = page.next
     }
 }
 
