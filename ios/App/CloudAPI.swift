@@ -145,21 +145,33 @@ final class Cloud: ObservableObject {
         try await get("/api/folders/\(folder ?? "root")/children", as: ItemList.self).items
     }
 
-    // 分批取目录内容：先拿最新的一小批马上显示，再一批批往后取（相册上万张时不用等全部下完，也不会超时）。
-    // 每拿到一批调一次 onPage，传到目前为止的全部条目。老服务端不认 limit 时一次给全，照样能用。
-    func children(of folder: String?, onPage: ([CloudItem]) -> Void) async throws {
-        var all: [CloudItem] = []
-        var seen = Set<String>()
-        var offset: Int? = 0
-        var size = 200
-        while let at = offset {
-            let page = try await get("/api/folders/\(folder ?? "root")/children?limit=\(size)&offset=\(at)", as: ItemPage.self)
-            for item in page.items where seen.insert(item.id).inserted { all.append(item) }
-            onPage(all)
-            guard let next = page.next, next > at else { break }
+    // 按需分批取目录内容：页面先取第一批显示，滑到底部时再取下一批（相册上万张时不用一下子全拉下来）。
+    // 老服务端不认 limit 时一次给全、没有 next，照样能用。
+    static let pageSize = 200
+
+    func childrenPage(of folder: String?, offset: Int, limit: Int = Cloud.pageSize) async throws -> ItemPage {
+        let page = try await get("/api/folders/\(folder ?? "root")/children?limit=\(limit)&offset=\(offset)", as: ItemPage.self)
+        // next 没往后走（服务端出错）就当没有下一批，免得一直重复取
+        if let n = page.next, n <= offset { return ItemPage(items: page.items, next: nil) }
+        return page
+    }
+
+    // 一个文件夹下面的子文件夹（相簿页用）：服务端把文件夹排在最前面，取到第一个文件就停，不用把一万多张照片也拉下来
+    func subfolders(of folder: String) async throws -> [CloudItem] {
+        var out: [CloudItem] = []
+        var offset = 0
+        while true {
+            let page = try await childrenPage(of: folder, offset: offset, limit: 100)
+            out += page.items.filter(\.isFolder)
+            guard let next = page.next, page.items.allSatisfy(\.isFolder) else { return out }
             offset = next
-            size = 1000
         }
+    }
+
+    // 加一批到已有的列表后面（去掉重复的：取的过程中有新照片传上来，后面的会往后挪一个）
+    static func merge(_ old: [CloudItem], _ new: [CloudItem]) -> [CloudItem] {
+        let seen = Set(old.map(\.id))
+        return old + new.filter { !seen.contains($0.id) }
     }
 
     // 根目录下的某个文件夹（相册、隐藏相册……），没有返回 nil

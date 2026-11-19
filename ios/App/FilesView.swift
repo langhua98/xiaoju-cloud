@@ -18,6 +18,7 @@ struct FolderView: View {
 
     @State private var items: [CloudItem] = []
     @State private var loading = true
+    @State private var next: Int? // 下一批从第几个开始；nil = 取完了
     @State private var error = ""
     @State private var query = ""
     @State private var kind = FileKind.all
@@ -111,7 +112,12 @@ struct FolderView: View {
                         Button("移进回收站", systemImage: "trash", role: .destructive) { Task { await remove(item) } }
                     }
             }
-            if shown.isEmpty && !loading {
+            // 滑到底部：取下一批（加进来以后还在屏幕上就接着取）
+            if next != nil {
+                ProgressView().frame(maxWidth: .infinity).listRowSeparator(.hidden)
+                    .task(id: items.count) { await loadMore() }
+            }
+            if shown.isEmpty && !loading && next == nil {
                 Text(query.isEmpty ? "这里是空的。点右上角 ＋ 上传。" : "没有找到「\(query)」")
                     .font(.callout).foregroundStyle(.secondary)
             }
@@ -273,10 +279,23 @@ struct FolderView: View {
         loading = true
         defer { loading = false }
         do {
-            try await Cloud.shared.children(of: folder?.id) { all in
-                items = all
-                error = ""
-            }
+            // 先取第一批显示，滑到底部再取下一批（见 loadMore）
+            let page = try await Cloud.shared.childrenPage(of: folder?.id, offset: 0)
+            items = page.items
+            next = page.next
+            error = ""
+        } catch {
+            if !error.isCancellation { self.error = error.localizedDescription }
+        }
+    }
+
+    private func loadMore() async {
+        guard let at = next else { return }
+        do {
+            let page = try await Cloud.shared.childrenPage(of: folder?.id, offset: at)
+            guard next == at else { return } // 这期间刷新过了
+            items = Cloud.merge(items, page.items)
+            next = page.next
         } catch {
             if !error.isCancellation { self.error = error.localizedDescription }
         }

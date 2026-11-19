@@ -10,11 +10,13 @@ struct PhotosView: View {
     @State private var items: [CloudItem] = []
     @State private var loading = false
     @State private var error = ""
+    @State private var album: String?
+    @State private var next: Int? // 下一批从第几个开始；nil = 取完了
 
     var body: some View {
         NavigationStack {
             MediaGallery(items: items, title: "照片", emptyText: loading ? "正在加载…" : "云盘「相册」里还没有照片。打开「自动备份」后，手机上的照片会自己传上来。",
-                         reload: load)
+                         reload: load, more: next == nil ? nil : loadMore)
                 .overlay(alignment: .top) {
                     if !error.isEmpty {
                         Text(error).font(.footnote).padding(8).background(.thinMaterial, in: Capsule()).padding(.top, 4)
@@ -30,13 +32,27 @@ struct PhotosView: View {
         do {
             guard let album = try await cloud.rootFolder(named: "相册") else {
                 items = []
+                next = nil
                 return
             }
-            // 先显示最新的一批，后面的边取边加（不用等一万多张全部下完）
-            try await cloud.children(of: album.id) { all in
-                items = all.filter(\.isMedia)
-                error = ""
-            }
+            // 先取最新的一批显示，滑到底部再取下一批（见 loadMore）
+            let page = try await cloud.childrenPage(of: album.id, offset: 0)
+            self.album = album.id
+            items = page.items.filter(\.isMedia)
+            next = page.next
+            error = ""
+        } catch {
+            if !error.isCancellation { self.error = error.localizedDescription }
+        }
+    }
+
+    private func loadMore() async {
+        guard let album, let at = next else { return }
+        do {
+            let page = try await cloud.childrenPage(of: album, offset: at)
+            guard next == at else { return } // 这期间刷新过了
+            items = Cloud.merge(items, page.items.filter(\.isMedia))
+            next = page.next
         } catch {
             if !error.isCancellation { self.error = error.localizedDescription }
         }
@@ -49,6 +65,7 @@ struct MediaGallery: View {
     let title: String
     let emptyText: String
     let reload: () async -> Void
+    var more: (() async -> Void)? = nil // 还有下一批时：滑到底部取下一批
 
     @State private var columns = UserDefaults.standard.object(forKey: "gallery.columns") as? Int ?? 4
     @State private var selecting = false
@@ -92,7 +109,12 @@ struct MediaGallery: View {
                     }
                 }
             }
-            .padding(.bottom, selecting ? 80 : 0)
+            // 滑到底部：取下一批（加进来以后还在屏幕上就接着取）
+            if let more {
+                ProgressView().frame(maxWidth: .infinity).padding(20)
+                    .task(id: items.count) { await more() }
+            }
+            Color.clear.frame(height: selecting ? 80 : 0)
         }
         // 下拉刷新的任务会在界面刷新时被系统取消，正在进行的请求跟着报「cancelled」；放到单独的任务里跑完
         .refreshable {
