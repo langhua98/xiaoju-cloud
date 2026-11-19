@@ -146,6 +146,11 @@ powershell -ExecutionPolicy Bypass -File C:\xiaoju\scripts\check.ps1
 中转不跑任何后台任务、不写 Telegram、不置顶备份，不会和电脑打架（第 6 节说的问题不存在）。
 关掉：`HF_DEPLOY` 改回 `off`、Space 上 Pause，`xiaoju.env` 里删掉那一行。
 
+**直播也走中转**（2026-11）：同一个中转上还有直播通道 `/live`。看实时画面时先试同一个 Wi-Fi 直连，
+连不上就走 Hugging Face，画面和声音不经过家里电脑；中转不在线时才退回经电脑转发。
+不用另外设置：中转更新到新版（上面第 2 步再跑一次）、电脑 `update.ps1` 以后就生效。
+开直播这一步（发指令）还是要家里电脑开着。
+
 ## 日常
 
 | 要做什么 | 命令（管理员 PowerShell，都在 `C:\xiaoju\scripts`） |

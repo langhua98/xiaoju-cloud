@@ -296,21 +296,30 @@ func streamWrite(ctx context.Context, c *websocket.Conn, typ websocket.MessageTy
 	return c.Write(wctx, typ, b)
 }
 
-func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
+// streamParams 读房间名、角色、ack、window；不对就回错误，返回 ok=false。
+func streamParams(w http.ResponseWriter, r *http.Request) (name string, pub, ack bool, window int, ok bool) {
 	q := r.URL.Query()
 	name, role := q.Get("room"), q.Get("role")
 	if name == "" || len(name) > streamMaxRoom {
 		agentError(w, http.StatusBadRequest, "invalid_room", "room is required (at most 200 bytes)", "Use ?room=遥控/<设备名>/视频/<随机串>.")
 		return
 	}
-	pub := role == "pub"
-	ack := !pub && q.Get("ack") == "1"
-	window := streamInFlight
+	pub = role == "pub"
+	ack = !pub && q.Get("ack") == "1"
+	window = streamInFlight
 	if n, err := strconv.Atoi(q.Get("window")); err == nil && n >= 1 {
 		window = min(n, streamMaxWindow)
 	}
 	if !pub && role != "sub" {
 		agentError(w, http.StatusBadRequest, "invalid_role", "role must be pub or sub", "")
+		return "", false, false, 0, false
+	}
+	return name, pub, ack, window, true
+}
+
+func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
+	name, pub, ack, window, ok := streamParams(w, r)
+	if !ok {
 		return
 	}
 	scope := ScopeRead
@@ -320,6 +329,11 @@ func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
 	if !s.need(w, r, scope) {
 		return
 	}
+	s.stream.serve(w, r, name, pub, ack, window)
+}
+
+// serve 接上一条直播连接（已经验过身份）。家里电脑的 /api/agent/v1/stream 和中转的 /live 都用它（见 live_relay.go）。
+func (h *streamHub) serve(w http.ResponseWriter, r *http.Request, name string, pub, ack bool, window int) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
 		return // Accept 已经回了错误
@@ -331,7 +345,7 @@ func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	p := newStreamPeer()
 	p.stop = cancel
-	old, ok := s.stream.join(name, p, pub)
+	old, ok := h.join(name, p, pub)
 	if !ok {
 		c.Close(websocket.StatusTryAgainLater, "too many streams or viewers")
 		return
@@ -339,7 +353,7 @@ func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
 	if old != nil {
 		old.stop()
 	}
-	defer s.stream.leave(name, p, pub)
+	defer h.leave(name, p, pub)
 
 	// 写：文字消息、声音、画面，谁先到写谁。写不出去（对面掉线）就整条连接结束。
 	// ack=1 时，在路上的帧满了就先不取帧（JPEG：新帧来了会把等着的旧帧换掉；H.264：排着等）。
@@ -430,13 +444,13 @@ func (s *Server) streamWS(w http.ResponseWriter, r *http.Request) {
 		if len(data) > 0 && data[0] == streamKindAudio {
 			if now.Sub(p.lastAudio) >= streamAudioGap {
 				p.lastAudio = now
-				s.stream.forward(name, p, data)
+				h.forward(name, p, data)
 			}
 		} else if len(data) > 0 && data[0] == streamKindH264 {
-			s.stream.forward(name, p, data) // H.264 不能限帧率丢帧（后面的帧会解不出来）
+			h.forward(name, p, data) // H.264 不能限帧率丢帧（后面的帧会解不出来）
 		} else if now.Sub(p.last) >= streamMinGap {
 			p.last = now
-			s.stream.forward(name, p, data)
+			h.forward(name, p, data)
 		}
 	}
 }

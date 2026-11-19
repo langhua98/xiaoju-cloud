@@ -55,6 +55,7 @@ func (s *Server) agentRoutes(api *http.ServeMux) {
 	h("GET /api/agent/v1/relay", s.relayGet)
 	h("GET /api/agent/v1/relay/ws", s.relayWS)
 	h("GET /api/agent/v1/stream", s.streamWS)
+	h("GET /api/agent/v1/stream/relay", s.streamRelayTicket)
 	h("POST /api/agent/v1/notify", s.notify)
 }
 
