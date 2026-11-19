@@ -298,6 +298,11 @@ make test-integration   # 含 PostgreSQL 集成测试（需要 make db）
 （顺便防止 Space 休眠），不在线时不给 `stream`。网页、App 有 `stream` 先用它，播不了再换回 `url`。部署见
 [deploy/windows/README.md](deploy/windows/README.md#视频中转看视频快)（仓库变量 `HF_DEPLOY=relay`）。
 
+直播中转：中转上另有 `GET /live?room&role&exp&sig`，和 `/api/agent/v1/stream` 是同一个直播通道（只在中转内存里转）。
+中转不认 agent 令牌，由电脑发 5 分钟有效的通行证：`GET /api/agent/v1/stream/relay?room=&role=pub|sub`
+（pub 要 upload、sub 要 read）→ `{"url":"wss://<中转>/live?…"}`；没配中转或中转不在线时回 404 `relay_unavailable`。
+被控端同时推电脑和中转两条，只往有人看的那条发；看的一端先 Wi-Fi 直连，再中转，最后电脑。见 `internal/api/live_relay.go`。
+
 ## 多个 Bot 轮流用（可选）
 
 Telegram 按账号限流。一个 Bot 批量上传、看视频时容易被限速（日志里的 `telegram flood wait`），可以多建几个 Bot 轮流用：
