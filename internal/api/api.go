@@ -295,6 +295,19 @@ func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// 分批取（?limit=&offset=）：相册上万张照片时 App 先拿最新的一批显示，边显示边取下一批；
+	// 不带 limit 时照旧一次全给（老版本 App、网页）。还有下一批时回 next（下一批的 offset）。
+	resp := map[string]any{}
+	if limit, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && limit > 0 {
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		offset = max(0, min(offset, len(items)))
+		end := min(offset+min(limit, 2000), len(items))
+		resp["total"] = len(items)
+		if end < len(items) {
+			resp["next"] = end
+		}
+		items = items[offset:end]
+	}
 	out, err := s.withThumbs(r.Context(), items)
 	if err != nil {
 		s.fail(w, err)
@@ -304,7 +317,8 @@ func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSONGzip(w, r, http.StatusOK, map[string]any{"items": out})
+	resp["items"] = out
+	writeJSONGzip(w, r, http.StatusOK, resp)
 }
 
 // withCounts 给列出的文件夹附上里面有几张照片、几个视频，和封面（最新一张的缩略图，网页做相册卡片）。

@@ -32,8 +32,11 @@ struct PhotosView: View {
                 items = []
                 return
             }
-            items = try await cloud.children(of: album.id).filter(\.isMedia)
-            error = ""
+            // 先显示最新的一批，后面的边取边加（不用等一万多张全部下完）
+            try await cloud.children(of: album.id) { all in
+                items = all.filter(\.isMedia)
+                error = ""
+            }
         } catch {
             if !error.isCancellation { self.error = error.localizedDescription }
         }
