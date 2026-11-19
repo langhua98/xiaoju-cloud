@@ -1,0 +1,51 @@
+--- a/src/backend/port/sysv_shmem.c
++++ b/src/backend/port/sysv_shmem.c
+@@ -319,6 +319,10 @@
+ 	PGShmemHeader *memAddress;
+ 	IpcMemoryState state;
+ 
++#ifdef PG_NO_SYSV_SHMEM
++	/* iOS 内核没有 SysV 共享内存（调用就 SIGSYS），只靠 postmaster.pid 防止重复启动 */
++	return false;
++#endif
+ 	state = PGSharedMemoryAttach((IpcMemoryId) id2, NULL, &memAddress);
+ 	if (memAddress && shmdt((void *) memAddress) < 0)
+ 		elog(LOG, "shmdt(%p) failed: %m", memAddress);
+@@ -734,6 +738,37 @@
+ 	/* Room for a header? */
+ 	Assert(size > MAXALIGN(sizeof(PGShmemHeader)));
+ 
++#ifdef PG_NO_SYSV_SHMEM
++	/*
++	 * iOS（越狱）：没有 shmget/shmat。主共享内存用匿名 mmap（fork 出来的子进程继承），
++	 * 不再建那块只用来检测「旧进程还活着」的 SysV 小块；重复启动由 postmaster.pid 挡住。
++	 */
++	if (shared_memory_type != SHMEM_TYPE_MMAP)
++		ereport(FATAL,
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
++				 errmsg("only shared_memory_type = mmap is supported on this platform")));
++	AnonymousShmem = CreateAnonymousSegment(&size);
++	AnonymousShmemSize = size;
++	on_shmem_exit(AnonymousShmemDetach, (Datum) 0);
++	AddToDataDirLockFile(LOCK_FILE_LINE_SHMEM_KEY, "        0         0");
++
++	hdr = (PGShmemHeader *) AnonymousShmem;
++	hdr->creatorPID = getpid();
++	hdr->magic = PGShmemMagic;
++	hdr->dsm_control = 0;
++	hdr->device = statbuf.st_dev;
++	hdr->inode = statbuf.st_ino;
++	hdr->totalsize = size;
++	hdr->freeoffset = MAXALIGN(sizeof(PGShmemHeader));
++	*shim = hdr;
++	UsedShmemSegAddr = NULL;
++	UsedShmemSegID = 0;
++	(void) NextShmemSegID;
++	(void) memAddress;
++	(void) sysvsize;
++	return hdr;
++#endif
++
+ 	if (shared_memory_type == SHMEM_TYPE_MMAP)
+ 	{
+ 		AnonymousShmem = CreateAnonymousSegment(&size);

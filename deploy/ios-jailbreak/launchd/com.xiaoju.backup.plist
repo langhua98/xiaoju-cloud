@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 由 install.sh 把 @SH@、@XJ@ 换成实际路径后放进 LaunchDaemons。 -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.xiaoju.backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@SH@</string>
+		<string>@XJ@/scripts/backup.sh</string>
+	</array>
+	<key>UserName</key>
+	<string>mobile</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>40</integer>
+	</dict>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>4096</integer>
+	</dict>
+	<key>HardResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>4096</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>@XJ@/logs/launchd-com.xiaoju.backup.log</string>
+	<key>StandardErrorPath</key>
+	<string>@XJ@/logs/launchd-com.xiaoju.backup.log</string>
+</dict>
+</plist>
