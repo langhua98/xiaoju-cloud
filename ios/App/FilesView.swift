@@ -4,7 +4,8 @@ import UniformTypeIdentifiers
 
 // 「文件」页：像「文件」App 一样一层层浏览云盘。顶上搜索当前文件夹、按类型筛选；
 // 右上角「＋」上传文件、新建文件夹（都放进当前文件夹）；文件右边有分享（直链）、下载（存到「文件」）两个按钮；
-// 左滑删除，长按重命名、分享、存到「照片」「文件」。
+// 左滑删除，长按重命名、分享、存到「照片」「文件」。点「选择」多选：点一下勾一个，手指在左边勾选圈那一列上下划（或两指按住划）连着勾一片，
+// 「全选」，再一起删除；删除后可以撤销。
 struct FilesView: View {
     var body: some View {
         NavigationStack {
@@ -35,6 +36,13 @@ struct FolderView: View {
     @State private var downloading: Task<Void, Never>?
     @State private var downloadingID: String? // 正在下载的文件，它的下载按钮变成进度环，点一下取消
     @State private var status = ""            // 下载进度、完成提示
+    @State private var editMode = EditMode.inactive // 多选中
+    @State private var selected = Set<String>()
+    @State private var confirmDelete = false
+    @State private var undo: [CloudItem] = []      // 刚移进回收站的，可以撤销
+    @State private var deleting = ""
+
+    private var editing: Bool { editMode.isEditing }
 
     // 新建文件夹或重命名时弹出的输入框
     enum Naming: Identifiable {
@@ -62,7 +70,7 @@ struct FolderView: View {
     }
 
     var body: some View {
-        List {
+        List(selection: $selected) {
             Section {
                 Picker("类型", selection: $kind) {
                     ForEach(FileKind.allCases) { Text($0.rawValue).tag($0) }
@@ -88,8 +96,22 @@ struct FolderView: View {
             if !error.isEmpty {
                 Text(error).font(.footnote).foregroundStyle(.red)
             }
+            if !deleting.isEmpty {
+                Label(deleting, systemImage: "trash").font(.footnote)
+            } else if !undo.isEmpty {
+                HStack {
+                    Label("已移进回收站 \(undo.count) 项", systemImage: "trash").font(.footnote)
+                    Spacer()
+                    Button("撤销") { Task { await restoreUndo() } }.font(.footnote.bold()).buttonStyle(.borderless)
+                }
+                .task(id: undo.map(\.id)) {
+                    try? await Task.sleep(for: .seconds(8))
+                    if !Task.isCancelled { undo = [] }
+                }
+            }
             ForEach(shown) { item in
                 row(item)
+                    .allowsHitTesting(!editing) // 多选时点一行是勾选，不打开
                     .swipeActions {
                         Button(role: .destructive) { Task { await remove(item) } } label: { Label("删除", systemImage: "trash") }
                         Button { sharing = item } label: { Label("分享", systemImage: "link") }.tint(.brand)
@@ -123,6 +145,31 @@ struct FolderView: View {
             }
         }
         .listStyle(.plain)
+        .environment(\.editMode, $editMode)
+        .safeAreaInset(edge: .bottom) {
+            if editing {
+                let ids = Set(shown.map(\.id))
+                HStack {
+                    Button(ids.isSubset(of: selected) && !ids.isEmpty ? "全不选" : "全选") {
+                        selected = ids.isSubset(of: selected) ? [] : ids
+                    }
+                    Spacer()
+                    Text(selected.isEmpty ? "点一行勾选" : "已选 \(selected.count) 项").font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(role: .destructive) { confirmDelete = true } label: {
+                        Label(selected.count > 1 ? "删除 \(selected.count) 项" : "删除", systemImage: "trash")
+                    }
+                    .disabled(selected.isEmpty || !deleting.isEmpty)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 12)
+                .background(.bar)
+            }
+        }
+        .confirmationDialog(deleteTitle, isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("移进回收站", role: .destructive) { Task { await removeSelected() } }
+        } message: {
+            Text("删除后马上可以撤销；30 天内也可以在「我的 → 回收站」里恢复。")
+        }
         .overlay { if loading && items.isEmpty { ProgressView() } }
         .searchable(text: $query, prompt: "搜索这个文件夹")
         .navigationTitle(folder?.name ?? "文件")
@@ -136,7 +183,13 @@ struct FolderView: View {
             } label: {
                 Image(systemName: "plus")
             }
-            if folder == nil { BackupRing() }
+            if !items.isEmpty || editing {
+                Button(editing ? "完成" : "选择") {
+                    withAnimation { editMode = editing ? .inactive : .active }
+                    selected = []
+                }
+            }
+            if folder == nil && !editing { BackupRing() }
         }
         .refreshable { await Task { await load() }.value }
         .task { await load() }
@@ -362,9 +415,47 @@ struct FolderView: View {
         do {
             try await Cloud.shared.trash(item)
             items.removeAll { $0.id == item.id }
+            undo = [item]
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private var deleteTitle: String {
+        let picked = items.filter { selected.contains($0.id) }
+        let folders = picked.filter(\.isFolder).count
+        return "把 \(picked.count) 项移进回收站？" + (folders > 0 ? "其中 \(folders) 个文件夹里的东西会一起移进去。" : "")
+    }
+
+    // 选中的一起移进回收站（每次最多 4 个请求）
+    private func removeSelected() async {
+        let picked = items.filter { selected.contains($0.id) }
+        var done: [CloudItem] = []
+        deleting = "正在删除 0/\(picked.count)"
+        await Cloud.eachLimit(picked) { item in
+            (try? await Cloud.shared.trash(item)) != nil
+        } progress: { item, ok in
+            if ok {
+                done.append(item)
+                items.removeAll { $0.id == item.id }
+            }
+            deleting = "正在删除 \(done.count)/\(picked.count)"
+        }
+        deleting = ""
+        if done.count < picked.count { error = "有 \(picked.count - done.count) 项没删掉，稍后再试" }
+        selected = []
+        editMode = .inactive
+        undo = done
+    }
+
+    // 撤销：放回原处
+    private func restoreUndo() async {
+        let list = undo
+        undo = []
+        await Cloud.eachLimit(list) { item in
+            (try? await Cloud.shared.send("POST", "/api/files/\(item.id)/restore")) != nil
+        } progress: { _, _ in }
+        await load()
     }
 }
 

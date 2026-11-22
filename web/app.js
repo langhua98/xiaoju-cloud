@@ -27,6 +27,7 @@ const state = {
   unlocked: false,    // 私密相册已验证解锁（切到后台后重新遮住）
   selecting: false,   // 多选中
   selected: new Map(), // 选中的条目：id → 条目
+  anchor: "",         // 上次点选 / 划选到的条目，Shift 点选一段从它开始
 };
 try { localStorage.removeItem("xiaoju.token"); } catch { /* 清理旧版本保存的令牌 */ }
 
@@ -1793,7 +1794,11 @@ function renderGrid(files) {
       lastDay = day;
       const label = byMonth ? monthLabel(when) : dayLabel(when);
       let h = old.get(day);
-      if (!h || h.textContent !== label) h = mk("h3", { className: "day", textContent: label });
+      if (!h || h.dataset.label !== label) {
+        // 多选时右边有“选择”：选中 / 取消这一天的全部
+        h = mk("h3", { className: "day" }, mk("span", { textContent: label }), mk("button", { type: "button", className: "day-sel", textContent: "选择" }));
+        h.dataset.label = label;
+      }
       h.dataset.day = day;
       h.dataset.month = monthLabel(when);
       out.push(h);
@@ -1812,6 +1817,7 @@ function renderGrid(files) {
     out.push(tile);
   }
   grid.replaceChildren(...out);
+  if (state.selecting) updateSelbar(); // 新出现的日期标题上的“选择”
 }
 
 function tileFor(f) {
@@ -1916,31 +1922,48 @@ const thumbQueue = (() => {
 
 // ---------- 点按、长按、多选 ----------
 // 点一下打开；长按（或点“选择”）进入多选，之后点一下是选中 / 取消。底部是“下载 / 移动 / 删除”。
+// 选得快：多选时横着一划，划过的都选上（从已选的开始划是一起取消），手指上下移动接着选一整片，贴着屏幕上下边会自动滚动；
+// 长按住不放直接拖也一样。电脑上按住鼠标拖、按住 Shift 点选一段，Ctrl/⌘+A 全选，Delete 删除，Esc 退出。日期标题右边“选择”选一整天。
 
 const LONG_PRESS_MS = 450;
 
 function bindItem(el, f, open) {
   let timer = 0;
   let start = null;
-  let pressed = false; // 这次是长按，接下来的 click 不算
+  let pressed = false; // 这次是长按或划选，接下来的 click 不算
   const cancel = () => { clearTimeout(timer); start = null; };
   const longPress = () => {
     pressed = true;
     if (!state.selecting) enterSelection();
     toggleSelect(f, true);
+    state.anchor = f.id;
     navigator.vibrate?.(10);
+    if (start) dragArm(f, true); // 不松手接着拖就是划选
   };
   el.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     pressed = false;
-    start = { x: e.clientX, y: e.clientY };
+    start = { x: e.clientX, y: e.clientY, mouse: e.pointerType === "mouse" };
     clearTimeout(timer);
     timer = setTimeout(longPress, LONG_PRESS_MS);
   });
   el.addEventListener("pointermove", (e) => {
-    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) cancel();
+    if (!start || drag.armed) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (Math.hypot(dx, dy) <= 10) return;
+    // 多选时：手指横着划（竖着划是滚动），鼠标往哪拖都行，开始划选
+    if (state.selecting && (start.mouse || Math.abs(dx) > Math.abs(dy))) {
+      clearTimeout(timer);
+      pressed = true;
+      dragArm(f, !state.selected.has(f.id));
+      dragMove(e.clientX, e.clientY);
+      start = null;
+      return;
+    }
+    cancel();
   });
-  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) el.addEventListener(ev, cancel);
+  for (const ev of ["pointerup", "pointercancel"]) el.addEventListener(ev, cancel);
+  el.addEventListener("pointerleave", () => { if (!drag.armed) cancel(); });
   // 长按不弹系统菜单；电脑上右键也是选中
   el.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -1948,10 +1971,141 @@ function bindItem(el, f, open) {
   });
   el.addEventListener("click", (e) => {
     if (pressed) { pressed = false; e.preventDefault(); return; }
-    if (state.selecting) { toggleSelect(f); return; }
+    if (state.selecting) {
+      if (e.shiftKey && state.anchor) selectRange(state.anchor, f.id);
+      else toggleSelect(f);
+      state.anchor = f.id;
+      return;
+    }
+    if (e.shiftKey || e.metaKey || e.ctrlKey) { // 电脑上 Shift / Ctrl 点一下直接进多选
+      e.preventDefault();
+      enterSelection();
+      toggleSelect(f, true);
+      state.anchor = f.id;
+      return;
+    }
     open();
   });
 }
+
+// 现在页面上条目的顺序（相册卡片、网格、列表），划选、Shift 选一段按它算
+function itemOrder() {
+  return [...document.querySelectorAll("#albums [data-id], #grid .tile[data-id], #rows tr[data-id]")].map((el) => el.dataset.id);
+}
+
+function itemById(id) {
+  if (itemById.items !== state.items) itemById.map = new Map(state.items.map((f) => [f.id, f]));
+  itemById.items = state.items;
+  return itemById.map.get(id);
+}
+
+function selectRange(fromId, toId, on = true) {
+  const order = itemOrder();
+  let a = order.indexOf(fromId), b = order.indexOf(toId);
+  if (a < 0 || b < 0) return;
+  if (a > b) [a, b] = [b, a];
+  selectMany(order.slice(a, b + 1).map(itemById), on);
+}
+
+// ---------- 划选 ----------
+// 从 anchor 划到手指下面那一项：中间的都设成 mode（选中或取消），划回来时没划到的恢复成开始时的样子（和 iPhone 照片一样）
+const drag = { armed: false, on: false, anchor: -1, last: -1, order: [], base: null, mode: true, x: 0, y: 0, raf: 0 };
+
+function dragArm(f, mode) {
+  drag.order = itemOrder();
+  drag.anchor = drag.order.indexOf(f.id);
+  if (drag.anchor < 0) return;
+  drag.armed = true;
+  drag.on = false;
+  drag.mode = mode;
+  drag.base = new Set(state.selected.keys());
+  drag.last = -1;
+  document.body.classList.add("drag-selecting");
+  addEventListener("pointermove", onDragPointer, true);
+  addEventListener("pointerup", dragEnd, true);
+  addEventListener("pointercancel", dragEnd, true);
+  if (!mode || !state.selected.has(f.id)) dragApply(drag.anchor);
+}
+
+function onDragPointer(e) {
+  dragMove(e.clientX, e.clientY);
+}
+
+function dragMove(x, y) {
+  if (!drag.armed) return;
+  drag.on = true;
+  drag.x = x;
+  drag.y = y;
+  dragHit();
+  if (!drag.raf) drag.raf = requestAnimationFrame(dragScroll);
+}
+
+function dragHit() {
+  const el = document.elementFromPoint(drag.x, drag.y)?.closest("[data-id]");
+  const i = el ? drag.order.indexOf(el.dataset.id) : -1;
+  if (i >= 0 && i !== drag.last) dragApply(i);
+}
+
+function dragApply(i) {
+  drag.last = i;
+  const lo = Math.min(drag.anchor, i), hi = Math.max(drag.anchor, i);
+  let changed = false;
+  drag.order.forEach((id, k) => {
+    const want = k >= lo && k <= hi ? drag.mode : drag.base.has(id);
+    if (want === state.selected.has(id)) return;
+    const f = itemById(id);
+    if (!f) return;
+    if (want) state.selected.set(id, f);
+    else state.selected.delete(id);
+    document.querySelectorAll(`[data-id="${id}"]`).forEach((el) => el.classList.toggle("is-selected", want));
+    changed = true;
+  });
+  if (changed) { updateSelbar(); navigator.vibrate?.(5); }
+}
+
+// 手指贴近屏幕上下边：自动滚动，越靠边越快
+function dragScroll() {
+  drag.raf = 0;
+  if (!drag.armed) return;
+  const top = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--topbar-h")) || 56) + 40;
+  const bottom = innerHeight - ($("#selbar").offsetHeight || 0) - 40;
+  let v = 0;
+  if (drag.y < top) v = -Math.min(24, (top - drag.y) / 3 + 4);
+  else if (drag.y > bottom) v = Math.min(24, (drag.y - bottom) / 3 + 4);
+  if (v) {
+    scrollBy(0, v);
+    dragHit();
+  }
+  drag.raf = requestAnimationFrame(dragScroll);
+}
+
+function dragEnd() {
+  drag.armed = false;
+  drag.on = false;
+  cancelAnimationFrame(drag.raf);
+  drag.raf = 0;
+  document.body.classList.remove("drag-selecting");
+  removeEventListener("pointermove", onDragPointer, true);
+  removeEventListener("pointerup", dragEnd, true);
+  removeEventListener("pointercancel", dragEnd, true);
+  if (drag.last >= 0) state.anchor = drag.order[drag.last];
+}
+
+// 划选时手指上下移动不要滚动页面（iPhone 上要在 touchmove 里拦）；多选时按在条目上先横着动的，也不让页面滚，留给划选
+let touch0 = null;
+document.addEventListener("touchstart", (e) => {
+  const t = e.touches[0];
+  touch0 = state.selecting && e.touches.length === 1 && e.target.closest?.("[data-id]") ? { x: t.clientX, y: t.clientY, swipe: null } : null;
+}, { passive: true });
+document.addEventListener("touchmove", (e) => {
+  if (drag.armed) { e.preventDefault(); return; }
+  if (!touch0 || e.touches.length !== 1) return;
+  if (touch0.swipe === null) {
+    const t = e.touches[0];
+    touch0.swipe = Math.abs(t.clientX - touch0.x) > Math.abs(t.clientY - touch0.y);
+  }
+  if (touch0.swipe) e.preventDefault();
+}, { passive: false });
 
 function enterSelection() {
   state.selecting = true;
@@ -1965,16 +2119,23 @@ function exitSelection() {
   if (!state.selecting) return;
   state.selecting = false;
   state.selected.clear();
+  state.anchor = "";
   document.body.classList.remove("selecting");
   $("#selbar").hidden = true;
   document.querySelectorAll(".is-selected").forEach((el) => el.classList.remove("is-selected"));
 }
 
-function toggleSelect(f, on) {
+function toggleSelect(f, on, quiet = false) {
   const now = on ?? !state.selected.has(f.id);
   if (now) state.selected.set(f.id, f);
   else state.selected.delete(f.id);
   document.querySelectorAll(`[data-id="${f.id}"]`).forEach((el) => el.classList.toggle("is-selected", now));
+  if (!quiet) updateSelbar();
+}
+
+// 一次选中 / 取消一批（全选、选一整天、Shift 选一段），最后才刷新底部栏
+function selectMany(list, on) {
+  for (const f of list) if (f && state.selected.has(f.id) !== on) toggleSelect(f, on, true);
   updateSelbar();
 }
 
@@ -1987,13 +2148,52 @@ function updateSelbar() {
   $("#sel-move").disabled = !n;
   $("#sel-share").disabled = n !== 1;
   $("#sel-delete").disabled = !n;
+  $("#sel-delete").lastChild.textContent = n > 1 ? `删除 ${n} 项` : "删除";
+  // 日期标题上的“选择 / 取消选择”
+  for (const h of document.querySelectorAll("#grid .day")) {
+    const ids = dayIds(h);
+    const b = h.querySelector(".day-sel");
+    if (b) b.textContent = ids.length && ids.every((id) => state.selected.has(id)) ? "取消选择" : "选择";
+  }
 }
+
+// 某个日期标题下面的条目（到下一个标题为止）
+function dayIds(h) {
+  const ids = [];
+  for (let el = h.nextElementSibling; el && !el.classList.contains("day"); el = el.nextElementSibling) {
+    if (el.dataset.id) ids.push(el.dataset.id);
+  }
+  return ids;
+}
+
+$("#grid").addEventListener("click", (e) => {
+  const b = e.target.closest(".day-sel");
+  if (!b) return;
+  const ids = dayIds(b.closest(".day"));
+  selectMany(ids.map(itemById), !ids.every((id) => state.selected.has(id)));
+});
 
 $("#select-btn").addEventListener("click", () => (state.selecting ? exitSelection() : enterSelection()));
 $("#sel-cancel").addEventListener("click", exitSelection);
 $("#sel-all").addEventListener("click", () => {
-  const all = state.selected.size !== state.items.length;
-  for (const f of state.items) toggleSelect(f, all);
+  selectMany(state.items, state.selected.size !== state.items.length);
+});
+
+// 电脑上的快捷键：Ctrl/⌘+A 全选，Delete / Backspace 把选中的移入回收站，Esc 退出多选
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || document.querySelector("dialog[open]") || !state.items.length) return;
+  const t = e.target;
+  if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+    e.preventDefault();
+    if (!state.selecting) enterSelection();
+    selectMany(state.items, true);
+  } else if (state.selecting && (e.key === "Delete" || e.key === "Backspace") && state.selected.size) {
+    e.preventDefault();
+    trashItems([...state.selected.values()]);
+  } else if (state.selecting && e.key === "Escape") {
+    exitSelection();
+  }
 });
 $("#sel-download").addEventListener("click", async () => {
   const files = withLive([...state.selected.values()].filter((f) => f.type === "file"));
@@ -2012,6 +2212,13 @@ $("#sel-share").addEventListener("click", () => {
 });
 $("#sel-delete").addEventListener("click", () => trashItems([...state.selected.values()]));
 
+// 对 list 里的每一项跑 fn，最多同时 n 个
+async function eachLimit(list, n, fn) {
+  let next = 0;
+  const worker = async () => { while (next < list.length) await fn(list[next++]); };
+  await Promise.all(Array.from({ length: Math.min(n, list.length) }, worker));
+}
+
 const itemsLabel = (list) => (list.length === 1 ? `“${list[0].name}”` : `${list.length} 项`);
 
 // 移入回收站，提示里可以撤销；文件夹先确认一下（里面的照片会跟着一起进回收站）
@@ -2024,15 +2231,20 @@ async function trashItems(picked) {
     const what = folders.length === 1 ? `文件夹“${folders[0].name}”` : `${folders.length} 个文件夹`;
     if (!confirm(`把${what}移入回收站？` + (inside ? `里面的 ${inside} 个文件会跟着一起移入。` : "") + "之后可以在回收站里恢复。")) return [];
   }
+  // 几个一起删，几百张也很快；多的时候提示里显示进度
   const done = [];
-  for (const f of list) {
+  let stop = null;
+  await eachLimit(list, 4, async (f) => {
+    if (stop) return;
     try {
       await request("DELETE", `/api/files/${f.id}`);
       done.push(f);
+      if (list.length > 20) toast(`正在移入回收站 ${done.length} / ${list.length}…`);
     } catch (err) {
-      if (err.status === 401) { fail(err); return done; }
+      if (err.status === 401) stop = err;
     }
-  }
+  });
+  if (stop) { fail(stop); return done; }
   exitSelection();
   load();
   refreshBackup();
@@ -2043,9 +2255,9 @@ async function trashItems(picked) {
     action: "撤销",
     async onAction() {
       let back = 0;
-      for (const f of done) {
+      await eachLimit(done, 4, async (f) => {
         try { await request("POST", `/api/files/${f.id}/restore`); back++; } catch { /* 原处已有同名的：留在回收站 */ }
-      }
+      });
       toast(back === done.length ? "已恢复" : `已恢复 ${back} 项，其余的原处已有同名文件，留在回收站里`);
       load();
       refreshBackup();
@@ -3000,8 +3212,28 @@ async function openTrash() {
   await renderTrash();
 }
 
+// 回收站多选：点一行勾选，勾上几项一起恢复或永久删除
+const trashSel = new Map();
+let trashShown = []; // 列表里现在的条目
+
+function updateTrashBar() {
+  const n = trashSel.size;
+  const total = $("#trash-list").querySelectorAll("li[data-tid]").length;
+  $("#trash-selbar").hidden = !total;
+  $("#trash-sel-all").textContent = n && n === total ? "全不选" : "全选";
+  $("#trash-sel-count").textContent = n ? `已选 ${n} 项` : "点一行勾选";
+  $("#trash-restore-sel").disabled = !n;
+  $("#trash-purge-sel").disabled = !n;
+  for (const li of $("#trash-list").querySelectorAll("li[data-tid]")) {
+    const on = trashSel.has(li.dataset.tid);
+    li.classList.toggle("is-selected", on);
+    li.querySelector("input").checked = on;
+  }
+}
+
 async function renderTrash() {
   const list = $("#trash-list");
+  trashSel.clear();
   list.replaceChildren(mk("li", { className: "hint", textContent: "正在读取…" }));
   let items;
   try {
@@ -3010,8 +3242,9 @@ async function renderTrash() {
     list.replaceChildren(mk("li", { className: "error", textContent: err.message }));
     return;
   }
+  trashShown = items;
   $("#trash-empty").disabled = !items.length;
-  if (!items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "回收站是空的" })); return; }
+  if (!items.length) { list.replaceChildren(mk("li", { className: "empty", textContent: "回收站是空的" })); updateTrashBar(); return; }
   list.replaceChildren(...items.map((f) => {
     const restore = mk("button", { type: "button", className: "small" }, icon("restore"), "恢复");
     const purge = mk("button", { type: "button", className: "small danger" }, "永久删除");
@@ -3038,11 +3271,62 @@ async function renderTrash() {
     });
     const left = Math.max(1, Math.ceil(30 - (Date.now() - new Date(f.trashed_at)) / 86400e3));
     const meta = `删除于 ${relTime(f.trashed_at)}` + (f.type === "file" ? ` · ${formatSize(f.size)}` : "") + ` · ${left} 天后自动永久删除`;
-    return mk("li", {}, icon(fileIcon(f), "ic lead"),
+    const box = mk("input", { type: "checkbox", className: "tsel", ariaLabel: `选择“${f.name}”` });
+    const li = mk("li", { className: "trash-item" }, box, icon(fileIcon(f), "ic lead"),
       mk("div", { className: "info" }, mk("b", { textContent: f.name }), mk("small", { textContent: meta })),
       mk("div", { className: "acts" }, restore, purge));
+    li.dataset.tid = f.id;
+    li.addEventListener("click", (e) => {
+      if (e.target.closest(".acts")) return;
+      if (e.target !== box) e.preventDefault();
+      if (trashSel.has(f.id)) trashSel.delete(f.id); else trashSel.set(f.id, f);
+      updateTrashBar();
+    });
+    return li;
   }));
+  updateTrashBar();
 }
+
+$("#trash-sel-all").addEventListener("click", () => {
+  const all = trashSel.size !== trashShown.length;
+  trashSel.clear();
+  if (all) for (const f of trashShown) trashSel.set(f.id, f);
+  updateTrashBar();
+});
+
+$("#trash-restore-sel").addEventListener("click", async () => {
+  const picked = [...trashSel.values()];
+  if (!picked.length) return;
+  const btn = $("#trash-restore-sel");
+  setButtonBusy(btn, true);
+  let back = 0, clash = 0;
+  await eachLimit(picked, 4, async (f) => {
+    try { await request("POST", `/api/files/${f.id}/restore`); back++; } catch (err) { if (err.status === 409) clash++; }
+  });
+  setButtonBusy(btn, false);
+  toast(back === picked.length ? `已恢复 ${back} 项` : `恢复了 ${back} 项` + (clash ? `，${clash} 项原处已有同名的，先改个名再恢复` : "，其余的稍后再试"));
+  renderTrash();
+  load();
+  refreshBackup();
+});
+
+$("#trash-purge-sel").addEventListener("click", async () => {
+  const picked = [...trashSel.values()];
+  if (!picked.length) return;
+  if (!confirm(`永久删除选中的 ${picked.length} 项？两个 Telegram 频道里的数据都会删除，无法恢复。`)) return;
+  const btn = $("#trash-purge-sel");
+  setButtonBusy(btn, true);
+  let done = 0, stop = null;
+  await eachLimit(picked, 3, async (f) => {
+    if (stop) return;
+    try { await request("DELETE", `/api/files/${f.id}?permanent=1`); done++; } catch (err) { if (err.status === 401) stop = err; }
+  });
+  setButtonBusy(btn, false);
+  if (stop) { fail(stop); return; }
+  toast(done === picked.length ? `已永久删除 ${done} 项` : `删掉了 ${done} 项，${picked.length - done} 项没删掉，稍后再试`);
+  renderTrash();
+  refreshBackup();
+});
 
 $("#trash-empty").addEventListener("click", async () => {
   const btn = $("#trash-empty");

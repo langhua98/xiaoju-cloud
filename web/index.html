@@ -237,6 +237,12 @@
   <dialog id="trash-dlg">
     <h2>回收站</h2>
     <p class="hint">删除的文件先放在这里，可以恢复；放满 30 天自动永久删除。永久删除后两个 Telegram 频道里的数据也一起删掉，无法恢复。</p>
+    <div id="trash-selbar" class="trash-selbar" hidden>
+      <button id="trash-sel-all" type="button" class="ghost small">全选</button>
+      <span id="trash-sel-count" class="hint">点一行勾选</span>
+      <button id="trash-restore-sel" type="button" class="small" data-icon="restore" disabled>恢复所选</button>
+      <button id="trash-purge-sel" type="button" class="small danger" disabled>永久删除所选</button>
+    </div>
     <ul id="trash-list" class="trash-list"></ul>
     <div class="dialog-actions sec-footer">
       <button id="trash-empty" type="button" class="danger">清空回收站</button>

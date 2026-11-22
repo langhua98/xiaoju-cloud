@@ -219,14 +219,20 @@ struct ShareList: Decodable {
     let items: [CloudShare]
 }
 
-// 回收站：恢复，或者永久删除（同时删掉 Telegram 里的数据，找不回来）
+// 回收站：恢复，或者永久删除（同时删掉 Telegram 里的数据，找不回来）。
+// 点「选择」多选（点一下勾一个，在勾选圈那一列上下划连着勾），一起恢复或永久删除
 struct TrashView: View {
     @State private var items: [CloudItem] = []
     @State private var error = ""
     @State private var purging: CloudItem?
+    @State private var editMode = EditMode.inactive
+    @State private var selected = Set<String>()
+    @State private var purgingSelected = false
+    @State private var working = ""
 
     var body: some View {
-        List {
+        List(selection: $selected) {
+            if !working.isEmpty { Label(working, systemImage: "hourglass").font(.footnote) }
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             ForEach(items) { item in
                 HStack(spacing: 12) {
@@ -246,7 +252,37 @@ struct TrashView: View {
                 Text("回收站是空的").foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("回收站")
+        .navigationTitle(editMode.isEditing ? (selected.isEmpty ? "选择项目" : "已选 \(selected.count) 项") : "回收站")
+        .environment(\.editMode, $editMode)
+        .toolbar {
+            if !items.isEmpty || editMode.isEditing {
+                Button(editMode.isEditing ? "完成" : "选择") {
+                    withAnimation { editMode = editMode.isEditing ? .inactive : .active }
+                    selected = []
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if editMode.isEditing {
+                HStack {
+                    Button(selected.count == items.count && !items.isEmpty ? "全不选" : "全选") {
+                        selected = selected.count == items.count ? [] : Set(items.map(\.id))
+                    }
+                    Spacer()
+                    Button("恢复") { Task { await restoreSelected() } }
+                    Spacer()
+                    Button("永久删除", role: .destructive) { purgingSelected = true }
+                }
+                .disabled(!working.isEmpty)
+                .padding(.horizontal, 20).padding(.vertical, 12)
+                .background(.bar)
+            }
+        }
+        .confirmationDialog("永久删除选中的 \(selected.count) 项？", isPresented: $purgingSelected, titleVisibility: .visible) {
+            Button("永久删除", role: .destructive) { Task { await purgeSelected() } }
+        } message: {
+            Text("Telegram 里的数据也会删掉，删了就找不回来了。")
+        }
         .refreshable { await Task { await load() }.value }
         .task { await load() }
         .confirmationDialog("永久删除「\(purging?.name ?? "")」？", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
@@ -275,6 +311,42 @@ struct TrashView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func restoreSelected() async {
+        let picked = items.filter { selected.contains($0.id) }
+        guard !picked.isEmpty else { return }
+        var failed = 0
+        working = "正在恢复…"
+        await Cloud.eachLimit(picked) { item in
+            (try? await Cloud.shared.send("POST", "/api/files/\(item.id)/restore")) != nil
+        } progress: { item, ok in
+            if ok { items.removeAll { $0.id == item.id } } else { failed += 1 }
+        }
+        working = ""
+        error = failed > 0 ? "有 \(failed) 项没恢复（原处可能已有同名的，先改个名）" : ""
+        selected = []
+        editMode = .inactive
+    }
+
+    private func purgeSelected() async {
+        let picked = items.filter { selected.contains($0.id) }
+        guard !picked.isEmpty else { return }
+        var done = 0
+        working = "正在永久删除 0/\(picked.count)"
+        await Cloud.eachLimit(picked, limit: 3) { item in
+            (try? await Cloud.shared.send("DELETE", "/api/files/\(item.id)?permanent=1")) != nil
+        } progress: { item, ok in
+            if ok {
+                done += 1
+                items.removeAll { $0.id == item.id }
+            }
+            working = "正在永久删除 \(done)/\(picked.count)"
+        }
+        working = ""
+        error = done < picked.count ? "有 \(picked.count - done) 项没删掉，稍后再试" : ""
+        selected = []
+        editMode = .inactive
     }
 
     private func purge(_ item: CloudItem) async {
