@@ -2,9 +2,12 @@ import AVKit
 import Combine
 import Photos
 import SwiftUI
+import UIKit
 
 // 「照片」页：云盘「相册」里的照片、视频按拍摄日期排（新的在上），学 iCloud 照片、Google 相册。
 // 右上角的进度环是备份状态，点开是备份中心。双指捏合换每行张数，点「选择」多选后可以下载到手机、删除。
+// 选得快：在照片上横着一划直接进多选，划过的都选上，手指再上下移动接着选一整片，贴着屏幕上下边自动滚动；
+// 从已选的开始划是一起取消。日期右边「选择」选一整天。删除后底部可以撤销。
 struct PhotosView: View {
     @ObservedObject private var cloud = Cloud.shared
     @State private var items: [CloudItem] = []
@@ -75,8 +78,20 @@ struct MediaGallery: View {
     @State private var confirmDelete = false
     @State private var removed = Set<String>() // 刚删掉的，等下次加载前先藏起来
     @State private var sharing: CloudItem?
+    @State private var undo: [CloudItem] = [] // 刚移进回收站的，底部「撤销」能放回去
+    @State private var frames = CellFrames()
+    @State private var swipe: SwipeState?
 
     private static let steps = [3, 4, 5, 7]
+
+    // 划选：从 anchor 划到手指下那张，中间的都设成 mode；划回来时没划到的恢复成开始时的样子（和 iPhone 照片一样）
+    struct SwipeState {
+        var order: [String]
+        var anchor: Int
+        var base: Set<String>
+        var mode: Bool
+        var last: Int
+    }
 
     private var visible: [CloudItem] { items.filter { !removed.contains($0.id) } }
 
@@ -98,17 +113,30 @@ struct MediaGallery: View {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: columns), spacing: 2) {
                             ForEach(group.items) { item in
                                 cell(item)
+                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.rects[item.id] = $0 }
+                                    .onDisappear { frames.rects[item.id] = nil } // 只记屏幕上的，滚走的位置可能已经变了
                             }
                         }
                     } header: {
-                        Text(dayTitle(group.day))
-                            .font(.subheadline.bold())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(.bar)
+                        HStack {
+                            Text(dayTitle(group.day)).font(.subheadline.bold())
+                            Spacer()
+                            if selecting {
+                                let all = group.items.allSatisfy { selected.contains($0.id) }
+                                Button(all ? "取消选择" : "选择") {
+                                    let ids = group.items.map(\.id)
+                                    if all { selected.subtract(ids) } else { selected.formUnion(ids) }
+                                }
+                                .font(.subheadline)
+                            }
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.bar)
                     }
                 }
             }
+            .coordinateSpace(.named(Self.space))
+            .gesture(SwipeSelect(space: Self.space, onChange: swipeMoved, onEnd: { swipe = nil }))
             // 滑到底部：取下一批（加进来以后还在屏幕上就接着取）
             if let more {
                 ProgressView().frame(maxWidth: .infinity).padding(20)
@@ -148,6 +176,17 @@ struct MediaGallery: View {
             } else if !working.isEmpty {
                 Text(working).font(.footnote).padding(.horizontal, 14).padding(.vertical, 8)
                     .background(.thinMaterial, in: Capsule()).padding(.bottom, 8)
+            } else if !undo.isEmpty {
+                HStack(spacing: 14) {
+                    Text("已移进回收站 \(undo.count) 项").font(.footnote)
+                    Button("撤销") { Task { await restoreUndo() } }.font(.footnote.bold())
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(.thinMaterial, in: Capsule()).padding(.bottom, 8)
+                .task(id: undo.map(\.id)) {
+                    try? await Task.sleep(for: .seconds(8))
+                    if !Task.isCancelled { undo = [] }
+                }
             }
         }
         .fullScreenCover(item: $viewing) { item in
@@ -157,7 +196,7 @@ struct MediaGallery: View {
         .confirmationDialog("把 \(selected.count) 项移进回收站？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("移进回收站", role: .destructive) { Task { await deleteSelected() } }
         } message: {
-            Text("30 天内可以在「我的 → 回收站」里恢复。")
+            Text("删除后马上可以撤销；30 天内也可以在「我的 → 回收站」里恢复。")
         }
     }
 
@@ -196,7 +235,9 @@ struct MediaGallery: View {
             HStack {
                 Button { Task { await saveSelected() } } label: { Label("存到手机", systemImage: "square.and.arrow.down") }
                 Spacer()
-                Button(role: .destructive) { confirmDelete = true } label: { Label("删除", systemImage: "trash") }
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Label(selected.count > 1 ? "删除 \(selected.count) 项" : "删除", systemImage: "trash")
+                }
             }
             .disabled(selected.isEmpty || !working.isEmpty)
         }
@@ -222,19 +263,73 @@ struct MediaGallery: View {
         return day.formatted(.dateTime.locale(zh).year().month().day())
     }
 
+    // 几张一起删（每次最多 4 个请求），几百张也很快
     private func deleteSelected() async {
         let picked = visible.filter { selected.contains($0.id) }
-        var done = 0
-        for item in picked {
-            working = "正在删除 \(done + 1)/\(picked.count)"
-            if (try? await Cloud.shared.trash(item)) != nil {
+        working = "正在删除 0/\(picked.count)"
+        var done: [CloudItem] = []
+        await Cloud.eachLimit(picked) { item in
+            (try? await Cloud.shared.trash(item)) != nil
+        } progress: { item, ok in
+            if ok {
                 removed.insert(item.id)
-                done += 1
+                done.append(item)
             }
+            working = "正在删除 \(done.count)/\(picked.count)"
         }
-        working = ""
+        working = done.count == picked.count ? "" : "有 \(picked.count - done.count) 项没删掉，稍后再试"
         selected = []
         selecting = false
+        undo = done
+        if !working.isEmpty {
+            try? await Task.sleep(for: .seconds(3))
+            working = ""
+        }
+    }
+
+    // 撤销：刚删的放回原处
+    private func restoreUndo() async {
+        let list = undo
+        undo = []
+        working = "正在放回…"
+        await Cloud.eachLimit(list) { item in
+            (try? await Cloud.shared.send("POST", "/api/files/\(item.id)/restore")) != nil
+        } progress: { item, ok in
+            if ok { removed.remove(item.id) }
+        }
+        working = ""
+        await reload()
+    }
+
+    // MARK: 划选
+
+    private static let space = "gallery"
+
+    private func swipeMoved(_ point: CGPoint, _ start: CGPoint) {
+        if swipe == nil {
+            // 刚开始划：从手指按下的那张开始
+            guard let first = frames.id(at: start) else { return }
+            let order = days.flatMap { $0.items.map(\.id) }
+            guard let anchor = order.firstIndex(of: first) else { return }
+            if !selecting { selecting = true; selected = [] }
+            swipe = SwipeState(order: order, anchor: anchor, base: selected, mode: !selected.contains(first), last: -1)
+            apply(anchor)
+        }
+        guard let id = frames.id(at: point), let i = swipe?.order.firstIndex(of: id), i != swipe?.last else { return }
+        apply(i)
+    }
+
+    private func apply(_ i: Int) {
+        guard var s = swipe else { return }
+        s.last = i
+        swipe = s
+        let range = min(s.anchor, i)...max(s.anchor, i)
+        var next = s.base
+        for k in range { if s.mode { next.insert(s.order[k]) } else { next.remove(s.order[k]) } }
+        if next != selected {
+            selected = next
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
     }
 
     // 下载原图 / 原视频存进手机的「照片」
@@ -267,6 +362,126 @@ struct MediaGallery: View {
         }
         try? await Task.sleep(for: .seconds(2))
         working = ""
+    }
+}
+
+// 每个格子在网格里的位置（划选时看手指下面是哪张）。只是查表用，改了不用刷新界面，所以放在类里
+final class CellFrames {
+    var rects: [String: CGRect] = [:]
+
+    func id(at point: CGPoint) -> String? {
+        rects.first { $0.value.contains(point) }?.key
+    }
+}
+
+// 网格上横着一划：开始划选，竖着划照样滚动（滚动要等它不成立才开始，只差一点点距离）。
+// 从屏幕左边缘划是返回上一页，不算。划选中手指贴近上下边时自动滚动，越靠边越快。
+// onChange(手指位置, 开始划的位置)，都是 space 这个坐标系里的
+struct SwipeSelect: UIGestureRecognizerRepresentable {
+    let space: String
+    let onChange: (CGPoint, CGPoint) -> Void
+    let onEnd: () -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
+        let c = context.coordinator
+        switch pan.state {
+        case .began, .changed:
+            let here = context.converter.location(in: .named(space))
+            if pan.state == .began {
+                let t = pan.translation(in: pan.view)
+                c.start = CGPoint(x: here.x - t.x, y: here.y - t.y)
+                c.pan = pan
+                c.scroll = Coordinator.scrollView(around: pan)
+            }
+            if let sv = c.scroll {
+                let p = pan.location(in: sv) // 滚动内容里的位置；和 space 都跟着内容走，差是固定的
+                c.delta = CGPoint(x: here.x - p.x, y: here.y - p.y)
+            }
+            let start = c.start
+            c.report = { onChange($0, start) }
+            onChange(here, start)
+            c.follow()
+        default:
+            c.stop()
+            onEnd()
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var start = CGPoint.zero
+        var delta = CGPoint.zero
+        weak var scroll: UIScrollView?
+        weak var pan: UIPanGestureRecognizer?
+        var report: ((CGPoint) -> Void)?
+        private var link: CADisplayLink?
+
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            guard let pan = g as? UIPanGestureRecognizer else { return true }
+            let v = pan.velocity(in: pan.view)
+            let at = pan.location(in: nil).x - pan.translation(in: nil).x
+            return abs(v.x) > abs(v.y) * 1.2 && at > 30
+        }
+
+        // 滚动（UIScrollView 的拖动）要等划选不成立才开始
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            other.view is UIScrollView && other is UIPanGestureRecognizer
+        }
+
+        // 手势所在的滚动视图：先往上找，找不到就在下面找包含手指的那个
+        static func scrollView(around pan: UIPanGestureRecognizer) -> UIScrollView? {
+            var v = pan.view
+            while let cur = v {
+                if let sv = cur as? UIScrollView { return sv }
+                v = cur.superview
+            }
+            var queue = pan.view.map { [$0] } ?? []
+            var found: UIScrollView?
+            while !queue.isEmpty {
+                let cur = queue.removeFirst()
+                if let sv = cur as? UIScrollView, sv.bounds.contains(pan.location(in: sv)) { found = sv }
+                queue += cur.subviews
+            }
+            return found
+        }
+
+        func follow() {
+            guard link == nil, scroll != nil else { return }
+            let l = CADisplayLink(target: self, selector: #selector(tick))
+            l.add(to: .main, forMode: .common)
+            link = l
+        }
+
+        func stop() {
+            link?.invalidate()
+            link = nil
+            report = nil
+        }
+
+        @objc private func tick() {
+            guard let sv = scroll, let pan, pan.state == .began || pan.state == .changed else { stop(); return }
+            let y = pan.location(in: sv).y - sv.contentOffset.y // 手指在屏幕上（滚动视图可见部分里）的高度
+            let top = sv.adjustedContentInset.top + 60
+            let bottom = sv.bounds.height - sv.adjustedContentInset.bottom - 60
+            var speed: CGFloat = 0
+            if y < top { speed = -min(18, (top - y) / 4 + 3) } else if y > bottom { speed = min(18, (y - bottom) / 4 + 3) }
+            guard speed != 0 else { return }
+            let minY = -sv.adjustedContentInset.top
+            let maxY = max(minY, sv.contentSize.height + sv.adjustedContentInset.bottom - sv.bounds.height)
+            let to = min(maxY, max(minY, sv.contentOffset.y + speed))
+            guard to != sv.contentOffset.y else { return }
+            sv.contentOffset.y = to
+            let p = pan.location(in: sv)
+            report?(CGPoint(x: p.x + delta.x, y: p.y + delta.y))
+        }
     }
 }
 

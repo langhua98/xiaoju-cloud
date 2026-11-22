@@ -317,6 +317,9 @@ td.name .fname small { display: none; color: var(--muted); font-size: 12px; }
 }
 .check .ic { width: 15px; height: 15px; stroke-width: 2.6; }
 body.selecting .check { display: grid; }
+/* 多选时横着一划是划选，竖着划照样滚动 */
+body.selecting .tile, body.selecting .album, body.selecting tbody tr { touch-action: pan-y; }
+body.drag-selecting, body.drag-selecting * { user-select: none; -webkit-user-select: none; cursor: default; }
 .is-selected .check { border-color: var(--accent); background: var(--accent); color: #fff; }
 td.name .check { flex: none; border-color: var(--muted); background: transparent; box-shadow: none; }
 td.name .check, .is-selected td.name .check { position: static; }
@@ -358,6 +361,10 @@ tr.is-selected { background: var(--accent-soft); }
   font-weight: 650;
 }
 .grid .day:first-child { padding-top: 2px; }
+.grid .day { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+/* 多选时日期右边的“选择”：选中 / 取消这一天 */
+.grid .day-sel { display: none; padding: 2px 4px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; }
+body.selecting .grid .day-sel { display: inline; }
 .tile {
   position: relative;
   aspect-ratio: 1;
@@ -656,6 +663,12 @@ body.selecting .fab { display: none; }
 .trash-list .info b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .trash-list .info small { color: var(--muted); font-size: 12px; }
 .trash-list .acts { display: flex; gap: 6px; }
+.trash-list li.trash-item { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.trash-list li.trash-item.is-selected { background: var(--accent-soft); }
+.trash-list .tsel { flex: none; width: 18px; height: 18px; margin: 0 0 0 4px; accent-color: var(--accent); }
+.trash-selbar { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.trash-selbar[hidden] { display: none; }
+.trash-selbar .hint { flex: 1; margin: 0; font-size: 13px; }
 .field { display: flex; flex-direction: column; gap: 2px; margin: 12px 0; font-size: 13px; color: var(--muted); }
 .field select {
   font: inherit; color: var(--text); width: 100%; padding: 8px 10px; margin-top: 4px;
