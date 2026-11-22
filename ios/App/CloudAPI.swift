@@ -174,6 +174,25 @@ final class Cloud: ObservableObject {
         return old + new.filter { !seen.contains($0.id) }
     }
 
+    // 批量操作（删除、恢复……）：对每一项跑 work，最多同时 limit 个；每做完一项回调 progress(这一项, 成没成功)
+    static func eachLimit<T>(_ list: [T], limit: Int = 4,
+                             work: @escaping (T) async -> Bool,
+                             progress: (T, Bool) -> Void) async {
+        await withTaskGroup(of: (Int, Bool).self) { group in
+            var next = 0
+            func add() {
+                let i = next
+                next += 1
+                group.addTask { @MainActor in (i, await work(list[i])) }
+            }
+            while next < min(limit, list.count) { add() }
+            for await (i, ok) in group {
+                progress(list[i], ok)
+                if next < list.count { add() }
+            }
+        }
+    }
+
     // 根目录下的某个文件夹（相册、隐藏相册……），没有返回 nil
     func rootFolder(named name: String) async throws -> CloudItem? {
         try await children(of: nil).first { $0.isFolder && $0.name == name }
