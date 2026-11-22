@@ -1625,13 +1625,24 @@ function rowFor(f) {
   const name = mk("td", { className: "name", title: f.name });
   const fallback = mk("span", { className: "ficon" }, icon(fileIcon(f)));
   let lead = fallback;
-  if (f.thumb) {
+  const cover = !!f.thumb && f.mime.startsWith("video/") && !f.private;
+  if (cover) {
+    // 视频：一整行宽的第一帧大图（服务端截的，最长边 1600），小缩略图先模糊垫着；中间播放键、右下角时长
+    const box = mk("span", { className: "row-cover" });
+    box.style.backgroundImage = `url("${state.api + f.thumb}")`;
+    const img = thumbImg({ ...f, thumb: `${f.thumb}&size=large` }, "row-cover-img", () => img.remove());
+    const play = mk("span", { className: "row-play" });
+    play.innerHTML = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.6 1.2v7.6L9 5z"/></svg>';
+    box.append(img, play);
+    if (f.duration) box.append(mk("span", { className: "row-len", textContent: clipLength(f.duration) }));
+    lead = box;
+  } else if (f.thumb) {
     const img = thumbImg(f, "row-thumb", () => img.replaceWith(fallback));
     lead = img;
   }
   // 照片、视频显示拍摄时间（列表也按它排），其他显示修改时间
   const when = f.taken_at || f.updated_at;
-  name.append(mk("div", { className: "cell" }, mk("span", { className: "check" }, icon("check")), lead,
+  name.append(mk("div", { className: cover ? "cell has-cover" : "cell" }, mk("span", { className: "check" }, icon("check")), lead,
     mk("span", { className: "fname" }, mk("span", { textContent: f.name }),
       mk("small", { textContent: `${f.live ? "实况 · " : ""}${formatSize(f.size)} · ${formatDate(when)}` }))));
   const size = mk("td", { className: "size", textContent: formatSize(f.size) });

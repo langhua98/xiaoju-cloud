@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +124,18 @@ func (s *Service) Preview(ctx context.Context, userID, id uuid.UUID) ([]byte, er
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// VideoPoster 返回视频第一帧的大图（和 Preview 同一份、同一个缓存）；不是视频返回 ErrNoThumbnail。
+func (s *Service) VideoPoster(ctx context.Context, userID, id uuid.UUID) ([]byte, error) {
+	f, err := s.store.Get(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(f.Mime, "video/") {
+		return nil, ErrNoThumbnail
+	}
+	return s.Preview(ctx, userID, id)
 }
 
 func (s *Service) makePreview(f *meta.File) ([]byte, error) {
