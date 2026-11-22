@@ -241,7 +241,9 @@ function showCurrent() {
   const stage = $("#sh-stage");
   stage.replaceChildren(mk("div", { className: "vw-spin" }));
   if (isVideo(f)) {
+    // 有第一帧大图时先显示它（视频还没加载出来时不是一片黑）
     const v = mk("video", { controls: true, playsInline: true, preload: "metadata", src: `${API}${f.url}&inline=1` });
+    if (f.preview) v.poster = API + f.preview;
     v.setAttribute("playsinline", "");
     stage.replaceChildren(v);
     return;

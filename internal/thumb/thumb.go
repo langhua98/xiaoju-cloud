@@ -190,25 +190,41 @@ func (g *Generator) image(ctx context.Context, rd io.ReadSeekCloser, ext, typ st
 // PreviewSize 是大图预览最长边的像素（手机屏幕 3 倍图约 1170×2532，1600 看着清楚，每张二三百 KB）。
 const PreviewSize = 1600
 
-// SupportsPreview 按 MIME 类型判断能不能做大图预览（只做照片）。
+// SupportsPreview 按 MIME 类型判断能不能做大图预览（照片，和视频的第一帧）。
 func (g *Generator) SupportsPreview(mimeType string) bool {
-	return strings.HasPrefix(mimeType, "image/") && g.Supported(mimeType)
+	return (strings.HasPrefix(mimeType, "image/") || strings.HasPrefix(mimeType, "video/")) && g.Supported(mimeType)
 }
 
 // Preview 把照片缩小成最长边不超过 PreviewSize 的 JPEG（按 EXIF 方向转正、不裁剪、不放大），大图查看时先显示它：
-// 比原图小得多（HEIC、PNG 原图常常好几 MB 到几十 MB），而且 HEIC 在不支持的浏览器里也能看。不是照片返回 ErrNoThumbnail。
+// 比原图小得多（HEIC、PNG 原图常常好几 MB 到几十 MB），而且 HEIC 在不支持的浏览器里也能看。
+// 视频截第一帧，同样大小、不裁剪：打开视频时先铺满屏幕显示它，等视频开始播放再换掉。其他文件返回 ErrNoThumbnail。
 func (g *Generator) Preview(ctx context.Context, src Source) ([]byte, error) {
 	rd, err := src(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rd.Close()
 	head := make([]byte, 64)
 	n, err := io.ReadFull(rd, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		rd.Close()
 		return nil, err
 	}
 	ext, typ := media.Sniff(head[:n])
+	if strings.HasPrefix(typ, "video/") {
+		rd.Close()
+		if g.ffmpeg == "" {
+			return nil, ErrNoThumbnail
+		}
+		out, err := g.ffmpegVideo(ctx, src, typ, func(protocols, demuxer, input string) []string {
+			return append([]string{"-nostdin", "-v", "error", "-protocol_whitelist", protocols, "-f", demuxer, "-i", input},
+				previewArgs()...)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return out.stdout, nil
+	}
+	defer rd.Close()
 	demuxer := ffmpegImage[typ]
 	if !strings.HasPrefix(typ, "image/") || g.vips == "" && (g.ffmpeg == "" || demuxer == "") {
 		return nil, ErrNoThumbnail
@@ -234,13 +250,19 @@ func (g *Generator) Preview(ctx context.Context, src Source) ([]byte, error) {
 		}
 		return b, nil
 	}
-	out, err := run(ctx, g.ffmpeg, "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-f", demuxer, "-i", path,
-		"-frames:v", "1", "-vf", fmt.Sprintf("scale=w='min(%s,iw)':h='min(%s,ih)':force_original_aspect_ratio=decrease", s, s),
-		"-an", "-sn", "-q:v", "3", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1")
+	out, err := run(ctx, g.ffmpeg, append([]string{"-nostdin", "-v", "error", "-protocol_whitelist", "file", "-f", demuxer, "-i", path},
+		previewArgs()...)...)
 	if err != nil {
 		return nil, err
 	}
 	return out.stdout, nil
+}
+
+// previewArgs：ffmpeg 取第一帧，缩小到最长边不超过 PreviewSize（不裁剪、不放大），写成 JPEG 到标准输出。
+func previewArgs() []string {
+	s := strconv.Itoa(PreviewSize)
+	return []string{"-frames:v", "1", "-vf", fmt.Sprintf("scale=w='min(%s,iw)':h='min(%s,ih)':force_original_aspect_ratio=decrease", s, s),
+		"-an", "-sn", "-q:v", "3", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"}
 }
 
 // ffmpegArgs：从 input 截第一帧，缩放并居中裁剪成 Size×Size 的 JPEG，写到标准输出。
@@ -263,6 +285,22 @@ func (g *Generator) video(ctx context.Context, src Source, typ string) (*Result,
 	if g.ffmpeg == "" {
 		return nil, ErrNoThumbnail
 	}
+	out, err := g.ffmpegVideo(ctx, src, typ, ffmpegArgs)
+	if err != nil {
+		return nil, err
+	}
+	res := &Result{JPEG: out.stdout, Taken: videoTaken(out.stderr)}
+	if m := durationRe.FindStringSubmatch(out.stderr); m != nil {
+		h, _ := strconv.Atoi(m[1])
+		min, _ := strconv.Atoi(m[2])
+		sec, _ := strconv.ParseFloat(m[3], 64)
+		res.Duration = time.Duration((float64(h*3600+min*60) + sec) * float64(time.Second))
+	}
+	return res, nil
+}
+
+// ffmpegVideo 用 args(协议白名单, 解封装器, 输入地址) 给出的参数运行 ffmpeg，输入是本机临时 HTTP 地址上的视频。
+func (g *Generator) ffmpegVideo(ctx context.Context, src Source, typ string, args func(protocols, demuxer, input string) []string) (*output, error) {
 	demuxer := "mov" // mov 解封装器也处理 MP4、M4V、3GP
 	if typ == "video/webm" {
 		demuxer = "matroska"
@@ -298,21 +336,14 @@ func (g *Generator) video(ctx context.Context, src Source, typ string) (*Result,
 	go srv.Serve(ln)
 	defer srv.Close()
 
-	out, err := run(ctx, g.ffmpeg, ffmpegArgs("http,tcp", demuxer, "http://"+ln.Addr().String()+path)...)
+	out, err := run(ctx, g.ffmpeg, args("http,tcp", demuxer, "http://"+ln.Addr().String()+path)...)
 	if err != nil {
 		if rerr := readErr.get(); rerr != nil && ctx.Err() == nil {
 			return nil, rerr // 读存储端出错，不是文件本身的问题
 		}
 		return nil, err
 	}
-	res := &Result{JPEG: out.stdout, Taken: videoTaken(out.stderr)}
-	if m := durationRe.FindStringSubmatch(out.stderr); m != nil {
-		h, _ := strconv.Atoi(m[1])
-		min, _ := strconv.Atoi(m[2])
-		sec, _ := strconv.ParseFloat(m[3], 64)
-		res.Duration = time.Duration((float64(h*3600+min*60) + sec) * float64(time.Second))
-	}
-	return res, nil
+	return out, nil
 }
 
 type output struct {

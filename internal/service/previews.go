@@ -79,12 +79,12 @@ func (p *previews) forget(id uuid.UUID) {
 	}
 }
 
-// CanPreview：这个文件能做大图预览（照片，且装了能解它的程序）。
+// CanPreview：这个文件能做大图预览（照片或视频，且装了能解它的程序）。
 func (s *Service) CanPreview(f *meta.File) bool {
 	return s.thumbs != nil && f.Type == meta.TypeFile && s.thumbs.gen.SupportsPreview(f.Mime)
 }
 
-// Preview 返回照片的大图预览（JPEG）；做不了时返回 ErrNoThumbnail。
+// Preview 返回照片（视频是第一帧）的大图预览（JPEG）；做不了时返回 ErrNoThumbnail。
 func (s *Service) Preview(ctx context.Context, userID, id uuid.UUID) ([]byte, error) {
 	f, err := s.store.Get(ctx, userID, id)
 	if err != nil {

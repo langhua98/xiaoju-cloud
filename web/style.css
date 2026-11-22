@@ -837,6 +837,9 @@ dialog.viewer.closing { animation: fade-out 0.2s ease forwards; }
 }
 .vw-media .vw-video { width: 100%; height: 100%; object-fit: contain; }
 .vw-media .vw-video.loading { opacity: 0; }
+/* 视频开始播放前铺满显示的第一帧大图（和视频一样大小、位置，播放后去掉） */
+.vw-media .vw-poster { width: 100%; height: 100%; object-fit: contain; opacity: 0; pointer-events: none; }
+.vw-media .vw-poster.ready { opacity: 1; animation: fade-in 0.3s ease; }
 
 /* 视频：自己画的播放键和控件（不用系统控件，左右滑才不会被视频接管） */
 .vw-play {

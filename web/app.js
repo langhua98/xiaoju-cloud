@@ -1681,7 +1681,7 @@ async function signedURL(f, inline) {
   return (await signedLink(f)).url + (inline ? "&inline=1" : "");
 }
 
-// 签名链接：{url: 原图, preview: 大图预览（照片才有）}
+// 签名链接：{url: 原图, preview: 大图预览（照片、视频才有）, stream: 视频走中转的播放地址（有中转时才有，已是完整地址）}
 async function signedLink(f) {
   const path = `/api/files/${f.id}/link`;
   let res;
@@ -1692,7 +1692,7 @@ async function signedLink(f) {
     if (!(await gridGate())) throw new HttpError(0, "", "grid_cancelled"); // 已退出登录
     res = await request("POST", path);
   }
-  return { url: state.api + res.url, preview: res.preview ? state.api + res.preview : "" };
+  return { url: state.api + res.url, preview: res.preview ? state.api + res.preview : "", stream: res.stream || "" };
 }
 
 async function download(f) {
@@ -2461,8 +2461,8 @@ async function showFull(slide, media, f) {
   if (kind === "video") {
     spin.remove();
     // 有中转时走中转（机房直接从 Telegram 取，不受家里电脑上传带宽限制）；中转出问题再换回直接播
-    if (link.stream) showVideo(slide, media, f, `${link.stream}&inline=1`, src);
-    else showVideo(slide, media, f, src);
+    if (link.stream) showVideo(slide, media, f, `${link.stream}&inline=1`, src, link.preview);
+    else showVideo(slide, media, f, src, "", link.preview);
     return;
   }
   const load = (url) => new Promise((resolve) => {
@@ -2555,7 +2555,21 @@ function videoErrorText(v) {
   return "视频加载失败，可以点右上角下载后查看";
 }
 
-function showVideo(slide, media, f, src, fallbackSrc = "") {
+// poster：服务端截的第一帧大图（最长边 1600）。视频还没开始播（加载中、iPhone 上等着点播放）时铺满显示它，
+// 代替小小的缩略图；开始播放后去掉
+function showVideo(slide, media, f, src, fallbackSrc = "", poster = "") {
+  if (poster) {
+    const img = Object.assign(new Image(), { className: "vw-poster", alt: "", draggable: false });
+    img.decoding = "async";
+    img.onload = () => {
+      if (!img.isConnected) return;
+      img.classList.add("ready");
+      media.querySelector(".vw-small")?.remove();
+    };
+    img.onerror = () => img.remove(); // 做不了预览：留着小缩略图
+    img.src = poster;
+    media.append(img);
+  }
   const v = document.createElement("video");
   v.className = "vw-video loading";
   v.playsInline = true;
@@ -2611,6 +2625,7 @@ function showVideo(slide, media, f, src, fallbackSrc = "") {
     spin.hidden = true;
     v.classList.remove("loading");
     media.querySelector(".vw-small")?.remove();
+    media.querySelector(".vw-poster")?.remove();
     paint();
   });
   v.addEventListener("waiting", () => { if (!v.paused) spin.hidden = false; });
