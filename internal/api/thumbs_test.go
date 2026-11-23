@@ -200,6 +200,15 @@ func TestThumbnails(t *testing.T) {
 			t.Fatalf("thumbnail %s not stored encrypted: %v", id, err)
 		}
 	}
+	// size=large：视频给第一帧大图（不裁剪），照片没有
+	if code, b, _ := getThumb(items[videoID].Thumb + "&size=large"); code != 200 {
+		t.Fatalf("large video cover: %d %s", code, b)
+	} else if img, _, err := image.Decode(bytes.NewReader(b)); err != nil || img.Bounds().Dx() == img.Bounds().Dy() {
+		t.Fatalf("large video cover should keep the aspect ratio: %v %v", err, img)
+	}
+	if code, _, _ := getThumb(items[photoID].Thumb + "&size=large"); code != 404 {
+		t.Fatalf("large cover for a photo: %d", code)
+	}
 	if d := list()[videoID].Duration; d < 1.9 || d > 2.1 {
 		t.Fatalf("video duration in listing: %v", d)
 	}

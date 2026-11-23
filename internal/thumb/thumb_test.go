@@ -225,12 +225,23 @@ func TestPreview(t *testing.T) {
 			t.Fatalf("%s: preview is %dx%d, want %dx%d", c.size, w, h, c.w, c.h)
 		}
 	}
-	// 视频不做预览
-	v := sample(t, "v.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=1", "-c:v", "mpeg4")
-	if _, err := g.Preview(context.Background(), fileSource(v)); !errors.Is(err, ErrNoThumbnail) {
+	// 视频截第一帧：同样缩到最长边 1600，不裁剪
+	v := sample(t, "v.mp4", "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=10:duration=1", "-c:v", "mpeg4")
+	b, err := g.Preview(context.Background(), fileSource(v))
+	if err != nil {
 		t.Fatalf("video preview: %v", err)
 	}
-	if !g.SupportsPreview("image/jpeg") || g.SupportsPreview("video/mp4") {
+	if img, format, err := image.Decode(bytes.NewReader(b)); err != nil || format != "jpeg" || img.Bounds().Dx() != 1600 || img.Bounds().Dy() != 900 {
+		t.Fatalf("video preview: %v %s %v", err, format, img.Bounds())
+	}
+	txt := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(txt, []byte("hello, this is not a picture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Preview(context.Background(), fileSource(txt)); !errors.Is(err, ErrNoThumbnail) {
+		t.Fatalf("text preview: %v", err)
+	}
+	if !g.SupportsPreview("image/jpeg") || !g.SupportsPreview("video/mp4") || g.SupportsPreview("text/plain") {
 		t.Fatal("SupportsPreview")
 	}
 }

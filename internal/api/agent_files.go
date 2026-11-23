@@ -455,7 +455,7 @@ func rangeLen(rg string, size int64) int64 {
 	return size
 }
 
-// GET /items/{id}/preview：照片的 1600px JPEG 预览。
+// GET /items/{id}/preview：照片（或视频第一帧）的 1600px JPEG 预览。
 func (s *Server) agentPreview(w http.ResponseWriter, r *http.Request) {
 	if !s.need(w, r, ScopeDownload) {
 		return
@@ -466,7 +466,7 @@ func (s *Server) agentPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := s.svc.Preview(r.Context(), s.userID, f.ID)
 	if errors.Is(err, service.ErrNoThumbnail) {
-		agentError(w, http.StatusNotFound, "no_preview", "no preview for this file", "Only photos have previews; download the file instead.")
+		agentError(w, http.StatusNotFound, "no_preview", "no preview for this file", "Only photos and videos have previews; download the file instead.")
 		return
 	}
 	if err != nil {

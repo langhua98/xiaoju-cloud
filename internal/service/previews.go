@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,12 +80,12 @@ func (p *previews) forget(id uuid.UUID) {
 	}
 }
 
-// CanPreview：这个文件能做大图预览（照片，且装了能解它的程序）。
+// CanPreview：这个文件能做大图预览（照片或视频，且装了能解它的程序）。
 func (s *Service) CanPreview(f *meta.File) bool {
 	return s.thumbs != nil && f.Type == meta.TypeFile && s.thumbs.gen.SupportsPreview(f.Mime)
 }
 
-// Preview 返回照片的大图预览（JPEG）；做不了时返回 ErrNoThumbnail。
+// Preview 返回照片（视频是第一帧）的大图预览（JPEG）；做不了时返回 ErrNoThumbnail。
 func (s *Service) Preview(ctx context.Context, userID, id uuid.UUID) ([]byte, error) {
 	f, err := s.store.Get(ctx, userID, id)
 	if err != nil {
@@ -123,6 +124,18 @@ func (s *Service) Preview(ctx context.Context, userID, id uuid.UUID) ([]byte, er
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// VideoPoster 返回视频第一帧的大图（和 Preview 同一份、同一个缓存）；不是视频返回 ErrNoThumbnail。
+func (s *Service) VideoPoster(ctx context.Context, userID, id uuid.UUID) ([]byte, error) {
+	f, err := s.store.Get(ctx, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(f.Mime, "video/") {
+		return nil, ErrNoThumbnail
+	}
+	return s.Preview(ctx, userID, id)
 }
 
 func (s *Service) makePreview(f *meta.File) ([]byte, error) {

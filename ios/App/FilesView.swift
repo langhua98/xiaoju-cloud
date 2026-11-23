@@ -216,14 +216,33 @@ struct FolderView: View {
         }
     }
 
-    // 一行：点名字打开；文件右边两个按钮，分享（生成直链）、下载（存到「文件」）
+    // 一行：点名字打开；文件右边两个按钮，分享（生成直链）、下载（存到「文件」）。
+    // 视频（有缩略图、不在隐藏相册里的）显示成一张大卡片：上面是铺满宽度的第一帧大图，下面一行名字和按钮
+    @ViewBuilder
     private func row(_ item: CloudItem) -> some View {
+        if item.isVideo && item.thumb != nil && !(item.isPrivate ?? false) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    Task { await open(item) }
+                } label: {
+                    VideoCover(item: item)
+                }
+                .buttonStyle(.plain)
+                line(item)
+            }
+            .padding(.vertical, 4)
+        } else {
+            line(item)
+        }
+    }
+
+    private func line(_ item: CloudItem) -> some View {
         HStack(spacing: 12) {
             Button {
                 Task { await open(item) }
             } label: {
                 HStack(spacing: 12) {
-                    icon(item)
+                    if !(item.isVideo && item.thumb != nil && !(item.isPrivate ?? false)) { icon(item) }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).lineLimit(1).truncationMode(.middle)
                         Text(detail(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -456,6 +475,57 @@ struct FolderView: View {
             (try? await Cloud.shared.send("POST", "/api/files/\(item.id)/restore")) != nil
         } progress: { _, _ in }
         await load()
+    }
+}
+
+// 文件页里视频的大预览图：16:9 铺满一行宽，先用小缩略图垫着，服务端截的第一帧大图（最长边 1600）到了换上；
+// 中间一个播放键，右下角时长
+private struct VideoCover: View {
+    let item: CloudItem
+    @State private var image: UIImage?
+    @State private var small: UIImage?
+
+    private var url: URL? { Cloud.shared.absolute(item.thumb.map { $0 + "&size=large" }) }
+    private var smallURL: URL? { Cloud.shared.absolute(item.thumb) }
+
+    var body: some View {
+        Color.black
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .overlay {
+                if let image = image ?? url.flatMap({ ThumbLoader.shared.cached($0) }) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else if let small = small ?? smallURL.flatMap({ ThumbLoader.shared.cached($0) }) {
+                    Image(uiImage: small).resizable().scaledToFill().blur(radius: 8) // 小图放大会糊，先模糊垫着
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+            .clipped()
+            .overlay {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 52, height: 52)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if let d = item.duration, d > 0 {
+                    Text(Duration.seconds(d).formatted(.time(pattern: d >= 3600 ? .hourMinuteSecond : .minuteSecond)))
+                        .font(.caption.bold().monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(8)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+            // 滑出屏幕时系统取消：还没下的就不下了
+            .task(id: url) {
+                guard let url, image == nil else { return }
+                if let smallURL, ThumbLoader.shared.cached(smallURL) == nil { small = await ThumbLoader.shared.load(smallURL) }
+                image = await ThumbLoader.shared.load(url)
+            }
     }
 }
 

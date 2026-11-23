@@ -49,4 +49,6 @@ jobs:
           run vipsheader /t/a.preview.jpg | tee /dev/stderr | grep -q ': 800x600 '
           run xiaoju preview /t/sample.heic /t/sample.preview.jpg
           run vipsheader /t/sample.preview.jpg | tee /dev/stderr | grep -q 'jpegload'
-          ! run xiaoju preview /t/v.mov /t/v.preview.jpg
+          # 视频截第一帧做预览（iPhone 的 HEVC MOV 也行），小视频原样大小、不裁剪
+          run xiaoju preview /t/v.mov /t/v.preview.jpg
+          run vipsheader /t/v.preview.jpg | tee /dev/stderr | grep -q ': 360x640 '

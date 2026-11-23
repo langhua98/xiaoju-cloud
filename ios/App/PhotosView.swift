@@ -600,13 +600,15 @@ struct MediaViewer: View {
     }
 }
 
-// 一张：照片先显示大图预览，视频用系统播放器（服务端支持 Range，可以拖动）
+// 一张：照片先显示大图预览，视频用系统播放器（服务端支持 Range，可以拖动）；
+// 视频开始播放前先铺满显示服务端截的第一帧大图，代替小缩略图和一片黑
 struct MediaPage: View {
     let item: CloudItem
     let active: Bool
 
     @State private var link: FileLink?
     @State private var player: AVPlayer?
+    @State private var started = false // 视频已经开始播放（出画面了），去掉第一帧大图
     @State private var error = ""
     @State private var zoom: CGFloat = 1
 
@@ -615,6 +617,12 @@ struct MediaPage: View {
             Color.black
             if let player {
                 VideoPlayer(player: player)
+                    .overlay {
+                        if !started {
+                            VideoPoster(item: item, url: Cloud.shared.absolute(link?.preview))
+                                .allowsHitTesting(false) // 不挡住播放器的按钮
+                        }
+                    }
             } else if let link, let url = Cloud.shared.absolute(link.preview ?? link.url) {
                 AsyncImage(url: url) { phase in
                     if let image = phase.image {
@@ -648,6 +656,12 @@ struct MediaPage: View {
                     let p = AVPlayer(url: viaRelay ?? direct)
                     player = p
                     p.play()
+                    Task { @MainActor in
+                        for await status in p.publisher(for: \.timeControlStatus).values where status == .playing {
+                            started = true
+                            break
+                        }
+                    }
                     if viaRelay != nil, let first = p.currentItem {
                         for await status in first.publisher(for: \.status).values where status == .failed {
                             let at = p.currentTime()
@@ -661,6 +675,30 @@ struct MediaPage: View {
             } catch {
                 if !error.isCancellation { self.error = error.localizedDescription }
             }
+        }
+    }
+}
+
+// 视频的第一帧大图：服务端截的（最长边 1600）先用缩略图垫着，加载好了换上；中间转圈表示视频还在加载
+private struct VideoPoster: View {
+    let item: CloudItem
+    let url: URL?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let url {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        Thumb(item: item).scaledToFit()
+                    }
+                }
+            } else {
+                Thumb(item: item).scaledToFit()
+            }
+            ProgressView().tint(.white).controlSize(.large)
         }
     }
 }

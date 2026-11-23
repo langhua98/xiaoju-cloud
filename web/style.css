@@ -273,7 +273,8 @@ body.selecting #select-btn { background: var(--accent); color: var(--accent-text
 .listing:not(.unlocked) .album.private .cover img.thumb,
 .listing.locked .album .cover img.thumb,
 .listing.locked .tile img.thumb,
-.listing.locked .row-thumb { filter: blur(22px) saturate(0.6) brightness(0.85); transform: scale(1.2); }
+.listing.locked .row-thumb,
+.listing.locked .row-cover { filter: blur(22px) saturate(0.6) brightness(0.85); transform: scale(1.2); }
 .listing.locked .tile .badge { display: none; }
 
 /* 列表 */
@@ -302,6 +303,54 @@ td.name .fname small { display: none; color: var(--muted); font-size: 12px; }
   transition: opacity 0.25s ease;
 }
 .row-thumb.loaded { opacity: 1; }
+/* 视频：一整行宽的第一帧大图，名字放在下面一行 */
+td.name .cell.has-cover { flex-wrap: wrap; row-gap: 8px; padding: 2px 0; }
+.row-cover {
+  position: relative;
+  order: -1;
+  flex: 0 0 100%;
+  max-width: 560px;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000 center / cover no-repeat;
+}
+/* 小缩略图放大会糊：先模糊着垫底，大图到了盖上 */
+.row-cover::before { content: ""; position: absolute; inset: -12px; background: inherit; filter: blur(10px); }
+.row-cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.row-cover-img.loaded { opacity: 1; }
+.row-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin: -24px 0 0 -24px;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.45);
+  color: #fff;
+}
+.row-play svg { width: 18px; height: 18px; fill: currentColor; margin-left: 2px; }
+.row-len {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.55);
+  color: #fff;
+  font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 
 /* ---------- 选择：圆形勾选框 ---------- */
 .check {
@@ -850,6 +899,9 @@ dialog.viewer.closing { animation: fade-out 0.2s ease forwards; }
 }
 .vw-media .vw-video { width: 100%; height: 100%; object-fit: contain; }
 .vw-media .vw-video.loading { opacity: 0; }
+/* 视频开始播放前铺满显示的第一帧大图（和视频一样大小、位置，播放后去掉） */
+.vw-media .vw-poster { width: 100%; height: 100%; object-fit: contain; opacity: 0; pointer-events: none; }
+.vw-media .vw-poster.ready { opacity: 1; animation: fade-in 0.3s ease; }
 
 /* 视频：自己画的播放键和控件（不用系统控件，左右滑才不会被视频接管） */
 .vw-play {

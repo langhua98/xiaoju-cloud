@@ -468,7 +468,7 @@ func (s *Server) createLink(w http.ResponseWriter, r *http.Request) {
 	if st := s.streamLink(f, fmt.Sprintf("exp=%d&sig=%s", exp, sig)); st != "" {
 		link["stream"] = st
 	}
-	// 照片另给一个大图预览的地址（最长边 1600 的 JPEG），网页先显示它，放大看细节时再换原图
+	// 照片、视频另给一个大图预览的地址（最长边 1600 的 JPEG）：照片先显示它，放大看细节时再换原图；视频开始播放前先铺满显示它
 	if s.svc.CanPreview(f) {
 		link["preview"] = fmt.Sprintf("/pv/%s?exp=%d&sig=%s", id, exp, sig)
 	}

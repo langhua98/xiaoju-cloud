@@ -86,7 +86,13 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "invalid or expired link")
 		return
 	}
-	jpeg, err := s.svc.Thumbnail(r.Context(), s.userID, id)
+	// size=large：视频的第一帧大图（最长边 1600，不裁剪），文件列表里视频显示成大卡片用；照片没有（照片的大图要走签名下载链接）
+	var jpeg []byte
+	if q.Get("size") == "large" {
+		jpeg, err = s.svc.VideoPoster(r.Context(), s.userID, id)
+	} else {
+		jpeg, err = s.svc.Thumbnail(r.Context(), s.userID, id)
+	}
 	switch {
 	case errors.Is(err, service.ErrNoThumbnail):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no thumbnail for this file", "code": "no_thumbnail"})
